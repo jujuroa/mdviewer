@@ -9,12 +9,14 @@
     sourceDirty: false,
     sourceDebounceTimer: null,
     suppressNextWatch: false,
+    tocPosition: null,
   };
 
   const el = {
     btnOpenFolder: document.getElementById('btn-open-folder'),
     btnOpenFile: document.getElementById('btn-open-file'),
     projectPath: document.getElementById('project-path'),
+    btnOpenProjectFolder: document.getElementById('btn-open-project-folder'),
     tree: document.getElementById('tree'),
     frame: document.getElementById('preview-frame'),
     fileName: document.getElementById('current-file-name'),
@@ -42,6 +44,11 @@
     editorResizer: document.getElementById('editor-resizer'),
     btnToggleEdit: document.getElementById('btn-toggle-edit'),
     btnSaveSource: document.getElementById('btn-save-source'),
+    tocFloating: document.getElementById('toc-floating'),
+    tocHeader: document.getElementById('toc-header'),
+    tocPanel: document.getElementById('toc-panel'),
+    tocList: document.getElementById('toc-list'),
+    tocSiblingsList: document.getElementById('toc-siblings-list'),
     editStatus: document.getElementById('edit-status'),
   };
 
@@ -109,6 +116,12 @@
     return idx >= 0 ? p.substring(0, idx) : '';
   }
 
+  function basenameNoExt(p) {
+    const idx = Math.max(p.lastIndexOf('/'), p.lastIndexOf('\\'));
+    const base = idx >= 0 ? p.substring(idx + 1) : p;
+    return base.replace(/\.(md|markdown)$/i, '');
+  }
+
   function setUserCssLive(css) {
     const styleTag = el.frame.contentDocument.getElementById('user-css');
     if (styleTag) styleTag.textContent = css;
@@ -133,11 +146,15 @@
     el.welcomeScreen.classList.add('hidden');
     el.previewBody.classList.remove('hidden');
     el.frame.classList.remove('hidden');
+    el.tocFloating.classList.remove('hidden');
+    expandToc();
   }
 
   function showWelcomeScreen() {
     el.previewBody.classList.add('hidden');
     el.welcomeScreen.classList.remove('hidden');
+    el.tocFloating.classList.add('hidden');
+    collapseToc();
     populateRecentList();
   }
 
@@ -156,13 +173,44 @@
     }
 
     state.rootPath = folderPath;
+    state.currentFilePath = null;
     el.projectPath.textContent = folderPath;
     el.projectPath.title = folderPath;
+    el.btnOpenProjectFolder.disabled = false;
+    el.fileName.textContent = '문서를 선택하세요';
+    el.fileName.title = '';
+    el.frame.contentDocument.body.innerHTML =
+      '<div class="mdviewer-empty-state">문서를 선택하세요</div>';
     el.tree.innerHTML = '';
     buildTreeNodes(el.tree, check.items, 0);
+
+    const stateResult = await window.mdviewer.loadProjectState(folderPath);
+    const savedState = stateResult.ok ? stateResult.state : {};
+
+    state.cssEnabled = savedState.cssEnabled !== undefined ? savedState.cssEnabled : true;
+    el.cssEnabledToggle.checked = state.cssEnabled;
     await loadProjectCss({ silent: true });
+
+    const cssEditorOpen = !!savedState.cssEditorOpen;
+    el.cssPane.classList.toggle('hidden', !cssEditorOpen);
+    el.resizerRight.classList.toggle('hidden', !cssEditorOpen);
+
     await window.mdviewer.addRecentProject(folderPath);
     showProjectView();
+    refreshFloatingToc();
+    state.tocPosition = null;
+    el.tocFloating.style.left = '';
+    el.tocFloating.style.top = '';
+    el.tocFloating.style.right = '';
+    if (savedState.tocPosition) applyTocPosition(savedState.tocPosition);
+
+    if (savedState.lastOpenFile) {
+      await loadAndRenderFile(savedState.lastOpenFile);
+      if (savedState.editModeOpen && state.currentFilePath) {
+        await enterEditMode();
+      }
+    }
+
     return true;
   }
 
@@ -215,7 +263,7 @@
     }
   }
 
-  async function renderTreeLevel(container, dirPath, depth) {
+  async function renderTreeLevel(container, dirPath, depth, indentUnit = 16) {
     const result = await window.mdviewer.listDir(dirPath);
     if (!result.ok) {
       const errRow = document.createElement('div');
@@ -224,17 +272,17 @@
       container.appendChild(errRow);
       return;
     }
-    buildTreeNodes(container, result.items, depth);
+    buildTreeNodes(container, result.items, depth, indentUnit);
   }
 
-  function buildTreeNodes(container, items, depth) {
+  function buildTreeNodes(container, items, depth, indentUnit = 16) {
     for (const item of items) {
       const node = document.createElement('div');
       node.className = 'tree-node';
 
       const row = document.createElement('div');
       row.className = 'tree-row' + (item.isDir ? ' dir' : item.isMarkdown ? ' md' : ' non-md');
-      row.style.paddingLeft = 10 + depth * 16 + 'px';
+      row.style.paddingLeft = 6 + depth * indentUnit + 'px';
 
       const caret = document.createElement('span');
       caret.className = 'tree-caret';
@@ -253,6 +301,11 @@
 
       node.appendChild(row);
 
+      row.addEventListener('contextmenu', (e) => {
+        e.preventDefault();
+        window.mdviewer.showTreeContextMenu(item.path);
+      });
+
       if (item.isDir) {
         const childrenContainer = document.createElement('div');
         childrenContainer.className = 'tree-children';
@@ -263,7 +316,7 @@
           caret.classList.toggle('expanded', expanded);
           if (expanded && childrenContainer.dataset.loaded !== '1') {
             childrenContainer.dataset.loaded = '1';
-            await renderTreeLevel(childrenContainer, item.path, depth + 1);
+            await renderTreeLevel(childrenContainer, item.path, depth + 1, indentUnit);
           }
         });
       } else if (item.isMarkdown) {
@@ -285,6 +338,21 @@
     if (row) row.classList.add('selected');
   }
 
+  function currentProjectStateSnapshot() {
+    return {
+      lastOpenFile: state.currentFilePath || null,
+      editModeOpen: state.editMode,
+      cssEnabled: state.cssEnabled,
+      cssEditorOpen: !el.cssPane.classList.contains('hidden'),
+      tocPosition: state.tocPosition || null,
+    };
+  }
+
+  async function persistProjectState() {
+    if (!state.rootPath) return;
+    await window.mdviewer.saveProjectState(state.rootPath, currentProjectStateSnapshot());
+  }
+
   async function loadAndRenderFile(filePath) {
     const result = await window.mdviewer.renderMarkdown(filePath);
     if (!result.ok) {
@@ -297,6 +365,8 @@
     el.fileName.title = filePath;
     state.currentFilePath = filePath;
     window.mdviewer.watchFile(filePath);
+    refreshFloatingToc();
+    persistProjectState();
   }
 
   function escapeHtml(str) {
@@ -360,6 +430,8 @@
     setEditModeUI(true);
     el.editStatus.textContent = '';
     el.mdSourceEditor.focus();
+    populateToc();
+    persistProjectState();
   }
 
   function exitEditMode() {
@@ -368,7 +440,11 @@
     state.sourceDirty = false;
     setEditModeUI(false);
     el.editStatus.textContent = '';
-    if (state.currentFilePath) loadAndRenderFile(state.currentFilePath);
+    if (state.currentFilePath) {
+      loadAndRenderFile(state.currentFilePath);
+    } else {
+      persistProjectState();
+    }
   }
 
   async function toggleEditMode() {
@@ -384,6 +460,7 @@
     const result = await window.mdviewer.renderMarkdownText(el.mdSourceEditor.value, baseDir);
     if (result.ok) {
       el.frame.contentDocument.body.innerHTML = result.html;
+      refreshFloatingToc();
     }
   }
 
@@ -423,6 +500,209 @@
   });
 
   // ---------------------------------------------------------------------
+  // Floating table of contents / sibling pages
+  // ---------------------------------------------------------------------
+
+  function slugify(text) {
+    return text
+      .toLowerCase()
+      .trim()
+      .replace(/[^a-z0-9가-힣\s-]/g, '')
+      .replace(/\s+/g, '-')
+      .slice(0, 60);
+  }
+
+  function findHeadingLineNumbers(sourceText) {
+    const lines = sourceText.split('\n');
+    const result = [];
+    let inFence = false;
+    lines.forEach((line, idx) => {
+      if (/^\s*(```|~~~)/.test(line)) {
+        inFence = !inFence;
+        return;
+      }
+      if (!inFence && /^#{1,6}\s/.test(line)) {
+        result.push(idx);
+      }
+    });
+    return result;
+  }
+
+  function scrollSourceToLine(lineNumber) {
+    const ta = el.mdSourceEditor;
+    const lines = ta.value.split('\n');
+    let offset = 0;
+    for (let i = 0; i < lineNumber && i < lines.length; i++) {
+      offset += lines[i].length + 1;
+    }
+    ta.focus();
+    ta.setSelectionRange(offset, offset);
+
+    const style = window.getComputedStyle(ta);
+    const lineHeight = parseFloat(style.lineHeight) || parseFloat(style.fontSize) * 1.4;
+    ta.scrollTop = Math.max(0, lineNumber * lineHeight - ta.clientHeight / 2);
+  }
+
+  function populateToc() {
+    el.tocList.innerHTML = '';
+    const headings = Array.from(
+      el.frame.contentDocument.querySelectorAll('h1, h2, h3, h4, h5, h6')
+    );
+    if (headings.length === 0) {
+      const empty = document.createElement('li');
+      empty.className = 'toc-empty';
+      empty.textContent = '이 문서에는 제목이 없습니다';
+      el.tocList.appendChild(empty);
+      return;
+    }
+    const sourceLines = state.editMode ? findHeadingLineNumbers(el.mdSourceEditor.value) : null;
+
+    const usedIds = new Set();
+    headings.forEach((heading, index) => {
+      if (!heading.id) {
+        const base = slugify(heading.textContent) || `section-${index}`;
+        let candidate = base;
+        let n = 2;
+        while (usedIds.has(candidate)) candidate = `${base}-${n++}`;
+        heading.id = candidate;
+      }
+      usedIds.add(heading.id);
+
+      const level = Number(heading.tagName[1]);
+      const li = document.createElement('li');
+      li.className = 'toc-item';
+      li.style.paddingLeft = 6 + (level - 1) * 12 + 'px';
+      li.textContent = heading.textContent;
+      li.title = heading.textContent;
+      li.addEventListener('click', () => {
+        heading.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        if (sourceLines && sourceLines[index] !== undefined) {
+          scrollSourceToLine(sourceLines[index]);
+        }
+      });
+      el.tocList.appendChild(li);
+    });
+  }
+
+  function tocEmpty(container, text) {
+    const empty = document.createElement('div');
+    empty.className = 'toc-empty';
+    empty.textContent = text;
+    container.appendChild(empty);
+  }
+
+  async function populateSiblingPages() {
+    el.tocSiblingsList.innerHTML = '';
+    if (!state.currentFilePath) {
+      tocEmpty(el.tocSiblingsList, '문서를 선택하세요');
+      return;
+    }
+    const dir = dirnameOf(state.currentFilePath);
+    const baseName = basenameNoExt(state.currentFilePath).toLowerCase();
+    const result = await window.mdviewer.listDir(dir);
+    if (!result.ok) return;
+    const subFolder = result.items.find(
+      (item) => item.isDir && item.name.toLowerCase() === baseName
+    );
+    if (!subFolder) {
+      tocEmpty(el.tocSiblingsList, `"${basenameNoExt(state.currentFilePath)}" 폴더가 없습니다`);
+      return;
+    }
+    await renderTreeLevel(el.tocSiblingsList, subFolder.path, 0, 10);
+  }
+
+  function refreshFloatingToc() {
+    populateToc();
+    populateSiblingPages();
+  }
+
+  function expandToc() {
+    el.tocFloating.classList.remove('collapsed');
+  }
+
+  function collapseToc() {
+    el.tocFloating.classList.add('collapsed');
+  }
+
+  function setupTocDrag() {
+    // Uses Pointer Events + setPointerCapture rather than mouse events on
+    // `window`: the floating panel sits above the preview <iframe>, and once
+    // the cursor crosses into the iframe (a separate document/browsing
+    // context) plain mouse events stop bubbling to the parent window,
+    // breaking the drag. Pointer capture redirects all events for this
+    // pointer to the header regardless of what's visually underneath it.
+    let dragging = false;
+    let moved = false;
+    let startX = 0;
+    let startY = 0;
+    let startLeft = 0;
+    let startTop = 0;
+
+    el.tocHeader.addEventListener('pointerdown', (e) => {
+      dragging = true;
+      moved = false;
+      const rect = el.tocFloating.getBoundingClientRect();
+      const parentRect = el.tocFloating.parentElement.getBoundingClientRect();
+      startX = e.clientX;
+      startY = e.clientY;
+      startLeft = rect.left - parentRect.left;
+      startTop = rect.top - parentRect.top;
+      el.tocHeader.setPointerCapture(e.pointerId);
+      e.preventDefault();
+    });
+
+    el.tocHeader.addEventListener('pointermove', (e) => {
+      if (!dragging) return;
+      const dx = e.clientX - startX;
+      const dy = e.clientY - startY;
+      if (Math.abs(dx) > 3 || Math.abs(dy) > 3) moved = true;
+      if (!moved) return;
+
+      const parentRect = el.tocFloating.parentElement.getBoundingClientRect();
+      const maxLeft = Math.max(0, parentRect.width - el.tocFloating.offsetWidth);
+      const maxTop = Math.max(0, parentRect.height - el.tocFloating.offsetHeight);
+      const newLeft = Math.min(Math.max(0, startLeft + dx), maxLeft);
+      const newTop = Math.min(Math.max(0, startTop + dy), maxTop);
+
+      el.tocFloating.style.right = 'auto';
+      el.tocFloating.style.left = newLeft + 'px';
+      el.tocFloating.style.top = newTop + 'px';
+      state.tocPosition = { left: newLeft, top: newTop };
+    });
+
+    function endDrag(e) {
+      if (!dragging) return;
+      if (!moved) {
+        el.tocFloating.classList.toggle('collapsed');
+      } else {
+        persistProjectState();
+      }
+      dragging = false;
+      if (el.tocHeader.hasPointerCapture(e.pointerId)) {
+        el.tocHeader.releasePointerCapture(e.pointerId);
+      }
+    }
+
+    el.tocHeader.addEventListener('pointerup', endDrag);
+    el.tocHeader.addEventListener('pointercancel', endDrag);
+  }
+
+  function applyTocPosition(pos) {
+    if (!pos) return;
+    const parentRect = el.tocFloating.parentElement.getBoundingClientRect();
+    const maxLeft = Math.max(0, parentRect.width - el.tocFloating.offsetWidth);
+    const maxTop = Math.max(0, parentRect.height - el.tocFloating.offsetHeight);
+    const left = Math.min(Math.max(0, pos.left), maxLeft);
+    const top = Math.min(Math.max(0, pos.top), maxTop);
+    el.tocFloating.style.right = 'auto';
+    el.tocFloating.style.left = left + 'px';
+    el.tocFloating.style.top = top + 'px';
+    state.tocPosition = { left, top };
+  }
+
+  setupTocDrag();
+
+  // ---------------------------------------------------------------------
   // CSS editor
   // ---------------------------------------------------------------------
 
@@ -450,6 +730,7 @@
     el.cssStatus.textContent = state.cssEnabled
       ? '커스텀 CSS를 적용했습니다'
       : '커스텀 CSS를 껐습니다 (기본 스타일 표시 중)';
+    persistProjectState();
   });
 
   el.btnSaveCss.addEventListener('click', async () => {
@@ -556,6 +837,7 @@
   function toggleCssEditor() {
     const hidden = el.cssPane.classList.toggle('hidden');
     el.resizerRight.classList.toggle('hidden', hidden);
+    persistProjectState();
   }
 
   el.btnToggleCss.addEventListener('click', toggleCssEditor);
@@ -568,6 +850,10 @@
   el.btnOpenFolder.addEventListener('click', async () => {
     const folder = await window.mdviewer.openFolderDialog();
     if (folder) openFolder(folder);
+  });
+
+  el.btnOpenProjectFolder.addEventListener('click', () => {
+    if (state.rootPath) window.mdviewer.openPath(state.rootPath);
   });
 
   el.btnOpenFile.addEventListener('click', async () => {

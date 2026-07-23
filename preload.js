@@ -13,6 +13,12 @@ contextBridge.exposeInMainWorld('mdviewer', {
   readFile: (filePath) => ipcRenderer.invoke('fs:read-file', filePath),
   writeFile: (filePath, content) => ipcRenderer.invoke('fs:write-file', filePath, content),
   renderMarkdownText: (text, baseDir) => ipcRenderer.invoke('md:render-text', text, baseDir),
+  showTreeContextMenu: (itemPath) => ipcRenderer.invoke('tree:show-context-menu', itemPath),
+  showInFolder: (itemPath) => ipcRenderer.invoke('shell:show-in-folder', itemPath),
+  openPath: (folderPath) => ipcRenderer.invoke('shell:open-path', folderPath),
+  loadProjectState: (rootPath) => ipcRenderer.invoke('fs:load-project-state', rootPath),
+  saveProjectState: (rootPath, projectState) =>
+    ipcRenderer.invoke('fs:save-project-state', rootPath, projectState),
 
   listRecentProjects: () => ipcRenderer.invoke('recent:list'),
   addRecentProject: (rootPath) => ipcRenderer.invoke('recent:add', rootPath),

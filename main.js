@@ -190,6 +190,28 @@ function saveProjectCss(rootPath, css) {
   fs.writeFileSync(projectCssPath(rootPath), css, 'utf-8');
 }
 
+const STATE_FILE_NAME = 'state.json';
+
+function projectStatePath(rootPath) {
+  return path.join(rootPath, CONFIG_DIR_NAME, STATE_FILE_NAME);
+}
+
+function loadProjectState(rootPath) {
+  try {
+    const raw = fs.readFileSync(projectStatePath(rootPath), 'utf-8');
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch (err) {
+    return {};
+  }
+}
+
+function saveProjectState(rootPath, projectState) {
+  const dir = path.join(rootPath, CONFIG_DIR_NAME);
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(projectStatePath(rootPath), JSON.stringify(projectState, null, 2), 'utf-8');
+}
+
 const MAX_RECENT_MENU_ITEMS = 5;
 
 function buildAppMenu() {
@@ -376,6 +398,23 @@ ipcMain.handle('fs:save-project-css', (event, rootPath, css) => {
   }
 });
 
+ipcMain.handle('fs:load-project-state', (event, rootPath) => {
+  try {
+    return { ok: true, state: loadProjectState(rootPath) };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
+ipcMain.handle('fs:save-project-state', (event, rootPath, projectState) => {
+  try {
+    saveProjectState(rootPath, projectState);
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
 ipcMain.handle('fs:get-base-styles', () => {
   const defaultCss = fs.readFileSync(
     path.join(__dirname, 'assets', 'preview-base.css'),
@@ -406,6 +445,25 @@ ipcMain.handle('fs:watch-file', (event, filePath) => {
 
 ipcMain.handle('shell:open-external', (event, url) => {
   shell.openExternal(url);
+});
+
+ipcMain.handle('shell:open-path', async (event, folderPath) => {
+  const errorMessage = await shell.openPath(folderPath);
+  return errorMessage ? { ok: false, error: errorMessage } : { ok: true };
+});
+
+ipcMain.handle('shell:show-in-folder', (event, itemPath) => {
+  shell.showItemInFolder(itemPath);
+});
+
+ipcMain.handle('tree:show-context-menu', (event, itemPath) => {
+  const menu = Menu.buildFromTemplate([
+    {
+      label: '탐색기에서 상위 폴더 열기',
+      click: () => shell.showItemInFolder(itemPath),
+    },
+  ]);
+  menu.popup({ window: BrowserWindow.fromWebContents(event.sender) });
 });
 
 ipcMain.handle('recent:list', () => {
