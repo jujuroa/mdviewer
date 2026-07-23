@@ -1,0 +1,23 @@
+/* 이 프로젝트만의 커스텀 스타일입니다.
+   여기서 수정하면 미리보기에 즉시 반영되고,
+   "저장"을 누르면 프로젝트 폴더의 .mdviewer/custom.css 에 저장됩니다. */
+
+body.markdown-body {
+  /* font-family: "Pretendard", sans-serif; */
+  /* font-size: 17px; */
+  /* max-width: 760px; */
+}
+
+.markdown-body h1,
+.markdown-body h2 {
+  /* border-bottom: none; */
+  /* color: #2f6feb; */
+}
+
+.markdown-body pre {
+  /* border-radius: 12px; */
+}
+
+.markdown-body a {
+  /* color: #ff6b6b; */
+}

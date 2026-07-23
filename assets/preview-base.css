@@ -1,0 +1,226 @@
+/* Base typography for the markdown preview, styled after the VS Code
+   editor (Dark+ / Light+ token colors). Always applied underneath the
+   highlight.js theme and the user's editable custom CSS. */
+
+:root {
+  color-scheme: light dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html, body {
+  margin: 0;
+  padding: 0;
+}
+
+body.markdown-body {
+  font-family: "Nanum Gothic", "NanumGothic", -apple-system, BlinkMacSystemFont, "Segoe UI",
+    "Malgun Gothic", Roboto, Helvetica, Arial, sans-serif;
+  font-size: 14px;
+  line-height: 1.6;
+  color: #d4d4d4;
+  background: #1e1e1e;
+  padding: 32px 48px 80px;
+  max-width: 900px;
+  margin: 0 auto;
+  word-wrap: break-word;
+}
+
+@media (prefers-color-scheme: light) {
+  body.markdown-body {
+    color: #3b3b3b;
+    background: #ffffff;
+  }
+}
+
+.markdown-body h1,
+.markdown-body h2,
+.markdown-body h3,
+.markdown-body h4,
+.markdown-body h5,
+.markdown-body h6 {
+  font-family: "Nanum Gothic", "NanumGothic", -apple-system, BlinkMacSystemFont, "Segoe UI",
+    "Malgun Gothic", Roboto, Helvetica, Arial, sans-serif;
+  font-weight: 600;
+  line-height: 1.25;
+  margin-top: 24px;
+  margin-bottom: 16px;
+  color: #569cd6;
+}
+
+@media (prefers-color-scheme: light) {
+  .markdown-body h1,
+  .markdown-body h2,
+  .markdown-body h3,
+  .markdown-body h4,
+  .markdown-body h5,
+  .markdown-body h6 {
+    color: #0451a5;
+  }
+}
+
+.markdown-body h1 {
+  font-size: 2em;
+  padding-bottom: 0.3em;
+  border-bottom: 1px solid #3c3c3c;
+}
+
+.markdown-body h2 {
+  font-size: 1.5em;
+  padding-bottom: 0.3em;
+  border-bottom: 1px solid #3c3c3c;
+}
+
+.markdown-body h3 { font-size: 1.25em; }
+.markdown-body h4 { font-size: 1.1em; }
+.markdown-body h5 { font-size: 1em; }
+.markdown-body h6 { font-size: 0.9em; color: #9cdcfe; }
+
+@media (prefers-color-scheme: light) {
+  .markdown-body h1, .markdown-body h2 { border-bottom-color: #e5e5e5; }
+  .markdown-body h6 { color: #267f99; }
+}
+
+.markdown-body p,
+.markdown-body ul,
+.markdown-body ol,
+.markdown-body blockquote,
+.markdown-body table,
+.markdown-body pre {
+  margin-top: 0;
+  margin-bottom: 16px;
+}
+
+.markdown-body a {
+  color: #3794ff;
+  text-decoration: none;
+}
+.markdown-body a:hover { text-decoration: underline; }
+
+@media (prefers-color-scheme: light) {
+  .markdown-body a { color: #006ab1; }
+}
+
+.markdown-body ul, .markdown-body ol {
+  padding-left: 2em;
+}
+
+.markdown-body li { line-height: 1.2; }
+.markdown-body li + li { margin-top: 0.25em; }
+
+.markdown-body blockquote {
+  margin-left: 0;
+  margin-right: 0;
+  padding: 0 1em;
+  color: #808080;
+  border-left: 0.25em solid #3c3c3c;
+}
+
+@media (prefers-color-scheme: light) {
+  .markdown-body blockquote {
+    border-left-color: #d4d4d4;
+  }
+}
+
+.markdown-body img { max-width: 100%; }
+
+.markdown-body code {
+  font-family: "D2Coding", "D2Coding ligature", Consolas, "Cascadia Mono", "Cascadia Code",
+    "SFMono-Regular", "Liberation Mono", Menlo, monospace;
+  font-size: 85%;
+  padding: 0.2em 0.4em;
+  color: #ce9178;
+  background: #3c3c3c;
+  border-radius: 4px;
+}
+
+@media (prefers-color-scheme: light) {
+  .markdown-body code {
+    color: #a31515;
+    background: #f0f0f0;
+  }
+}
+
+.markdown-body pre {
+  padding: 16px;
+  overflow: auto;
+  border-radius: 4px;
+  background: #1e1e1e;
+  border: 1px solid #3c3c3c;
+}
+
+@media (prefers-color-scheme: light) {
+  .markdown-body pre {
+    background: #f8f8f8;
+    border-color: #e5e5e5;
+  }
+}
+
+.markdown-body pre code {
+  padding: 0;
+  background: transparent;
+  color: inherit;
+  font-size: 85%;
+}
+
+.markdown-body table {
+  border-collapse: collapse;
+  width: 100%;
+  max-width: 100%;
+  table-layout: fixed;
+  border-bottom: 1px solid #3c3c3c;
+}
+
+.markdown-body table th,
+.markdown-body table td {
+  border: none;
+  padding: 6px 13px;
+  text-align: left;
+  overflow-wrap: break-word;
+}
+
+.markdown-body table th {
+  color: #9aa7b0;
+  background: rgba(140, 150, 160, 0.12);
+  border-bottom: 2px solid #6b7680;
+}
+
+.markdown-body table tbody tr:nth-child(2n) {
+  background: rgba(255, 255, 255, 0.03);
+}
+
+@media (prefers-color-scheme: light) {
+  .markdown-body table { border-bottom-color: #e5e5e5; }
+  .markdown-body table th {
+    color: #5a6672;
+    background: rgba(90, 102, 114, 0.07);
+    border-bottom-color: #8a97a3;
+  }
+  .markdown-body table tbody tr:nth-child(2n) { background: rgba(0, 0, 0, 0.03); }
+}
+
+.markdown-body hr {
+  height: 1px;
+  border: 0;
+  background: #3c3c3c;
+  margin: 24px 0;
+}
+
+@media (prefers-color-scheme: light) {
+  .markdown-body hr { background: #e5e5e5; }
+}
+
+.markdown-body .task-list-item { list-style: none; margin-left: -1.5em; }
+.markdown-body .task-list-item input { margin-right: 0.5em; }
+
+.mdviewer-empty-state {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100vh;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  color: #808080;
+  font-size: 15px;
+}

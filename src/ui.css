@@ -1,0 +1,554 @@
+/* VS Code Light+ / Dark+ workbench colors */
+:root {
+  --bg-sidebar: #f3f3f3;
+  --bg-app: #ffffff;
+  --border: #e5e5e5;
+  --text: #3b3b3b;
+  --text-dim: #6e6e6e;
+  --accent: #006ab1;
+  --btn-bg: #0e639c;
+  --btn-bg-hover: #1177bb;
+  --btn-fg: #ffffff;
+  --hover: #e8e8e8;
+  --selected: #e4e6f1;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg-sidebar: #252526;
+    --bg-app: #1e1e1e;
+    --border: #3c3c3c;
+    --text: #cccccc;
+    --text-dim: #9a9a9a;
+    --accent: #3794ff;
+    --btn-bg: #0e639c;
+    --btn-bg-hover: #1177bb;
+    --btn-fg: #ffffff;
+    --hover: #2a2d2e;
+    --selected: #094771;
+  }
+}
+
+* { box-sizing: border-box; }
+
+.btn-primary {
+  background: var(--btn-bg) !important;
+  border-color: var(--btn-bg) !important;
+  color: var(--btn-fg) !important;
+}
+.btn-primary:hover { background: var(--btn-bg-hover) !important; }
+
+html, body {
+  margin: 0;
+  height: 100%;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Malgun Gothic", sans-serif;
+  color: var(--text);
+  background: var(--bg-app);
+  overflow: hidden;
+}
+
+#app {
+  display: flex;
+  height: 100vh;
+  width: 100vw;
+}
+
+/* ---- Sidebar / tree ---- */
+
+#sidebar {
+  width: 260px;
+  min-width: 160px;
+  max-width: 480px;
+  background: var(--bg-sidebar);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.sidebar-header {
+  display: flex;
+  gap: 6px;
+  padding: 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+.sidebar-header button {
+  flex: 1;
+  font-size: 12px;
+  padding: 6px 4px;
+  border: 1px solid var(--border);
+  background: var(--bg-app);
+  color: var(--text);
+  border-radius: 4px;
+  cursor: pointer;
+}
+.sidebar-header button:hover { background: var(--hover); }
+
+.project-path {
+  padding: 6px 10px;
+  font-size: 11px;
+  color: var(--text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  border-bottom: 1px solid var(--border);
+}
+
+.tree {
+  flex: 1;
+  overflow: auto;
+  padding: 4px 0;
+  font-size: 13px;
+  user-select: none;
+}
+
+.tree-node { }
+
+.tree-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 10px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.tree-row:hover { background: var(--hover); }
+.tree-row.selected { background: var(--selected); }
+.tree-row.dir .tree-label { font-weight: 500; }
+.tree-row.non-md .tree-label { color: var(--text-dim); cursor: default; }
+
+.tree-caret {
+  width: 12px;
+  display: inline-block;
+  text-align: center;
+  font-size: 10px;
+  color: var(--text-dim);
+  transition: transform 0.1s ease;
+}
+.tree-caret.expanded { transform: rotate(90deg); }
+
+.tree-icon { width: 16px; text-align: center; }
+
+.tree-children {
+  display: none;
+}
+.tree-children.expanded { display: block; }
+
+/* ---- Resizers ---- */
+
+.resizer {
+  width: 4px;
+  cursor: col-resize;
+  background: transparent;
+}
+.resizer:hover, .resizer.dragging { background: var(--accent); }
+.resizer.hidden { display: none; }
+
+/* ---- Preview pane ---- */
+
+#preview-pane {
+  flex: 1;
+  min-width: 200px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--bg-app);
+}
+
+.preview-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.preview-toolbar button {
+  font-size: 12px;
+  padding: 5px 10px;
+  border: 1px solid var(--border);
+  background: var(--bg-sidebar);
+  color: var(--text);
+  border-radius: 4px;
+  cursor: pointer;
+}
+.preview-toolbar button:hover { background: var(--hover); }
+
+.toolbar-right {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.css-applied-badge {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.css-applied-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--text-dim);
+}
+
+.css-applied-badge.active {
+  color: #3fb950;
+}
+.css-applied-badge.active .css-applied-dot {
+  background: #3fb950;
+  box-shadow: 0 0 4px rgba(63, 185, 80, 0.6);
+}
+
+.css-applied-badge.disabled {
+  color: var(--text-dim);
+  opacity: 0.6;
+}
+
+.edit-status {
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+#btn-toggle-edit.active {
+  background: var(--btn-bg);
+  border-color: var(--btn-bg);
+  color: var(--btn-fg);
+}
+#btn-toggle-edit.active:hover { background: var(--btn-bg-hover); }
+
+.preview-body {
+  flex: 1;
+  display: flex;
+  overflow: hidden;
+  min-height: 0;
+}
+.preview-body.hidden { display: none; }
+
+#md-source-editor {
+  flex: 1;
+  min-width: 160px;
+  resize: none;
+  border: none;
+  outline: none;
+  padding: 16px 20px;
+  font-family: "D2Coding", "D2Coding ligature", Consolas, "Cascadia Mono", "Cascadia Code",
+    "SFMono-Regular", Menlo, monospace;
+  font-size: 13px;
+  line-height: 1.6;
+  background: var(--bg-app);
+  color: var(--text);
+  tab-size: 2;
+}
+#md-source-editor.hidden { display: none; }
+
+#editor-resizer.hidden { display: none; }
+
+#preview-frame {
+  flex: 1;
+  border: none;
+  width: 100%;
+  background: var(--bg-app);
+}
+#preview-frame.hidden { display: none; }
+
+/* ---- Welcome screen (shown when no project is open) ---- */
+
+#welcome-screen {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: auto;
+}
+#welcome-screen.hidden { display: none; }
+
+.welcome-inner {
+  width: 100%;
+  max-width: 420px;
+  padding: 24px;
+  text-align: center;
+}
+
+.welcome-inner h1 {
+  font-size: 22px;
+  margin: 0 0 8px;
+}
+
+.welcome-hint {
+  font-size: 13px;
+  color: var(--text-dim);
+  margin: 0 0 20px;
+}
+
+.welcome-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: center;
+  margin-bottom: 28px;
+}
+
+.welcome-actions button {
+  font-size: 13px;
+  padding: 8px 16px;
+  border: 1px solid var(--border);
+  background: var(--bg-sidebar);
+  color: var(--text);
+  border-radius: 6px;
+  cursor: pointer;
+}
+.welcome-actions button:hover { background: var(--hover); }
+
+.recent-section h2 {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  text-align: left;
+  margin: 0 0 8px;
+}
+
+.recent-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  text-align: left;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.recent-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 9px 12px;
+  cursor: pointer;
+  border-bottom: 1px solid var(--border);
+}
+.recent-item:last-child { border-bottom: none; }
+.recent-item:hover { background: var(--hover); }
+.recent-item.missing { opacity: 0.5; }
+
+.recent-item-info { min-width: 0; }
+
+.recent-item-name {
+  font-size: 13px;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.recent-item-path {
+  font-size: 11px;
+  color: var(--text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.recent-item-remove {
+  flex-shrink: 0;
+  border: none;
+  background: none;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  padding: 4px 6px;
+  border-radius: 4px;
+}
+.recent-item-remove:hover { background: var(--border); color: var(--text); }
+
+.recent-empty {
+  padding: 10px 12px;
+  font-size: 12px;
+  color: var(--text-dim);
+  text-align: center;
+}
+
+/* ---- CSS editor pane ---- */
+
+#css-editor-pane {
+  width: 360px;
+  min-width: 220px;
+  max-width: 640px;
+  border-left: 1px solid var(--border);
+  background: var(--bg-sidebar);
+  display: flex;
+  flex-direction: column;
+}
+#css-editor-pane.hidden { display: none; }
+
+.css-editor-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.css-editor-title-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.css-toggle {
+  position: relative;
+  display: inline-block;
+  width: 30px;
+  height: 16px;
+  flex-shrink: 0;
+}
+.css-toggle input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+.css-toggle-slider {
+  position: absolute;
+  inset: 0;
+  background: var(--border);
+  border-radius: 16px;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+.css-toggle-slider::before {
+  content: "";
+  position: absolute;
+  width: 12px;
+  height: 12px;
+  left: 2px;
+  top: 2px;
+  background: var(--bg-app);
+  border-radius: 50%;
+  transition: transform 0.15s ease;
+}
+.css-toggle input:checked + .css-toggle-slider {
+  background: var(--btn-bg);
+}
+.css-toggle input:checked + .css-toggle-slider::before {
+  transform: translateX(14px);
+}
+
+.css-editor-actions { display: flex; gap: 6px; }
+.css-editor-actions button {
+  font-size: 12px;
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  background: var(--bg-app);
+  color: var(--text);
+  border-radius: 4px;
+  cursor: pointer;
+}
+.css-editor-actions button:hover { background: var(--hover); }
+
+.import-css-wrapper { position: relative; }
+
+.import-dropdown {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  width: 280px;
+  background: var(--bg-app);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+  padding: 8px;
+  z-index: 20;
+}
+.import-dropdown.hidden { display: none; }
+
+.import-dropdown-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  padding: 2px 4px 6px;
+}
+
+.import-recent-list {
+  list-style: none;
+  margin: 0 0 6px;
+  padding: 0;
+  max-height: 220px;
+  overflow: auto;
+}
+
+.import-recent-item {
+  padding: 6px 6px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-weight: normal;
+}
+.import-recent-item:hover { background: var(--hover); }
+
+.import-recent-item-name {
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.import-recent-item-path {
+  font-size: 10px;
+  color: var(--text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.import-recent-empty {
+  padding: 6px;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.import-browse-btn {
+  width: 100%;
+  font-size: 12px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-top: 1px solid var(--border);
+  background: var(--bg-sidebar);
+  color: var(--text);
+  border-radius: 4px;
+  cursor: pointer;
+}
+.import-browse-btn:hover { background: var(--hover); }
+
+#css-editor {
+  flex: 1;
+  resize: none;
+  border: none;
+  outline: none;
+  padding: 10px;
+  font-family: "D2Coding", "D2Coding ligature", Consolas, "Cascadia Mono", "Cascadia Code",
+    "SFMono-Regular", Menlo, monospace;
+  font-size: 13px;
+  line-height: 1.5;
+  background: var(--bg-app);
+  color: var(--text);
+  tab-size: 2;
+}
+
+.css-status {
+  padding: 4px 10px;
+  font-size: 11px;
+  color: var(--text-dim);
+  min-height: 18px;
+}

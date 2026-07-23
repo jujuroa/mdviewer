@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' file: data:; frame-src 'self';" />
+  <title>MD Viewer</title>
+  <link rel="stylesheet" href="ui.css" />
+</head>
+<body>
+  <div id="app">
+    <aside id="sidebar">
+      <div class="sidebar-header">
+        <button id="btn-open-folder" class="btn-primary" title="프로젝트 폴더 열기 (Ctrl+O)">폴더 열기</button>
+        <button id="btn-open-file" title="단일 파일 열기 (Ctrl+Shift+O)">파일 열기</button>
+      </div>
+      <div id="project-path" class="project-path" title="">폴더가 열려 있지 않습니다</div>
+      <div id="tree" class="tree"></div>
+    </aside>
+
+    <div id="resizer-left" class="resizer"></div>
+
+    <main id="preview-pane">
+      <div class="preview-toolbar">
+        <span id="current-file-name">문서를 선택하세요</span>
+        <div class="toolbar-right">
+          <span id="edit-status" class="edit-status"></span>
+          <button id="btn-save-source" class="btn-primary hidden" title="저장 (Ctrl+S)">저장</button>
+          <button id="btn-toggle-edit" title="본문 편집 모드 전환 (Ctrl+Shift+E)">편집</button>
+          <span id="css-applied-badge" class="css-applied-badge" title="커스텀 CSS 적용됨">
+            <span class="css-applied-dot"></span>커스텀 CSS
+          </span>
+          <button id="btn-toggle-css" title="CSS 편집기 열기/닫기 (Ctrl+E)">CSS 편집</button>
+        </div>
+      </div>
+
+      <div id="preview-body" class="preview-body">
+        <textarea id="md-source-editor" class="hidden" spellcheck="false"
+          placeholder="마크다운 소스를 입력하세요"></textarea>
+        <div id="editor-resizer" class="resizer hidden"></div>
+        <iframe id="preview-frame" class="hidden" title="markdown preview" sandbox="allow-same-origin"></iframe>
+      </div>
+
+      <div id="welcome-screen">
+        <div class="welcome-inner">
+          <h1>MD Viewer</h1>
+          <p class="welcome-hint">열려 있는 프로젝트가 없습니다. 폴더를 열거나 최근 프로젝트를 선택하세요.</p>
+          <div class="welcome-actions">
+            <button id="welcome-open-folder" class="btn-primary">폴더 열기</button>
+            <button id="welcome-open-file">파일 열기</button>
+          </div>
+          <div class="recent-section">
+            <h2>최근 프로젝트</h2>
+            <ul id="recent-list" class="recent-list"></ul>
+          </div>
+        </div>
+      </div>
+    </main>
+
+    <div id="resizer-right" class="resizer hidden"></div>
+
+    <aside id="css-editor-pane" class="hidden">
+      <div class="css-editor-header">
+        <div class="css-editor-title-group">
+          <span>커스텀 CSS</span>
+          <label class="css-toggle" title="미리보기에 커스텀 CSS 적용/해제">
+            <input type="checkbox" id="css-enabled-toggle" checked />
+            <span class="css-toggle-slider"></span>
+          </label>
+        </div>
+        <div class="css-editor-actions">
+          <div class="import-css-wrapper">
+            <button id="btn-import-css" title="다른 프로젝트의 스타일을 기본값으로 가져오기">가져오기</button>
+            <div id="import-css-dropdown" class="import-dropdown hidden">
+              <div class="import-dropdown-label">최근 프로젝트에서 가져오기</div>
+              <ul id="import-recent-list" class="import-recent-list"></ul>
+              <button id="btn-import-browse" class="import-browse-btn">폴더 선택...</button>
+            </div>
+          </div>
+          <button id="btn-save-css" class="btn-primary">저장</button>
+          <button id="btn-reset-css">되돌리기</button>
+        </div>
+      </div>
+      <textarea id="css-editor" spellcheck="false" placeholder="/* CSS를 입력하면 미리보기에 바로 반영됩니다 */"></textarea>
+      <div id="css-status" class="css-status"></div>
+    </aside>
+  </div>
+
+  <script src="renderer.js"></script>
+</body>
+</html>
