@@ -890,13 +890,19 @@
   // ---------------------------------------------------------------------
 
   function setupResizer(resizerEl, targetEl, mode) {
+    // Pointer Events + setPointerCapture, same as setupTocDrag: the preview
+    // pane is an <iframe> (a separate browsing context), so plain mouse
+    // events on `window` stop bubbling once the cursor crosses into it,
+    // breaking the drag. Pointer capture keeps events routed to the
+    // resizer regardless of what's underneath.
     let dragging = false;
-    resizerEl.addEventListener('mousedown', (e) => {
+    resizerEl.addEventListener('pointerdown', (e) => {
       dragging = true;
       resizerEl.classList.add('dragging');
+      resizerEl.setPointerCapture(e.pointerId);
       e.preventDefault();
     });
-    window.addEventListener('mousemove', (e) => {
+    resizerEl.addEventListener('pointermove', (e) => {
       if (!dragging) return;
       const rect = targetEl.parentElement.getBoundingClientRect();
       if (mode === 'left') {
@@ -905,10 +911,16 @@
         targetEl.style.width = Math.max(220, rect.right - e.clientX) + 'px';
       }
     });
-    window.addEventListener('mouseup', () => {
+    function endDrag(e) {
+      if (!dragging) return;
       dragging = false;
       resizerEl.classList.remove('dragging');
-    });
+      if (resizerEl.hasPointerCapture(e.pointerId)) {
+        resizerEl.releasePointerCapture(e.pointerId);
+      }
+    }
+    resizerEl.addEventListener('pointerup', endDrag);
+    resizerEl.addEventListener('pointercancel', endDrag);
   }
 
   setupResizer(el.resizerLeft, el.sidebar, 'left');
