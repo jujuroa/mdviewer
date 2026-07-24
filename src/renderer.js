@@ -487,7 +487,7 @@
       seg.textContent = text;
       seg.title = targetPath;
       if (clickable) {
-        seg.addEventListener('click', () => revealPathInTree(targetPath));
+        seg.addEventListener('click', () => onBreadcrumbSegmentClick(targetPath));
       }
       el.fileName.appendChild(seg);
     };
@@ -503,7 +503,40 @@
     }
   }
 
-  async function revealPathInTree(targetPath) {
+  // A folder's "companion" page is a markdown file that sits next to it and
+  // shares its name (e.g. docs/guide.md is the landing page for docs/guide/),
+  // the same convention populateSiblingPages() uses in the other direction.
+  async function findCompanionMarkdownFile(folderPath) {
+    const parentDir = dirnameOf(folderPath);
+    const folderName = pathBasename(folderPath).toLowerCase();
+    const result = await window.mdviewer.listDir(parentDir);
+    if (!result.ok) return null;
+    const match = result.items.find(
+      (item) => !item.isDir && item.isMarkdown && basenameNoExt(item.name).toLowerCase() === folderName
+    );
+    return match ? match.path : null;
+  }
+
+  async function onBreadcrumbSegmentClick(folderPath) {
+    if (!state.rootPath) return;
+
+    if (normalizePath(folderPath) === normalizePath(state.rootPath)) {
+      el.tree.scrollTop = 0;
+      return;
+    }
+
+    const companion = await findCompanionMarkdownFile(folderPath);
+    if (companion && normalizePath(companion) !== normalizePath(state.currentFilePath || '')) {
+      if (!(await guardNavigation())) return;
+      if (state.editMode) forceExitEditMode();
+      await revealPathInTree(companion, { select: true });
+      loadAndRenderFile(companion);
+    } else {
+      await revealPathInTree(folderPath);
+    }
+  }
+
+  async function revealPathInTree(targetPath, { select = false } = {}) {
     if (!state.rootPath) return;
     const targetNorm = normalizePath(targetPath);
 
@@ -548,6 +581,7 @@
     if (matchedRow) {
       matchedRow.scrollIntoView({ block: 'center' });
       flashTreeRow(matchedRow);
+      if (select) selectTreeRow(matchedRow);
     }
   }
 
