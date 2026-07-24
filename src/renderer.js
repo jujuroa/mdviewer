@@ -9,7 +9,6 @@
     sourceDirty: false,
     sourceDebounceTimer: null,
     suppressNextWatch: false,
-    tocPosition: null,
     terminalOpen: false,
     terminalStarted: false,
   };
@@ -46,9 +45,8 @@
     editorResizer: document.getElementById('editor-resizer'),
     btnToggleEdit: document.getElementById('btn-toggle-edit'),
     btnSaveSource: document.getElementById('btn-save-source'),
-    tocFloating: document.getElementById('toc-floating'),
-    tocHeader: document.getElementById('toc-header'),
     tocPanel: document.getElementById('toc-panel'),
+    tocCollapseBtn: document.getElementById('toc-collapse-btn'),
     tocList: document.getElementById('toc-list'),
     tocSiblingsList: document.getElementById('toc-siblings-list'),
     editStatus: document.getElementById('edit-status'),
@@ -192,15 +190,13 @@
     el.welcomeScreen.classList.add('hidden');
     el.previewBody.classList.remove('hidden');
     el.frame.classList.remove('hidden');
-    el.tocFloating.classList.remove('hidden');
-    expandToc();
+    el.tocPanel.classList.remove('hidden');
   }
 
   function showWelcomeScreen() {
     el.previewBody.classList.add('hidden');
     el.welcomeScreen.classList.remove('hidden');
-    el.tocFloating.classList.add('hidden');
-    collapseToc();
+    el.tocPanel.classList.add('hidden');
     populateRecentList();
   }
 
@@ -256,14 +252,11 @@
     el.cssPane.classList.toggle('hidden', !cssEditorOpen);
     el.resizerRight.classList.toggle('hidden', !cssEditorOpen);
 
+    el.tocPanel.classList.toggle('collapsed', !!savedState.tocCollapsed);
+
     await window.mdviewer.addRecentProject(folderPath);
     showProjectView();
-    refreshFloatingToc();
-    state.tocPosition = null;
-    el.tocFloating.style.left = '';
-    el.tocFloating.style.top = '';
-    el.tocFloating.style.right = '';
-    if (savedState.tocPosition) applyTocPosition(savedState.tocPosition);
+    refreshToc();
 
     if (savedState.lastOpenFile) {
       await loadAndRenderFile(savedState.lastOpenFile);
@@ -405,7 +398,7 @@
       editModeOpen: state.editMode,
       cssEnabled: state.cssEnabled,
       cssEditorOpen: !el.cssPane.classList.contains('hidden'),
-      tocPosition: state.tocPosition || null,
+      tocCollapsed: el.tocPanel.classList.contains('collapsed'),
     };
   }
 
@@ -438,7 +431,7 @@
       el.editStatus.textContent = '';
     }
 
-    refreshFloatingToc();
+    refreshToc();
     persistProjectState();
   }
 
@@ -531,7 +524,7 @@
     const result = await window.mdviewer.renderMarkdownText(el.mdSourceEditor.value, baseDir);
     if (result.ok) {
       el.frame.contentDocument.body.innerHTML = result.html;
-      refreshFloatingToc();
+      refreshToc();
     }
   }
 
@@ -682,96 +675,17 @@
     await renderTreeLevel(el.tocSiblingsList, subFolder.path, 0, 10);
   }
 
-  function refreshFloatingToc() {
+  function refreshToc() {
     populateToc();
     populateSiblingPages();
   }
 
-  function expandToc() {
-    el.tocFloating.classList.remove('collapsed');
+  function toggleTocCollapse() {
+    el.tocPanel.classList.toggle('collapsed');
+    persistProjectState();
   }
 
-  function collapseToc() {
-    el.tocFloating.classList.add('collapsed');
-  }
-
-  function setupTocDrag() {
-    // Uses Pointer Events + setPointerCapture rather than mouse events on
-    // `window`: the floating panel sits above the preview <iframe>, and once
-    // the cursor crosses into the iframe (a separate document/browsing
-    // context) plain mouse events stop bubbling to the parent window,
-    // breaking the drag. Pointer capture redirects all events for this
-    // pointer to the header regardless of what's visually underneath it.
-    let dragging = false;
-    let moved = false;
-    let startX = 0;
-    let startY = 0;
-    let startLeft = 0;
-    let startTop = 0;
-
-    el.tocHeader.addEventListener('pointerdown', (e) => {
-      dragging = true;
-      moved = false;
-      const rect = el.tocFloating.getBoundingClientRect();
-      const parentRect = el.tocFloating.parentElement.getBoundingClientRect();
-      startX = e.clientX;
-      startY = e.clientY;
-      startLeft = rect.left - parentRect.left;
-      startTop = rect.top - parentRect.top;
-      el.tocHeader.setPointerCapture(e.pointerId);
-      e.preventDefault();
-    });
-
-    el.tocHeader.addEventListener('pointermove', (e) => {
-      if (!dragging) return;
-      const dx = e.clientX - startX;
-      const dy = e.clientY - startY;
-      if (Math.abs(dx) > 3 || Math.abs(dy) > 3) moved = true;
-      if (!moved) return;
-
-      const parentRect = el.tocFloating.parentElement.getBoundingClientRect();
-      const maxLeft = Math.max(0, parentRect.width - el.tocFloating.offsetWidth);
-      const maxTop = Math.max(0, parentRect.height - el.tocFloating.offsetHeight);
-      const newLeft = Math.min(Math.max(0, startLeft + dx), maxLeft);
-      const newTop = Math.min(Math.max(0, startTop + dy), maxTop);
-
-      el.tocFloating.style.right = 'auto';
-      el.tocFloating.style.left = newLeft + 'px';
-      el.tocFloating.style.top = newTop + 'px';
-      state.tocPosition = { left: newLeft, top: newTop };
-    });
-
-    function endDrag(e) {
-      if (!dragging) return;
-      if (!moved) {
-        el.tocFloating.classList.toggle('collapsed');
-      } else {
-        persistProjectState();
-      }
-      dragging = false;
-      if (el.tocHeader.hasPointerCapture(e.pointerId)) {
-        el.tocHeader.releasePointerCapture(e.pointerId);
-      }
-    }
-
-    el.tocHeader.addEventListener('pointerup', endDrag);
-    el.tocHeader.addEventListener('pointercancel', endDrag);
-  }
-
-  function applyTocPosition(pos) {
-    if (!pos) return;
-    const parentRect = el.tocFloating.parentElement.getBoundingClientRect();
-    const maxLeft = Math.max(0, parentRect.width - el.tocFloating.offsetWidth);
-    const maxTop = Math.max(0, parentRect.height - el.tocFloating.offsetHeight);
-    const left = Math.min(Math.max(0, pos.left), maxLeft);
-    const top = Math.min(Math.max(0, pos.top), maxTop);
-    el.tocFloating.style.right = 'auto';
-    el.tocFloating.style.left = left + 'px';
-    el.tocFloating.style.top = top + 'px';
-    state.tocPosition = { left, top };
-  }
-
-  setupTocDrag();
+  el.tocCollapseBtn.addEventListener('click', toggleTocCollapse);
 
   // ---------------------------------------------------------------------
   // CSS editor
@@ -1056,11 +970,11 @@
   // ---------------------------------------------------------------------
 
   function setupResizer(resizerEl, targetEl, mode, onResize) {
-    // Pointer Events + setPointerCapture, same as setupTocDrag: the preview
-    // pane is an <iframe> (a separate browsing context), so plain mouse
-    // events on `window` stop bubbling once the cursor crosses into it,
-    // breaking the drag. Pointer capture keeps events routed to the
-    // resizer regardless of what's underneath.
+    // Pointer Events + setPointerCapture: the preview pane is an <iframe>
+    // (a separate browsing context), so plain mouse events on `window` stop
+    // bubbling once the cursor crosses into it, breaking the drag. Pointer
+    // capture keeps events routed to the resizer regardless of what's
+    // underneath.
     let dragging = false;
     resizerEl.addEventListener('pointerdown', (e) => {
       dragging = true;

@@ -610,23 +610,32 @@ html, body {
   min-height: 18px;
 }
 
-/* ---- Floating table of contents / sub-pages ---- */
+/* ---- Table of contents / sub-pages panel ---- */
 
-.toc-floating {
-  position: absolute;
-  right: 20px;
-  top: 20px;
-  z-index: 15;
+.toc-panel {
+  flex: 0 0 240px;
   width: 240px;
-  background: var(--bg-app);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.35);
+  min-width: 240px;
+  display: flex;
+  flex-direction: column;
   overflow: hidden;
+  border-left: 1px solid var(--border);
+  background: var(--bg-app);
+  transition: flex-basis 0.15s ease, width 0.15s ease, min-width 0.15s ease;
 }
-.toc-floating.hidden { display: none; }
+.toc-panel.hidden { display: none; }
 
-.toc-header {
+.toc-panel.collapsed {
+  flex: 0 0 32px;
+  width: 32px;
+  min-width: 32px;
+}
+.toc-panel.collapsed .toc-panel-title { display: none; }
+.toc-panel.collapsed .toc-panel-body { display: none; }
+.toc-panel.collapsed .toc-chevron { transform: rotate(180deg); }
+
+.toc-panel-header {
+  flex: 0 0 auto;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -636,38 +645,43 @@ html, body {
   color: var(--text);
   background: var(--bg-sidebar);
   border-bottom: 1px solid var(--border);
-  cursor: grab;
-  user-select: none;
-  touch-action: none;
 }
-.toc-header:active { cursor: grabbing; }
-.toc-floating.collapsed .toc-header { border-bottom: none; }
+
+.toc-collapse-btn {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2px 4px;
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+.toc-collapse-btn:hover { color: var(--text); }
 
 .toc-chevron {
+  display: inline-block;
   font-size: 10px;
-  color: var(--text-dim);
   transition: transform 0.15s ease;
 }
-.toc-floating.collapsed .toc-chevron { transform: rotate(-90deg); }
 
-.toc-panel {
-  width: 100%;
-  max-height: min(60vh, 480px);
+.toc-panel-body {
+  flex: 1;
   overflow: auto;
   padding: 10px 12px;
   box-sizing: border-box;
 }
-.toc-floating.collapsed .toc-panel { display: none; }
 
-.toc-panel .tree-row {
+.toc-panel-body .tree-row {
   padding: 2px 4px;
   font-size: 12px;
 }
-.toc-panel .tree-icon {
+.toc-panel-body .tree-icon {
   width: 13px;
   font-size: 11px;
 }
-.toc-panel .tree-caret {
+.toc-panel-body .tree-caret {
   width: 9px;
   font-size: 9px;
 }

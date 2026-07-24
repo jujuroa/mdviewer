@@ -45,6 +45,24 @@
           data-i18n-placeholder="editor.placeholder" placeholder="마크다운 소스를 입력하세요"></textarea>
         <div id="editor-resizer" class="resizer hidden"></div>
         <iframe id="preview-frame" class="hidden" title="markdown preview" sandbox="allow-same-origin"></iframe>
+        <aside id="toc-panel" class="toc-panel hidden">
+          <div class="toc-panel-header">
+            <span class="toc-panel-title" data-i18n="toc.heading">목차</span>
+            <button id="toc-collapse-btn" class="toc-collapse-btn" data-i18n-title="toc.collapseTitle" title="목차 접기/펼치기">
+              <span id="toc-chevron" class="toc-chevron">▸</span>
+            </button>
+          </div>
+          <div class="toc-panel-body">
+            <div class="toc-section">
+              <h3 data-i18n="toc.heading">목차</h3>
+              <ul id="toc-list" class="toc-list"></ul>
+            </div>
+            <div class="toc-section">
+              <h3 data-i18n="toc.subpages">하위 페이지</h3>
+              <div id="toc-siblings-list" class="toc-list"></div>
+            </div>
+          </div>
+        </aside>
       </div>
 
       <div id="welcome-screen">
@@ -58,23 +76,6 @@
           <div class="recent-section">
             <h2 data-i18n="welcome.recentProjects">최근 프로젝트</h2>
             <ul id="recent-list" class="recent-list"></ul>
-          </div>
-        </div>
-      </div>
-
-      <div id="toc-floating" class="toc-floating hidden">
-        <div id="toc-header" class="toc-header" data-i18n-title="toc.dragTitle" title="드래그로 이동 / 클릭으로 접기·펼치기">
-          <span data-i18n="toc.heading">목차</span>
-          <span id="toc-chevron" class="toc-chevron">▾</span>
-        </div>
-        <div id="toc-panel" class="toc-panel">
-          <div class="toc-section">
-            <h3 data-i18n="toc.heading">목차</h3>
-            <ul id="toc-list" class="toc-list"></ul>
-          </div>
-          <div class="toc-section">
-            <h3 data-i18n="toc.subpages">하위 페이지</h3>
-            <div id="toc-siblings-list" class="toc-list"></div>
           </div>
         </div>
       </div>

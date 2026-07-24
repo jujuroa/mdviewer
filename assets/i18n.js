@@ -54,8 +54,8 @@ const STRINGS = {
     'welcome.openFileBtn': 'Open File',
     'welcome.recentProjects': 'Recent Projects',
 
-    'toc.dragTitle': 'Drag to move / click to collapse-expand',
     'toc.heading': 'Table of Contents',
+    'toc.collapseTitle': 'Collapse/expand table of contents',
     'toc.subpages': 'Sub-pages',
     'toc.noHeadings': 'This document has no headings',
     'toc.selectDocument': 'Select a document',
@@ -154,8 +154,8 @@ const STRINGS = {
     'welcome.openFileBtn': '파일 열기',
     'welcome.recentProjects': '최근 프로젝트',
 
-    'toc.dragTitle': '드래그로 이동 / 클릭으로 접기·펼치기',
     'toc.heading': '목차',
+    'toc.collapseTitle': '목차 접기/펼치기',
     'toc.subpages': '하위 페이지',
     'toc.noHeadings': '이 문서에는 제목이 없습니다',
     'toc.selectDocument': '문서를 선택하세요',
