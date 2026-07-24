@@ -160,6 +160,7 @@
 
   async function openFolder(folderPath) {
     if (!(await guardNavigation())) return false;
+    if (state.editMode) forceExitEditMode();
 
     const check = await window.mdviewer.listDir(folderPath);
     if (!check.ok) {
@@ -365,6 +366,18 @@
     el.fileName.title = filePath;
     state.currentFilePath = filePath;
     window.mdviewer.watchFile(filePath);
+
+    // Stay in edit mode across file switches: refresh the source editor with
+    // the newly selected file's content instead of closing the edit pane.
+    if (state.editMode) {
+      const readResult = await window.mdviewer.readFile(filePath);
+      if (readResult.ok) {
+        el.mdSourceEditor.value = readResult.content;
+      }
+      state.sourceDirty = false;
+      el.editStatus.textContent = '';
+    }
+
     refreshFloatingToc();
     persistProjectState();
   }
@@ -402,9 +415,7 @@
   }
 
   async function guardNavigation() {
-    if (!confirmDiscardIfDirty()) return false;
-    if (state.editMode) forceExitEditMode();
-    return true;
+    return confirmDiscardIfDirty();
   }
 
   function setEditModeUI(enabled) {

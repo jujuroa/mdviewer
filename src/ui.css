@@ -262,8 +262,10 @@ html, body {
 .preview-body.hidden { display: none; }
 
 #md-source-editor {
-  flex: 1;
+  flex: 0 0 auto;
+  width: 50%;
   min-width: 160px;
+  max-width: calc(100% - 160px);
   resize: none;
   border: none;
   outline: none;
@@ -284,6 +286,7 @@ html, body {
 
 #preview-frame {
   flex: 1;
+  min-width: 160px;
   border: none;
   width: 100%;
   background: var(--bg-app);
