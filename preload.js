@@ -32,6 +32,9 @@ contextBridge.exposeInMainWorld('mdviewer', {
   resizeTerminal: (cols, rows) => ipcRenderer.invoke('term:resize', cols, rows),
   stopTerminal: () => ipcRenderer.invoke('term:stop'),
 
+  clipboardWriteText: (text) => ipcRenderer.invoke('clipboard:write-text', text),
+  clipboardReadText: () => ipcRenderer.invoke('clipboard:read-text'),
+
   onFileChanged: (callback) => {
     const listener = (event, filePath) => callback(filePath);
     ipcRenderer.on('file-changed', listener);

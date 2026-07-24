@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, dialog, shell, Menu } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell, Menu, clipboard } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const pty = require('node-pty');
@@ -741,4 +741,12 @@ ipcMain.handle('term:resize', (event, cols, rows) => {
 ipcMain.handle('term:stop', (event) => {
   killTerminal(event.sender.id);
   return { ok: true };
+});
+
+ipcMain.handle('clipboard:write-text', (event, text) => {
+  clipboard.writeText(text || '');
+});
+
+ipcMain.handle('clipboard:read-text', () => {
+  return clipboard.readText();
 });

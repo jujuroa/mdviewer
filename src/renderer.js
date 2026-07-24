@@ -1070,6 +1070,17 @@
     term.onResize(({ cols, rows }) => {
       window.mdviewer.resizeTerminal(cols, rows);
     });
+    el.terminalXterm.addEventListener('contextmenu', async (e) => {
+      e.preventDefault();
+      if (term.hasSelection()) {
+        const selection = term.getSelection();
+        term.clearSelection();
+        await window.mdviewer.clipboardWriteText(selection);
+      } else {
+        const text = await window.mdviewer.clipboardReadText();
+        if (text) term.paste(text);
+      }
+    });
   }
 
   async function ensureTerminalStarted() {
