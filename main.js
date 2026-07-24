@@ -1,10 +1,12 @@
 const { app, BrowserWindow, ipcMain, dialog, shell, Menu } = require('electron');
 const path = require('path');
 const fs = require('fs');
+const pty = require('node-pty');
 const MarkdownIt = require('markdown-it');
 const taskLists = require('markdown-it-task-lists');
 const hljs = require('highlight.js');
 const sanitizeHtml = require('sanitize-html');
+const { DEFAULT_LANGUAGE, SUPPORTED_LANGUAGES, STRINGS, translate } = require('./assets/i18n.js');
 
 const CONFIG_DIR_NAME = '.mdviewer';
 const CSS_FILE_NAME = 'custom.css';
@@ -12,6 +14,41 @@ const MAX_RECENT_PROJECTS = 8;
 
 let mainWindow;
 const fileWatchers = new Map(); // webContents.id -> fs.FSWatcher
+const terminals = new Map(); // webContents.id -> { proc: ChildProcess }
+
+let currentLanguage = DEFAULT_LANGUAGE;
+
+function t(key, vars) {
+  return translate(currentLanguage, key, vars);
+}
+
+function settingsFilePath() {
+  return path.join(app.getPath('userData'), 'settings.json');
+}
+
+function loadSettings() {
+  try {
+    const raw = fs.readFileSync(settingsFilePath(), 'utf-8');
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch (err) {
+    return {};
+  }
+}
+
+function saveSettings(settings) {
+  const dir = path.dirname(settingsFilePath());
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(settingsFilePath(), JSON.stringify(settings, null, 2), 'utf-8');
+}
+
+function setLanguage(lang) {
+  if (!SUPPORTED_LANGUAGES.includes(lang) || lang === currentLanguage) return;
+  currentLanguage = lang;
+  saveSettings({ ...loadSettings(), language: lang });
+  buildAppMenu();
+  if (mainWindow) mainWindow.reload();
+}
 
 function recentProjectsFilePath() {
   return path.join(app.getPath('userData'), 'recent-projects.json');
@@ -222,31 +259,31 @@ function buildAppMenu() {
           label: p,
           click: () => mainWindow && mainWindow.webContents.send('menu:open-recent', p),
         }))
-      : [{ label: '최근 프로젝트 없음', enabled: false }];
+      : [{ label: t('menu.noRecentProjects'), enabled: false }];
 
   const menu = Menu.buildFromTemplate([
     {
-      label: 'File',
+      label: t('menu.file'),
       submenu: [
         {
-          label: 'Open Folder...',
+          label: t('menu.openFolder'),
           accelerator: 'CmdOrCtrl+O',
           click: () => mainWindow.webContents.send('menu:open-folder'),
         },
         {
-          label: 'Open File...',
+          label: t('menu.openFile'),
           accelerator: 'CmdOrCtrl+Shift+O',
           click: () => mainWindow.webContents.send('menu:open-file'),
         },
         { type: 'separator' },
         {
-          label: 'Save',
+          label: t('menu.save'),
           accelerator: 'CmdOrCtrl+S',
           click: () => mainWindow.webContents.send('menu:save-file'),
         },
         { type: 'separator' },
         {
-          label: '최근 프로젝트',
+          label: t('menu.recentProjects'),
           submenu: recentSubmenu,
         },
         { type: 'separator' },
@@ -254,21 +291,48 @@ function buildAppMenu() {
       ],
     },
     {
-      label: 'View',
+      label: t('menu.view'),
       submenu: [
         {
-          label: 'Toggle CSS Editor',
+          label: t('menu.toggleCssEditor'),
           accelerator: 'CmdOrCtrl+E',
           click: () => mainWindow.webContents.send('menu:toggle-css-editor'),
         },
         {
-          label: 'Toggle Edit Mode',
+          label: t('menu.toggleEditMode'),
           accelerator: 'CmdOrCtrl+Shift+E',
           click: () => mainWindow.webContents.send('menu:toggle-edit-mode'),
         },
+        {
+          label: t('menu.toggleTerminal'),
+          accelerator: 'CmdOrCtrl+`',
+          click: () => mainWindow.webContents.send('menu:toggle-terminal'),
+        },
         { type: 'separator' },
-        { role: 'reload' },
-        { role: 'toggledevtools' },
+        { label: t('menu.reload'), role: 'reload' },
+        { label: t('menu.toggleDevTools'), role: 'toggledevtools' },
+      ],
+    },
+    {
+      label: t('menu.settings'),
+      submenu: [
+        {
+          label: t('menu.language'),
+          submenu: [
+            {
+              label: t('menu.languageEnglish'),
+              type: 'radio',
+              checked: currentLanguage === 'en',
+              click: () => setLanguage('en'),
+            },
+            {
+              label: t('menu.languageKorean'),
+              type: 'radio',
+              checked: currentLanguage === 'ko',
+              click: () => setLanguage('ko'),
+            },
+          ],
+        },
       ],
     },
   ]);
@@ -276,6 +340,9 @@ function buildAppMenu() {
 }
 
 function createWindow() {
+  const savedLanguage = loadSettings().language;
+  if (SUPPORTED_LANGUAGES.includes(savedLanguage)) currentLanguage = savedLanguage;
+
   mainWindow = new BrowserWindow({
     width: 1280,
     height: 840,
@@ -296,6 +363,7 @@ function createWindow() {
   const webContentsId = mainWindow.webContents.id;
   mainWindow.on('closed', () => {
     stopWatching(webContentsId);
+    killTerminal(webContentsId);
     mainWindow = null;
   });
 }
@@ -306,6 +374,61 @@ function stopWatching(webContentsId) {
     watcher.close();
     fileWatchers.delete(webContentsId);
   }
+}
+
+// ---- Bottom terminal panel: real PTY-backed shell per window ----
+// Uses node-pty (ConPTY on Windows / a real pty on macOS/Linux) so the
+// embedded terminal behaves like a normal shell: colors, cursor movement,
+// Tab completion, Ctrl+C, and interactive/curses programs all work.
+
+function killTerminal(webContentsId) {
+  const t = terminals.get(webContentsId);
+  if (t) {
+    try {
+      t.kill();
+    } catch (err) {
+      /* already dead */
+    }
+    terminals.delete(webContentsId);
+  }
+}
+
+function spawnTerminalFor(event, cwd, cols, rows) {
+  const webContentsId = event.sender.id;
+  killTerminal(webContentsId);
+
+  const isWin = process.platform === 'win32';
+  const shellExe = isWin ? 'powershell.exe' : process.env.SHELL || '/bin/bash';
+  // Windows PowerShell's default console output encoding is the legacy
+  // OEM/ANSI codepage, not UTF-8, which garbles non-ASCII (e.g. Korean)
+  // output/filenames even under ConPTY. Force UTF-8 before dropping into
+  // the interactive session.
+  const shellArgs = isWin
+    ? [
+        '-NoLogo',
+        '-NoExit',
+        '-Command',
+        '[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; chcp 65001 | Out-Null',
+      ]
+    : [];
+
+  const ptyProcess = pty.spawn(shellExe, shellArgs, {
+    name: 'xterm-color',
+    cols: cols || 80,
+    rows: rows || 24,
+    cwd,
+    env: process.env,
+  });
+  terminals.set(webContentsId, ptyProcess);
+
+  const sender = event.sender;
+  ptyProcess.onData((data) => {
+    if (!sender.isDestroyed()) sender.send('term:data', data);
+  });
+  ptyProcess.onExit(({ exitCode }) => {
+    if (!sender.isDestroyed()) sender.send('term:exit', exitCode);
+    terminals.delete(webContentsId);
+  });
 }
 
 app.whenReady().then(() => {
@@ -459,11 +582,20 @@ ipcMain.handle('shell:show-in-folder', (event, itemPath) => {
 ipcMain.handle('tree:show-context-menu', (event, itemPath) => {
   const menu = Menu.buildFromTemplate([
     {
-      label: '탐색기에서 상위 폴더 열기',
+      label: t('context.openInExplorer'),
       click: () => shell.showItemInFolder(itemPath),
     },
   ]);
   menu.popup({ window: BrowserWindow.fromWebContents(event.sender) });
+});
+
+ipcMain.handle('i18n:get', () => {
+  return { language: currentLanguage, strings: STRINGS[currentLanguage] };
+});
+
+ipcMain.handle('settings:set-language', (event, lang) => {
+  setLanguage(lang);
+  return { ok: true, language: currentLanguage };
 });
 
 ipcMain.handle('recent:list', () => {
@@ -482,4 +614,41 @@ ipcMain.handle('recent:add', (event, rootPath) => {
 ipcMain.handle('recent:remove', (event, rootPath) => {
   removeRecentProject(rootPath);
   buildAppMenu();
+});
+
+ipcMain.handle('term:start', (event, cwd, cols, rows) => {
+  try {
+    spawnTerminalFor(event, cwd || app.getPath('home'), cols, rows);
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
+ipcMain.handle('term:input', (event, data) => {
+  const t = terminals.get(event.sender.id);
+  if (!t) return { ok: false, error: translate(currentLanguage, 'term.noRunningTerminal') };
+  try {
+    t.write(data);
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
+ipcMain.handle('term:resize', (event, cols, rows) => {
+  const t = terminals.get(event.sender.id);
+  if (t) {
+    try {
+      t.resize(cols, rows);
+    } catch (err) {
+      /* ignore resize races with process exit */
+    }
+  }
+  return { ok: true };
+});
+
+ipcMain.handle('term:stop', (event) => {
+  killTerminal(event.sender.id);
+  return { ok: true };
 });

@@ -24,6 +24,14 @@ contextBridge.exposeInMainWorld('mdviewer', {
   addRecentProject: (rootPath) => ipcRenderer.invoke('recent:add', rootPath),
   removeRecentProject: (rootPath) => ipcRenderer.invoke('recent:remove', rootPath),
 
+  getI18n: () => ipcRenderer.invoke('i18n:get'),
+  setLanguage: (lang) => ipcRenderer.invoke('settings:set-language', lang),
+
+  startTerminal: (cwd, cols, rows) => ipcRenderer.invoke('term:start', cwd, cols, rows),
+  sendTerminalInput: (data) => ipcRenderer.invoke('term:input', data),
+  resizeTerminal: (cols, rows) => ipcRenderer.invoke('term:resize', cols, rows),
+  stopTerminal: () => ipcRenderer.invoke('term:stop'),
+
   onFileChanged: (callback) => {
     const listener = (event, filePath) => callback(filePath);
     ipcRenderer.on('file-changed', listener);
@@ -39,4 +47,16 @@ contextBridge.exposeInMainWorld('mdviewer', {
   onMenuToggleCssEditor: (callback) => ipcRenderer.on('menu:toggle-css-editor', callback),
   onMenuToggleEditMode: (callback) => ipcRenderer.on('menu:toggle-edit-mode', callback),
   onMenuSaveFile: (callback) => ipcRenderer.on('menu:save-file', callback),
+  onMenuToggleTerminal: (callback) => ipcRenderer.on('menu:toggle-terminal', callback),
+
+  onTerminalData: (callback) => {
+    const listener = (event, data) => callback(data);
+    ipcRenderer.on('term:data', listener);
+    return () => ipcRenderer.removeListener('term:data', listener);
+  },
+  onTerminalExit: (callback) => {
+    const listener = (event, code) => callback(code);
+    ipcRenderer.on('term:exit', listener);
+    return () => ipcRenderer.removeListener('term:exit', listener);
+  },
 });

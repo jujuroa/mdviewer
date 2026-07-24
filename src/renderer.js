@@ -10,6 +10,8 @@
     sourceDebounceTimer: null,
     suppressNextWatch: false,
     tocPosition: null,
+    terminalOpen: false,
+    terminalStarted: false,
   };
 
   const el = {
@@ -50,7 +52,51 @@
     tocList: document.getElementById('toc-list'),
     tocSiblingsList: document.getElementById('toc-siblings-list'),
     editStatus: document.getElementById('edit-status'),
+    btnToggleTerminal: document.getElementById('btn-toggle-terminal'),
+    terminalPanel: document.getElementById('terminal-panel'),
+    resizerTerminal: document.getElementById('resizer-terminal'),
+    terminalCwd: document.getElementById('terminal-cwd'),
+    terminalXterm: document.getElementById('terminal-xterm'),
+    btnTerminalClear: document.getElementById('btn-terminal-clear'),
+    btnTerminalRestart: document.getElementById('btn-terminal-restart'),
+    btnTerminalClose: document.getElementById('btn-terminal-close'),
   };
+
+  // ---------------------------------------------------------------------
+  // i18n
+  // ---------------------------------------------------------------------
+
+  const i18n = { language: 'ko', strings: {} };
+
+  function t(key, vars) {
+    let str = i18n.strings[key] || key;
+    if (vars) {
+      for (const name of Object.keys(vars)) {
+        str = str.split('{' + name + '}').join(vars[name]);
+      }
+    }
+    return str;
+  }
+
+  function applyStaticTranslations() {
+    document.querySelectorAll('[data-i18n]').forEach((node) => {
+      node.textContent = t(node.getAttribute('data-i18n'));
+    });
+    document.querySelectorAll('[data-i18n-title]').forEach((node) => {
+      node.title = t(node.getAttribute('data-i18n-title'));
+    });
+    document.querySelectorAll('[data-i18n-placeholder]').forEach((node) => {
+      node.placeholder = t(node.getAttribute('data-i18n-placeholder'));
+    });
+  }
+
+  async function initI18n() {
+    const result = await window.mdviewer.getI18n();
+    i18n.language = result.language;
+    i18n.strings = result.strings;
+    document.documentElement.lang = result.language;
+    applyStaticTranslations();
+  }
 
   // ---------------------------------------------------------------------
   // Preview iframe setup
@@ -65,7 +111,7 @@
       `<style id="base-css">${defaultCss}</style>` +
       `<style id="hljs-css">${hljsCss}</style>` +
       `<style id="user-css"></style>` +
-      `</head><body class="markdown-body"><div class="mdviewer-empty-state">폴더를 열고 마크다운 파일을 선택하세요</div></body></html>`
+      `</head><body class="markdown-body"><div class="mdviewer-empty-state">${escapeHtml(t('preview.emptyState'))}</div></body></html>`
     );
     doc.close();
 
@@ -130,7 +176,7 @@
   function updateCssAppliedBadge() {
     el.cssAppliedBadge.classList.toggle('active', state.cssEnabled);
     el.cssAppliedBadge.classList.toggle('disabled', !state.cssEnabled);
-    el.cssAppliedBadge.title = state.cssEnabled ? '커스텀 CSS 적용됨' : '커스텀 CSS 적용 안 함 (기본 스타일)';
+    el.cssAppliedBadge.title = state.cssEnabled ? t('toolbar.cssAppliedTitle') : t('toolbar.cssDisabledTitle');
   }
 
   function applyLiveCss() {
@@ -168,20 +214,34 @@
       showWelcomeScreen();
       const errRow = document.createElement('li');
       errRow.className = 'recent-empty';
-      errRow.textContent = '폴더를 열 수 없습니다: ' + check.error;
+      errRow.textContent = t('folder.openFailed', { error: check.error });
       el.recentList.prepend(errRow);
       return false;
     }
 
     state.rootPath = folderPath;
     state.currentFilePath = null;
+
+    // Restart the shell in the newly opened project's folder so its cwd
+    // stays in sync with what's shown in the tree/preview.
+    if (state.terminalOpen) {
+      ensureXterm();
+      term.reset();
+      await window.mdviewer.startTerminal(folderPath, term.cols, term.rows);
+      state.terminalStarted = true;
+      el.terminalCwd.textContent = folderPath;
+      el.terminalCwd.title = folderPath;
+    } else {
+      state.terminalStarted = false;
+    }
+
     el.projectPath.textContent = folderPath;
     el.projectPath.title = folderPath;
     el.btnOpenProjectFolder.disabled = false;
-    el.fileName.textContent = '문서를 선택하세요';
+    el.fileName.textContent = t('toolbar.selectDocument');
     el.fileName.title = '';
     el.frame.contentDocument.body.innerHTML =
-      '<div class="mdviewer-empty-state">문서를 선택하세요</div>';
+      `<div class="mdviewer-empty-state">${escapeHtml(t('toolbar.selectDocument'))}</div>`;
     el.tree.innerHTML = '';
     buildTreeNodes(el.tree, check.items, 0);
 
@@ -227,14 +287,14 @@
     if (items.length === 0) {
       const empty = document.createElement('li');
       empty.className = 'recent-empty';
-      empty.textContent = '최근에 연 프로젝트가 없습니다';
+      empty.textContent = t('recent.none');
       el.recentList.appendChild(empty);
       return;
     }
     for (const item of items) {
       const li = document.createElement('li');
       li.className = 'recent-item' + (item.exists ? '' : ' missing');
-      li.title = item.exists ? item.path : item.path + ' (찾을 수 없음)';
+      li.title = item.exists ? item.path : item.path + t('recent.notFoundSuffix');
 
       const info = document.createElement('div');
       info.className = 'recent-item-info';
@@ -243,7 +303,7 @@
       name.textContent = item.name;
       const pathEl = document.createElement('div');
       pathEl.className = 'recent-item-path';
-      pathEl.textContent = item.exists ? item.path : item.path + ' — 찾을 수 없음';
+      pathEl.textContent = item.exists ? item.path : item.path + t('recent.notFoundPathSuffix');
       info.appendChild(name);
       info.appendChild(pathEl);
       li.appendChild(info);
@@ -251,7 +311,7 @@
       const removeBtn = document.createElement('button');
       removeBtn.className = 'recent-item-remove';
       removeBtn.textContent = '✕';
-      removeBtn.title = '목록에서 제거';
+      removeBtn.title = t('recent.removeTitle');
       removeBtn.addEventListener('click', async (e) => {
         e.stopPropagation();
         await window.mdviewer.removeRecentProject(item.path);
@@ -269,7 +329,7 @@
     if (!result.ok) {
       const errRow = document.createElement('div');
       errRow.className = 'tree-row non-md';
-      errRow.textContent = '(읽을 수 없음: ' + result.error + ')';
+      errRow.textContent = t('tree.readError', { error: result.error });
       container.appendChild(errRow);
       return;
     }
@@ -358,7 +418,7 @@
     const result = await window.mdviewer.renderMarkdown(filePath);
     if (!result.ok) {
       el.frame.contentDocument.body.innerHTML =
-        `<div class="mdviewer-empty-state">파일을 열 수 없습니다: ${escapeHtml(result.error)}</div>`;
+        `<div class="mdviewer-empty-state">${escapeHtml(t('file.openFailed', { error: result.error }))}</div>`;
       return;
     }
     el.frame.contentDocument.body.innerHTML = result.html;
@@ -404,7 +464,7 @@
 
   function confirmDiscardIfDirty() {
     if (!state.editMode || !state.sourceDirty) return true;
-    return window.confirm('저장하지 않은 변경 사항이 있습니다. 저장하지 않고 이동하시겠습니까?');
+    return window.confirm(t('confirm.discardChanges'));
   }
 
   function forceExitEditMode() {
@@ -427,12 +487,12 @@
 
   async function enterEditMode() {
     if (!state.currentFilePath) {
-      el.editStatus.textContent = '먼저 문서를 선택하세요';
+      el.editStatus.textContent = t('edit.selectFirst');
       return;
     }
     const result = await window.mdviewer.readFile(state.currentFilePath);
     if (!result.ok) {
-      el.editStatus.textContent = '읽기 실패: ' + result.error;
+      el.editStatus.textContent = t('edit.readFailed', { error: result.error });
       return;
     }
     el.mdSourceEditor.value = result.content;
@@ -481,10 +541,10 @@
     const result = await window.mdviewer.writeFile(state.currentFilePath, el.mdSourceEditor.value);
     if (result.ok) {
       state.sourceDirty = false;
-      el.editStatus.textContent = '저장됨';
+      el.editStatus.textContent = t('edit.saved');
     } else {
       state.suppressNextWatch = false;
-      el.editStatus.textContent = '저장 실패: ' + result.error;
+      el.editStatus.textContent = t('edit.saveFailed', { error: result.error });
     }
   }
 
@@ -492,7 +552,7 @@
     clearTimeout(state.sourceDebounceTimer);
     state.sourceDebounceTimer = setTimeout(renderSourcePreview, 200);
     state.sourceDirty = true;
-    el.editStatus.textContent = '저장되지 않은 변경 사항이 있습니다';
+    el.editStatus.textContent = t('edit.unsavedChanges');
   });
 
   el.mdSourceEditor.addEventListener('keydown', (e) => {
@@ -562,7 +622,7 @@
     if (headings.length === 0) {
       const empty = document.createElement('li');
       empty.className = 'toc-empty';
-      empty.textContent = '이 문서에는 제목이 없습니다';
+      empty.textContent = t('toc.noHeadings');
       el.tocList.appendChild(empty);
       return;
     }
@@ -605,7 +665,7 @@
   async function populateSiblingPages() {
     el.tocSiblingsList.innerHTML = '';
     if (!state.currentFilePath) {
-      tocEmpty(el.tocSiblingsList, '문서를 선택하세요');
+      tocEmpty(el.tocSiblingsList, t('toc.selectDocument'));
       return;
     }
     const dir = dirnameOf(state.currentFilePath);
@@ -616,7 +676,7 @@
       (item) => item.isDir && item.name.toLowerCase() === baseName
     );
     if (!subFolder) {
-      tocEmpty(el.tocSiblingsList, `"${basenameNoExt(state.currentFilePath)}" 폴더가 없습니다`);
+      tocEmpty(el.tocSiblingsList, t('toc.noSubfolder', { name: basenameNoExt(state.currentFilePath) }));
       return;
     }
     await renderTreeLevel(el.tocSiblingsList, subFolder.path, 0, 10);
@@ -723,7 +783,7 @@
     el.cssEditor.value = css;
     applyLiveCss();
     state.cssDirty = false;
-    el.cssStatus.textContent = silent ? '' : '마지막 저장 상태로 되돌렸습니다';
+    el.cssStatus.textContent = silent ? '' : t('css.restoredLastSaved');
   }
 
   el.cssEditor.addEventListener('input', () => {
@@ -732,29 +792,29 @@
       applyLiveCss();
     }, 120);
     state.cssDirty = true;
-    el.cssStatus.textContent = '저장되지 않은 변경 사항이 있습니다';
+    el.cssStatus.textContent = t('css.unsavedChanges');
   });
 
   el.cssEnabledToggle.addEventListener('change', () => {
     state.cssEnabled = el.cssEnabledToggle.checked;
     applyLiveCss();
     el.cssStatus.textContent = state.cssEnabled
-      ? '커스텀 CSS를 적용했습니다'
-      : '커스텀 CSS를 껐습니다 (기본 스타일 표시 중)';
+      ? t('css.appliedOn')
+      : t('css.appliedOff');
     persistProjectState();
   });
 
   el.btnSaveCss.addEventListener('click', async () => {
     if (!state.rootPath) {
-      el.cssStatus.textContent = '먼저 폴더를 열어야 저장할 수 있습니다';
+      el.cssStatus.textContent = t('css.openFolderFirst');
       return;
     }
     const result = await window.mdviewer.saveProjectCss(state.rootPath, el.cssEditor.value);
     if (result.ok) {
       state.cssDirty = false;
-      el.cssStatus.textContent = '저장됨 (.mdviewer/custom.css)';
+      el.cssStatus.textContent = t('css.savedTo');
     } else {
-      el.cssStatus.textContent = '저장 실패: ' + result.error;
+      el.cssStatus.textContent = t('css.saveFailed', { error: result.error });
     }
   });
 
@@ -767,13 +827,13 @@
   async function importCssFrom(sourcePath) {
     const result = await window.mdviewer.loadProjectCss(sourcePath);
     if (!result.ok) {
-      el.cssStatus.textContent = '가져오기 실패: ' + result.error;
+      el.cssStatus.textContent = t('css.importFailed', { error: result.error });
       return;
     }
     el.cssEditor.value = result.css;
     applyLiveCss();
     state.cssDirty = true;
-    el.cssStatus.textContent = `가져옴 (저장 전): ${sourcePath}`;
+    el.cssStatus.textContent = t('css.importedPending', { path: sourcePath });
     closeImportDropdown();
   }
 
@@ -794,7 +854,7 @@
     if (items.length === 0) {
       const empty = document.createElement('li');
       empty.className = 'import-recent-empty';
-      empty.textContent = '가져올 다른 프로젝트가 없습니다';
+      empty.textContent = t('css.noOtherProjects');
       el.importRecentList.appendChild(empty);
       return;
     }
@@ -805,7 +865,7 @@
 
       const name = document.createElement('div');
       name.className = 'import-recent-item-name';
-      name.textContent = item.name + (item.exists ? '' : ' (찾을 수 없음)');
+      name.textContent = item.name + (item.exists ? '' : t('recent.notFoundSuffix'));
       const pathEl = document.createElement('div');
       pathEl.className = 'import-recent-item-path';
       pathEl.textContent = item.path;
@@ -897,10 +957,105 @@
   });
 
   // ---------------------------------------------------------------------
+  // Bottom terminal panel
+  // ---------------------------------------------------------------------
+
+  let term = null;
+  let fitAddon = null;
+
+  function ensureXterm() {
+    if (term) return;
+    term = new window.Terminal({
+      fontFamily:
+        '"D2Coding", "D2Coding ligature", Consolas, "Cascadia Mono", "Cascadia Code", "SFMono-Regular", Menlo, monospace',
+      fontSize: 13,
+      lineHeight: 1.3,
+      cursorBlink: true,
+      scrollback: 5000,
+      theme: { background: '#1e1e1e', foreground: '#d4d4d4' },
+    });
+    fitAddon = new window.FitAddon.FitAddon();
+    term.loadAddon(fitAddon);
+    term.open(el.terminalXterm);
+    term.onData((data) => {
+      window.mdviewer.sendTerminalInput(data);
+    });
+    term.onResize(({ cols, rows }) => {
+      window.mdviewer.resizeTerminal(cols, rows);
+    });
+  }
+
+  async function ensureTerminalStarted() {
+    ensureXterm();
+    if (state.terminalStarted) return;
+    const cwd = state.rootPath || undefined;
+    fitAddon.fit();
+    await window.mdviewer.startTerminal(cwd, term.cols, term.rows);
+    state.terminalStarted = true;
+    el.terminalCwd.textContent = cwd || '';
+    el.terminalCwd.title = cwd || '';
+  }
+
+  async function openTerminalPanel() {
+    el.terminalPanel.classList.remove('hidden');
+    el.resizerTerminal.classList.remove('hidden');
+    el.btnToggleTerminal.classList.add('active');
+    state.terminalOpen = true;
+    await ensureTerminalStarted();
+    fitAddon.fit();
+    term.focus();
+  }
+
+  function closeTerminalPanel() {
+    el.terminalPanel.classList.add('hidden');
+    el.resizerTerminal.classList.add('hidden');
+    el.btnToggleTerminal.classList.remove('active');
+    state.terminalOpen = false;
+  }
+
+  async function toggleTerminalPanel() {
+    if (state.terminalOpen) {
+      closeTerminalPanel();
+    } else {
+      await openTerminalPanel();
+    }
+  }
+
+  async function restartTerminal() {
+    await window.mdviewer.stopTerminal();
+    state.terminalStarted = false;
+    ensureXterm();
+    term.reset();
+    await ensureTerminalStarted();
+    term.focus();
+  }
+
+  el.btnToggleTerminal.addEventListener('click', toggleTerminalPanel);
+  window.mdviewer.onMenuToggleTerminal(toggleTerminalPanel);
+  el.btnTerminalClose.addEventListener('click', closeTerminalPanel);
+  el.btnTerminalClear.addEventListener('click', () => {
+    if (term) term.clear();
+  });
+  el.btnTerminalRestart.addEventListener('click', restartTerminal);
+
+  window.mdviewer.onTerminalData((data) => {
+    if (term) term.write(data);
+  });
+
+  window.mdviewer.onTerminalExit((code) => {
+    if (term) term.write(`\r\n\x1b[31m[${t('terminal.shellExited', { code })}]\x1b[0m\r\n`);
+    state.terminalStarted = false;
+  });
+
+  window.addEventListener('resize', () => {
+    if (state.terminalOpen && fitAddon) fitAddon.fit();
+  });
+
+  // ---------------------------------------------------------------------
   // Pane resizers
   // ---------------------------------------------------------------------
 
-  function setupResizer(resizerEl, targetEl, mode) {
+  function setupResizer(resizerEl, targetEl, mode, onResize) {
     // Pointer Events + setPointerCapture, same as setupTocDrag: the preview
     // pane is an <iframe> (a separate browsing context), so plain mouse
     // events on `window` stop bubbling once the cursor crosses into it,
@@ -918,9 +1073,12 @@
       const rect = targetEl.parentElement.getBoundingClientRect();
       if (mode === 'left') {
         targetEl.style.width = Math.max(160, e.clientX - rect.left) + 'px';
+      } else if (mode === 'bottom') {
+        targetEl.style.height = Math.max(80, rect.bottom - e.clientY) + 'px';
       } else {
         targetEl.style.width = Math.max(220, rect.right - e.clientX) + 'px';
       }
+      if (onResize) onResize();
     });
     function endDrag(e) {
       if (!dragging) return;
@@ -937,12 +1095,18 @@
   setupResizer(el.resizerLeft, el.sidebar, 'left');
   setupResizer(el.resizerRight, el.cssPane, 'right');
   setupResizer(el.editorResizer, el.mdSourceEditor, 'left');
+  setupResizer(el.resizerTerminal, el.terminalPanel, 'bottom', () => {
+    if (fitAddon) fitAddon.fit();
+  });
 
   // ---------------------------------------------------------------------
   // Init
   // ---------------------------------------------------------------------
 
-  initPreviewFrame();
-  showWelcomeScreen();
-  updateCssAppliedBadge();
+  (async () => {
+    await initI18n();
+    initPreviewFrame();
+    showWelcomeScreen();
+    updateCssAppliedBadge();
+  })();
 })();

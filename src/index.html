@@ -6,18 +6,20 @@
         content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' file: data:; frame-src 'self';" />
   <title>MD Viewer</title>
   <link rel="stylesheet" href="ui.css" />
+  <link rel="stylesheet" href="vendor/xterm/xterm.css" />
 </head>
 <body>
+  <div id="app-shell">
   <div id="app">
     <aside id="sidebar">
       <div class="sidebar-header">
-        <button id="btn-open-folder" class="btn-primary" title="프로젝트 폴더 열기 (Ctrl+O)">폴더 열기</button>
-        <button id="btn-open-file" title="단일 파일 열기 (Ctrl+Shift+O)">파일 열기</button>
+        <button id="btn-open-folder" class="btn-primary" data-i18n="sidebar.openFolderBtn" data-i18n-title="sidebar.openFolderTitle" title="프로젝트 폴더 열기 (Ctrl+O)">폴더 열기</button>
+        <button id="btn-open-file" data-i18n="sidebar.openFileBtn" data-i18n-title="sidebar.openFileTitle" title="단일 파일 열기 (Ctrl+Shift+O)">파일 열기</button>
       </div>
-      <div id="project-path" class="project-path" title="">폴더가 열려 있지 않습니다</div>
+      <div id="project-path" class="project-path" data-i18n="sidebar.noFolderOpen" title="">폴더가 열려 있지 않습니다</div>
       <div id="tree" class="tree"></div>
       <div class="sidebar-footer">
-        <button id="btn-open-project-folder" disabled title="탐색기에서 프로젝트 폴더 열기">프로젝트 폴더 열기</button>
+        <button id="btn-open-project-folder" disabled data-i18n="sidebar.openProjectFolderBtn" data-i18n-title="sidebar.openProjectFolderTitle" title="탐색기에서 프로젝트 폴더 열기">프로젝트 폴더 열기</button>
       </div>
     </aside>
 
@@ -25,21 +27,22 @@
 
     <main id="preview-pane">
       <div class="preview-toolbar">
-        <span id="current-file-name">문서를 선택하세요</span>
+        <span id="current-file-name" data-i18n="toolbar.selectDocument">문서를 선택하세요</span>
         <div class="toolbar-right">
           <span id="edit-status" class="edit-status"></span>
-          <button id="btn-save-source" class="btn-primary hidden" title="저장 (Ctrl+S)">저장</button>
-          <button id="btn-toggle-edit" title="본문 편집 모드 전환 (Ctrl+Shift+E)">편집</button>
-          <span id="css-applied-badge" class="css-applied-badge" title="커스텀 CSS 적용됨">
-            <span class="css-applied-dot"></span>커스텀 CSS
+          <button id="btn-save-source" class="btn-primary hidden" data-i18n="toolbar.saveBtn" data-i18n-title="toolbar.saveTitle" title="저장 (Ctrl+S)">저장</button>
+          <button id="btn-toggle-edit" data-i18n="toolbar.editBtn" data-i18n-title="toolbar.editTitle" title="본문 편집 모드 전환 (Ctrl+Shift+E)">편집</button>
+          <span id="css-applied-badge" class="css-applied-badge" data-i18n-title="toolbar.cssAppliedTitle" title="커스텀 CSS 적용됨">
+            <span class="css-applied-dot"></span><span data-i18n="toolbar.cssAppliedBadge">커스텀 CSS</span>
           </span>
-          <button id="btn-toggle-css" title="CSS 편집기 열기/닫기 (Ctrl+E)">CSS 편집</button>
+          <button id="btn-toggle-css" data-i18n="toolbar.cssEditBtn" data-i18n-title="toolbar.cssEditTitle" title="CSS 편집기 열기/닫기 (Ctrl+E)">CSS 편집</button>
+          <button id="btn-toggle-terminal" data-i18n="toolbar.terminalBtn" data-i18n-title="toolbar.terminalTitle" title="터미널 열기/닫기 (Ctrl+`)">터미널</button>
         </div>
       </div>
 
       <div id="preview-body" class="preview-body">
         <textarea id="md-source-editor" class="hidden" spellcheck="false"
-          placeholder="마크다운 소스를 입력하세요"></textarea>
+          data-i18n-placeholder="editor.placeholder" placeholder="마크다운 소스를 입력하세요"></textarea>
         <div id="editor-resizer" class="resizer hidden"></div>
         <iframe id="preview-frame" class="hidden" title="markdown preview" sandbox="allow-same-origin"></iframe>
       </div>
@@ -47,30 +50,30 @@
       <div id="welcome-screen">
         <div class="welcome-inner">
           <h1>MD Viewer</h1>
-          <p class="welcome-hint">열려 있는 프로젝트가 없습니다. 폴더를 열거나 최근 프로젝트를 선택하세요.</p>
+          <p class="welcome-hint" data-i18n="welcome.hint">열려 있는 프로젝트가 없습니다. 폴더를 열거나 최근 프로젝트를 선택하세요.</p>
           <div class="welcome-actions">
-            <button id="welcome-open-folder" class="btn-primary">폴더 열기</button>
-            <button id="welcome-open-file">파일 열기</button>
+            <button id="welcome-open-folder" class="btn-primary" data-i18n="welcome.openFolderBtn">폴더 열기</button>
+            <button id="welcome-open-file" data-i18n="welcome.openFileBtn">파일 열기</button>
           </div>
           <div class="recent-section">
-            <h2>최근 프로젝트</h2>
+            <h2 data-i18n="welcome.recentProjects">최근 프로젝트</h2>
             <ul id="recent-list" class="recent-list"></ul>
           </div>
         </div>
       </div>
 
       <div id="toc-floating" class="toc-floating hidden">
-        <div id="toc-header" class="toc-header" title="드래그로 이동 / 클릭으로 접기·펼치기">
-          <span>목차</span>
+        <div id="toc-header" class="toc-header" data-i18n-title="toc.dragTitle" title="드래그로 이동 / 클릭으로 접기·펼치기">
+          <span data-i18n="toc.heading">목차</span>
           <span id="toc-chevron" class="toc-chevron">▾</span>
         </div>
         <div id="toc-panel" class="toc-panel">
           <div class="toc-section">
-            <h3>목차</h3>
+            <h3 data-i18n="toc.heading">목차</h3>
             <ul id="toc-list" class="toc-list"></ul>
           </div>
           <div class="toc-section">
-            <h3>하위 페이지</h3>
+            <h3 data-i18n="toc.subpages">하위 페이지</h3>
             <div id="toc-siblings-list" class="toc-list"></div>
           </div>
         </div>
@@ -82,30 +85,48 @@
     <aside id="css-editor-pane" class="hidden">
       <div class="css-editor-header">
         <div class="css-editor-title-group">
-          <span>커스텀 CSS</span>
-          <label class="css-toggle" title="미리보기에 커스텀 CSS 적용/해제">
+          <span data-i18n="css.title">커스텀 CSS</span>
+          <label class="css-toggle" data-i18n-title="css.toggleTitle" title="미리보기에 커스텀 CSS 적용/해제">
             <input type="checkbox" id="css-enabled-toggle" checked />
             <span class="css-toggle-slider"></span>
           </label>
         </div>
         <div class="css-editor-actions">
           <div class="import-css-wrapper">
-            <button id="btn-import-css" title="다른 프로젝트의 스타일을 기본값으로 가져오기">가져오기</button>
+            <button id="btn-import-css" data-i18n="css.importBtn" data-i18n-title="css.importTitle" title="다른 프로젝트의 스타일을 기본값으로 가져오기">가져오기</button>
             <div id="import-css-dropdown" class="import-dropdown hidden">
-              <div class="import-dropdown-label">최근 프로젝트에서 가져오기</div>
+              <div class="import-dropdown-label" data-i18n="css.importFromRecent">최근 프로젝트에서 가져오기</div>
               <ul id="import-recent-list" class="import-recent-list"></ul>
-              <button id="btn-import-browse" class="import-browse-btn">폴더 선택...</button>
+              <button id="btn-import-browse" class="import-browse-btn" data-i18n="css.browseFolder">폴더 선택...</button>
             </div>
           </div>
-          <button id="btn-save-css" class="btn-primary">저장</button>
-          <button id="btn-reset-css">되돌리기</button>
+          <button id="btn-save-css" class="btn-primary" data-i18n="css.saveBtn">저장</button>
+          <button id="btn-reset-css" data-i18n="css.resetBtn">되돌리기</button>
         </div>
       </div>
-      <textarea id="css-editor" spellcheck="false" placeholder="/* CSS를 입력하면 미리보기에 바로 반영됩니다 */"></textarea>
+      <textarea id="css-editor" spellcheck="false" data-i18n-placeholder="css.placeholder" placeholder="/* CSS를 입력하면 미리보기에 바로 반영됩니다 */"></textarea>
       <div id="css-status" class="css-status"></div>
     </aside>
   </div>
 
+  <div id="resizer-terminal" class="resizer horizontal hidden"></div>
+
+  <section id="terminal-panel" class="hidden">
+    <div class="terminal-header">
+      <span class="terminal-title" data-i18n="terminal.title">터미널</span>
+      <span id="terminal-cwd" class="terminal-cwd"></span>
+      <div class="terminal-header-actions">
+        <button id="btn-terminal-clear" data-i18n="terminal.clearBtn" data-i18n-title="terminal.clearTitle" title="출력 지우기">지우기</button>
+        <button id="btn-terminal-restart" data-i18n="terminal.restartBtn" data-i18n-title="terminal.restartTitle" title="셸 다시 시작">재시작</button>
+        <button id="btn-terminal-close" data-i18n-title="terminal.closeTitle" title="터미널 닫기">✕</button>
+      </div>
+    </div>
+    <div id="terminal-xterm" class="terminal-xterm"></div>
+  </section>
+  </div>
+
+  <script src="vendor/xterm/xterm.js"></script>
+  <script src="vendor/xterm/addon-fit.js"></script>
   <script src="renderer.js"></script>
 </body>
 </html>
