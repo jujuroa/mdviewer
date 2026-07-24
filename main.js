@@ -6,11 +6,20 @@ const MarkdownIt = require('markdown-it');
 const taskLists = require('markdown-it-task-lists');
 const hljs = require('highlight.js');
 const sanitizeHtml = require('sanitize-html');
+const plantumlEncoder = require('plantuml-encoder');
 const { DEFAULT_LANGUAGE, SUPPORTED_LANGUAGES, STRINGS, translate } = require('./assets/i18n.js');
 
 const CONFIG_DIR_NAME = '.mdviewer';
 const CSS_FILE_NAME = 'custom.css';
 const MAX_RECENT_PROJECTS = 8;
+const PLANTUML_FENCE_LANGS = new Set(['plantuml', 'puml']);
+const PLANTUML_SERVER = 'https://www.plantuml.com/plantuml';
+
+function plantumlImageSrc(source) {
+  const trimmed = source.trim();
+  const body = /@start\w+/i.test(trimmed) ? trimmed : `@startuml\n${trimmed}\n@enduml`;
+  return `${PLANTUML_SERVER}/svg/${plantumlEncoder.encode(body)}`;
+}
 
 let mainWindow;
 const fileWatchers = new Map(); // webContents.id -> fs.FSWatcher
@@ -130,6 +139,21 @@ function createMarkdownRenderer(baseDir) {
       return md.utils.escapeHtml(str);
     },
   }).use(taskLists, { enabled: true, label: true });
+
+  const defaultFenceRule =
+    md.renderer.rules.fence ||
+    function (tokens, idx, options, env, self) {
+      return self.renderToken(tokens, idx, options);
+    };
+  md.renderer.rules.fence = (tokens, idx, options, env, self) => {
+    const token = tokens[idx];
+    const lang = token.info.trim().split(/\s+/)[0].toLowerCase();
+    if (PLANTUML_FENCE_LANGS.has(lang)) {
+      const src = plantumlImageSrc(token.content);
+      return `<div class="plantuml-diagram"><img src="${src}" alt="PlantUML diagram"></div>\n`;
+    }
+    return defaultFenceRule(tokens, idx, options, env, self);
+  };
 
   const defaultImageRule =
     md.renderer.rules.image ||

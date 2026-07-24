@@ -126,6 +126,24 @@ body.markdown-body {
 
 .markdown-body img { max-width: 100%; }
 
+.markdown-body .plantuml-diagram {
+  margin-bottom: 16px;
+  padding: 16px;
+  overflow: auto;
+  text-align: center;
+  background: #ffffff;
+  border: 1px solid #3c3c3c;
+  border-radius: 4px;
+}
+
+.markdown-body .plantuml-diagram img {
+  max-width: none;
+}
+
+@media (prefers-color-scheme: light) {
+  .markdown-body .plantuml-diagram { border-color: #e5e5e5; }
+}
+
 .markdown-body code {
   font-family: "D2Coding", "D2Coding ligature", Consolas, "Cascadia Mono", "Cascadia Code",
     "SFMono-Regular", "Liberation Mono", Menlo, monospace;
@@ -163,6 +181,28 @@ body.markdown-body {
   background: transparent;
   color: inherit;
   font-size: 85%;
+}
+
+.markdown-body pre .hljs-addition {
+  color: #6bcb77;
+  background-color: rgba(46, 160, 67, 0.2);
+}
+
+.markdown-body pre .hljs-deletion {
+  color: #ff7b72;
+  background-color: rgba(248, 81, 73, 0.2);
+}
+
+@media (prefers-color-scheme: light) {
+  .markdown-body pre .hljs-addition {
+    color: #116329;
+    background-color: rgba(46, 160, 67, 0.15);
+  }
+
+  .markdown-body pre .hljs-deletion {
+    color: #a4030f;
+    background-color: rgba(248, 81, 73, 0.15);
+  }
 }
 
 .markdown-body table {
