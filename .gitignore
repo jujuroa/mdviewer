@@ -144,3 +144,6 @@ vite.config.ts.timestamp-*
 
 # IDE
 .claude/
+
+# Per-project runtime state written by MD Viewer itself
+.mdviewer/

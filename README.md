@@ -32,6 +32,20 @@ npm start
 
 > `npm start`는 `scripts/start.js`를 통해 실행됩니다. VS Code 통합 터미널 등 일부 환경에서 `ELECTRON_RUN_AS_NODE` 환경 변수가 남아있어 Electron이 일반 Node 프로세스로 실행되는 문제가 있어, 이를 자동으로 제거한 뒤 앱을 띄우도록 처리되어 있습니다.
 
+## 설치 파일(Windows 인스톨러) 만들기
+
+[electron-builder](https://www.electron.build/)로 NSIS 설치 파일을 생성합니다. 설치하면 데스크톱/시작메뉴 바로가기가 만들어지고, `.md`/`.markdown` 파일이 MD Viewer로 열 수 있는 프로그램 목록에 등록됩니다(기본 프로그램으로 지정하려면 설치 후 Windows 설정 → 앱 → 기본 앱에서 사용자가 직접 선택해야 합니다).
+
+```bash
+npm install        # 최초 1회
+npm run dist        # dist/MD Viewer Setup <version>.exe 생성
+```
+
+- 압축 해제된 실행 폴더만 빠르게 확인하려면: `npm run pack` → `dist/win-unpacked/MD Viewer.exe`
+- 버전을 올리려면 `package.json`의 `"version"` 값을 수정합니다. 앱 내 **Help(도움말) → About MD Viewer(MD Viewer 정보)** 메뉴와 설치된 exe의 속성(우클릭 → 속성 → 자세히)에 이 값이 그대로 반영됩니다.
+- 빌드 관련 설정은 `package.json`의 `"build"` 필드(아이콘, 파일 연결, NSIS 옵션)와 `build/icon.ico`에 있습니다.
+- 빌드 중 `EPERM ... rename win-unpacked.tmp` 오류가 뜨면, 방금 압축 해제된 `electron.exe`를 백신(Windows Defender 등)이 스캔하며 잠깐 잠그기 때문인 경우가 많습니다. `dist/win-unpacked`(및 `.tmp`) 폴더를 지우고 `npm run dist`를 다시 실행하면 보통 해결됩니다.
+
 ## 프로젝트 구조
 
 ```text
@@ -40,7 +54,9 @@ mdviewer/
 ├─ preload.js           # 렌더러에 안전한 IPC API 노출 (contextBridge)
 ├─ assets/
 │  ├─ preview-base.css      # 미리보기 기본 스타일 (VS Code 톤)
-│  └─ default-user-css.css  # 새 프로젝트의 커스텀 CSS 시작 템플릿
+│  ├─ default-user-css.css  # 새 프로젝트의 커스텀 CSS 시작 템플릿
+│  └─ icon.png / icon.ico   # 앱/창 아이콘
+├─ build/icon.ico       # 설치 파일(exe) 아이콘 (electron-builder buildResources)
 ├─ src/
 │  ├─ index.html        # 앱 레이아웃 (트리뷰 / 미리보기 / CSS 편집기)
 │  ├─ renderer.js       # 렌더러 로직 (트리, 미리보기, CSS/본문 편집, 최근 프로젝트 등)

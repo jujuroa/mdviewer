@@ -4,13 +4,16 @@
   "description": "웹 엔진 기반 마크다운 뷰어 (CSS 커스터마이징 + 프로젝트 트리뷰)",
   "main": "main.js",
   "scripts": {
-    "start": "node scripts/start.js"
+    "start": "node scripts/start.js",
+    "pack": "electron-builder --dir",
+    "dist": "electron-builder --win nsis"
   },
   "author": "",
   "license": "MIT",
   "devDependencies": {
     "@electron/rebuild": "^4.2.0",
-    "electron": "^43.2.0"
+    "electron": "^43.2.0",
+    "electron-builder": "^26.15.3"
   },
   "dependencies": {
     "@xterm/addon-fit": "^0.11.0",
@@ -20,5 +23,57 @@
     "markdown-it-task-lists": "^2.1.1",
     "node-pty": "^1.1.0",
     "sanitize-html": "^2.13.0"
+  },
+  "build": {
+    "appId": "com.mdviewer.desktop",
+    "productName": "MD Viewer",
+    "copyright": "Copyright © 2026 MD Viewer",
+    "npmRebuild": false,
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "assets/**/*",
+      "src/**/*"
+    ],
+    "asarUnpack": [
+      "node_modules/node-pty/**/*"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": ["x64"]
+        }
+      ],
+      "icon": "build/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "MD Viewer"
+    },
+    "fileAssociations": [
+      {
+        "ext": "md",
+        "name": "Markdown",
+        "description": "Markdown Document",
+        "icon": "build/icon.ico",
+        "role": "Editor"
+      },
+      {
+        "ext": "markdown",
+        "name": "Markdown",
+        "description": "Markdown Document",
+        "icon": "build/icon.ico",
+        "role": "Editor"
+      }
+    ]
   }
 }

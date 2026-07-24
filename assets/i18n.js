@@ -21,6 +21,11 @@ const STRINGS = {
     'menu.language': 'Language',
     'menu.languageEnglish': 'English',
     'menu.languageKorean': '한국어',
+    'menu.help': 'Help',
+    'menu.about': 'About MD Viewer',
+
+    'about.title': 'About MD Viewer',
+    'about.detail': 'Version {version}\n\nElectron {electron}\nChromium {chrome}\nNode.js {node}\n\nCopyright © {year} MD Viewer',
 
     'context.openInExplorer': 'Show in Explorer',
 
@@ -121,6 +126,11 @@ const STRINGS = {
     'menu.language': '언어',
     'menu.languageEnglish': 'English',
     'menu.languageKorean': '한국어',
+    'menu.help': '도움말',
+    'menu.about': 'MD Viewer 정보',
+
+    'about.title': 'MD Viewer 정보',
+    'about.detail': '버전 {version}\n\nElectron {electron}\nChromium {chrome}\nNode.js {node}\n\nCopyright © {year} MD Viewer',
 
     'context.openInExplorer': '탐색기에서 상위 폴더 열기',
 

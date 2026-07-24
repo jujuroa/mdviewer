@@ -39,6 +39,11 @@ contextBridge.exposeInMainWorld('mdviewer', {
   },
   onMenuOpenFolder: (callback) => ipcRenderer.on('menu:open-folder', callback),
   onMenuOpenFile: (callback) => ipcRenderer.on('menu:open-file', callback),
+  onOpenPathFromOS: (callback) => {
+    const listener = (event, filePath) => callback(filePath);
+    ipcRenderer.on('file:open-path', listener);
+    return () => ipcRenderer.removeListener('file:open-path', listener);
+  },
   onMenuOpenRecent: (callback) => {
     const listener = (event, folderPath) => callback(folderPath);
     ipcRenderer.on('menu:open-recent', listener);

@@ -16,6 +16,26 @@ let mainWindow;
 const fileWatchers = new Map(); // webContents.id -> fs.FSWatcher
 const terminals = new Map(); // webContents.id -> { proc: ChildProcess }
 
+// When launched by double-clicking a .md file (file association) or via
+// `mdviewer.exe file.md`, Windows/argv passes the file path as a plain
+// argument. Packaged apps also get electron's own args prepended, so only
+// argv beyond index 1 (dev) / index 0 (packaged) are candidates.
+function extractFilePathFromArgv(argv) {
+  const args = app.isPackaged ? argv.slice(1) : argv.slice(2);
+  const candidate = args.find((a) => !a.startsWith('-') && /\.(md|markdown)$/i.test(a));
+  return candidate ? path.resolve(candidate) : null;
+}
+
+function openFileInWindow(filePath) {
+  if (!mainWindow) return;
+  const send = () => mainWindow.webContents.send('file:open-path', filePath);
+  if (mainWindow.webContents.isLoadingMainFrame()) {
+    mainWindow.webContents.once('did-finish-load', send);
+  } else {
+    send();
+  }
+}
+
 let currentLanguage = DEFAULT_LANGUAGE;
 
 function t(key, vars) {
@@ -335,8 +355,34 @@ function buildAppMenu() {
         },
       ],
     },
+    {
+      label: t('menu.help'),
+      submenu: [
+        {
+          label: t('menu.about'),
+          click: () => showAboutDialog(),
+        },
+      ],
+    },
   ]);
   Menu.setApplicationMenu(menu);
+}
+
+function showAboutDialog() {
+  dialog.showMessageBox(mainWindow, {
+    type: 'info',
+    icon: path.join(__dirname, 'assets', 'icon.png'),
+    title: t('about.title'),
+    message: 'MD Viewer',
+    detail: t('about.detail', {
+      version: app.getVersion(),
+      electron: process.versions.electron,
+      chrome: process.versions.chrome,
+      node: process.versions.node,
+      year: String(new Date().getFullYear()),
+    }),
+    buttons: ['OK'],
+  });
 }
 
 function createWindow() {
@@ -349,6 +395,7 @@ function createWindow() {
     minWidth: 800,
     minHeight: 500,
     backgroundColor: '#1e1e1e',
+    icon: path.join(__dirname, 'assets', 'icon.png'),
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
@@ -431,17 +478,36 @@ function spawnTerminalFor(event, cwd, cols, rows) {
   });
 }
 
-app.whenReady().then(() => {
-  createWindow();
-
-  app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow();
+// Only one instance may hold the file association: a second double-click
+// on a .md file should hand its path to the already-running window instead
+// of spawning a competing process.
+const gotSingleInstanceLock = app.requestSingleInstanceLock();
+if (!gotSingleInstanceLock) {
+  app.quit();
+} else {
+  app.on('second-instance', (event, argv) => {
+    const filePath = extractFilePathFromArgv(argv);
+    if (mainWindow) {
+      if (mainWindow.isMinimized()) mainWindow.restore();
+      mainWindow.focus();
+    }
+    if (filePath) openFileInWindow(filePath);
   });
-});
 
-app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') app.quit();
-});
+  app.whenReady().then(() => {
+    createWindow();
+    const filePath = extractFilePathFromArgv(process.argv);
+    if (filePath) openFileInWindow(filePath);
+
+    app.on('activate', () => {
+      if (BrowserWindow.getAllWindows().length === 0) createWindow();
+    });
+  });
+
+  app.on('window-all-closed', () => {
+    if (process.platform !== 'darwin') app.quit();
+  });
+}
 
 // ---- IPC handlers ----
 
