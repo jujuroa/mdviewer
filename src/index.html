@@ -46,9 +46,9 @@
         <div id="editor-resizer" class="resizer hidden"></div>
         <iframe id="preview-frame" class="hidden" title="markdown preview" sandbox="allow-same-origin"></iframe>
         <aside id="toc-panel" class="toc-panel hidden">
-          <div class="toc-panel-header">
+          <div id="toc-panel-header" class="toc-panel-header" role="button" tabindex="0" data-i18n-title="toc.collapseTitle" title="목차 접기/펼치기">
             <span class="toc-panel-title" data-i18n="toc.heading">목차</span>
-            <button id="toc-collapse-btn" class="toc-collapse-btn" data-i18n-title="toc.collapseTitle" title="목차 접기/펼치기">
+            <button id="toc-collapse-btn" class="toc-collapse-btn" tabindex="-1" aria-hidden="true">
               <span id="toc-chevron" class="toc-chevron">▸</span>
             </button>
           </div>

@@ -147,6 +147,16 @@ html, body {
 .tree-row.dir .tree-label { font-weight: 500; }
 .tree-row.non-md .tree-label { color: var(--text-dim); cursor: default; }
 
+.tree-row.tree-row-flash {
+  background: var(--accent);
+  transition: background 0.15s ease;
+}
+.tree-row.tree-row-flash .tree-label,
+.tree-row.tree-row-flash .tree-caret,
+.tree-row.tree-row-flash .tree-icon {
+  color: #ffffff;
+}
+
 .tree-caret {
   width: 12px;
   flex-shrink: 0;
@@ -209,6 +219,42 @@ html, body {
   border-bottom: 1px solid var(--border);
   font-size: 12px;
   color: var(--text-dim);
+}
+
+#current-file-name {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow-x: auto;
+  white-space: nowrap;
+  margin-right: 12px;
+  scrollbar-width: none;
+}
+#current-file-name::-webkit-scrollbar { display: none; }
+
+.breadcrumb-sep {
+  margin: 0 4px;
+  color: var(--text-dim);
+  flex-shrink: 0;
+}
+
+.breadcrumb-segment {
+  flex-shrink: 0;
+}
+.breadcrumb-segment-dir {
+  cursor: pointer;
+  border-radius: 3px;
+  padding: 1px 3px;
+  margin: -1px -3px;
+}
+.breadcrumb-segment-dir:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+.breadcrumb-segment-file {
+  color: var(--text);
+  font-weight: 500;
 }
 
 .preview-toolbar button {
@@ -630,7 +676,18 @@ html, body {
   width: 32px;
   min-width: 32px;
 }
-.toc-panel.collapsed .toc-panel-title { display: none; }
+.toc-panel.collapsed .toc-panel-header {
+  flex-direction: column;
+  padding: 10px 4px;
+  gap: 10px;
+}
+.toc-panel.collapsed .toc-collapse-btn { order: -1; }
+.toc-panel.collapsed .toc-panel-title {
+  display: block;
+  writing-mode: vertical-rl;
+  text-orientation: mixed;
+  letter-spacing: 1px;
+}
 .toc-panel.collapsed .toc-panel-body { display: none; }
 .toc-panel.collapsed .toc-chevron { transform: rotate(180deg); }
 
@@ -645,7 +702,11 @@ html, body {
   color: var(--text);
   background: var(--bg-sidebar);
   border-bottom: 1px solid var(--border);
+  cursor: pointer;
 }
+.toc-panel-header:hover { background: var(--bg-hover, var(--bg-sidebar)); }
+.toc-panel-header:hover .toc-panel-title,
+.toc-panel-header:hover .toc-chevron { color: var(--text); }
 
 .toc-collapse-btn {
   flex: 0 0 auto;
@@ -657,8 +718,8 @@ html, body {
   border: none;
   color: var(--text-dim);
   cursor: pointer;
+  pointer-events: none;
 }
-.toc-collapse-btn:hover { color: var(--text); }
 
 .toc-chevron {
   display: inline-block;

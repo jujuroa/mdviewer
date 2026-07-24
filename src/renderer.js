@@ -46,6 +46,7 @@
     btnToggleEdit: document.getElementById('btn-toggle-edit'),
     btnSaveSource: document.getElementById('btn-save-source'),
     tocPanel: document.getElementById('toc-panel'),
+    tocPanelHeader: document.getElementById('toc-panel-header'),
     tocCollapseBtn: document.getElementById('toc-collapse-btn'),
     tocList: document.getElementById('toc-list'),
     tocSiblingsList: document.getElementById('toc-siblings-list'),
@@ -337,6 +338,7 @@
       const row = document.createElement('div');
       row.className = 'tree-row' + (item.isDir ? ' dir' : item.isMarkdown ? ' md' : ' non-md');
       row.style.paddingLeft = 6 + depth * indentUnit + 'px';
+      row.dataset.path = item.path;
 
       const caret = document.createElement('span');
       caret.className = 'tree-caret';
@@ -415,8 +417,7 @@
       return;
     }
     el.frame.contentDocument.body.innerHTML = result.html;
-    el.fileName.textContent = result.name;
-    el.fileName.title = filePath;
+    renderBreadcrumb(filePath);
     state.currentFilePath = filePath;
     window.mdviewer.watchFile(filePath);
 
@@ -439,6 +440,120 @@
     const div = document.createElement('div');
     div.textContent = str;
     return div.innerHTML;
+  }
+
+  function pathBasename(p) {
+    const trimmed = p.replace(/[\\/]+$/, '');
+    const idx = Math.max(trimmed.lastIndexOf('/'), trimmed.lastIndexOf('\\'));
+    return idx >= 0 ? trimmed.slice(idx + 1) : trimmed;
+  }
+
+  // ---------------------------------------------------------------------
+  // Breadcrumb (project-root-relative path in the toolbar)
+  // ---------------------------------------------------------------------
+
+  function renderBreadcrumb(filePath) {
+    el.fileName.innerHTML = '';
+    el.fileName.title = filePath;
+
+    if (!state.rootPath) {
+      el.fileName.textContent = pathBasename(filePath);
+      return;
+    }
+
+    const sep = state.rootPath.includes('\\') && !state.rootPath.includes('/') ? '\\' : '/';
+    const rootNorm = normalizePath(state.rootPath);
+    const fileNorm = normalizePath(filePath);
+    let rel = '';
+    if (fileNorm === rootNorm) {
+      rel = '';
+    } else if (fileNorm.startsWith(rootNorm + '/')) {
+      rel = filePath.slice(state.rootPath.replace(/[\\/]+$/, '').length);
+    } else {
+      rel = filePath;
+    }
+    const segments = rel.split(/[\\/]+/).filter(Boolean);
+
+    const addSeparator = () => {
+      const sepEl = document.createElement('span');
+      sepEl.className = 'breadcrumb-sep';
+      sepEl.textContent = '/';
+      el.fileName.appendChild(sepEl);
+    };
+
+    const addSegment = (text, targetPath, clickable) => {
+      const seg = document.createElement('span');
+      seg.className = 'breadcrumb-segment' + (clickable ? ' breadcrumb-segment-dir' : ' breadcrumb-segment-file');
+      seg.textContent = text;
+      seg.title = targetPath;
+      if (clickable) {
+        seg.addEventListener('click', () => revealPathInTree(targetPath));
+      }
+      el.fileName.appendChild(seg);
+    };
+
+    addSegment(pathBasename(state.rootPath) || state.rootPath, state.rootPath, true);
+
+    let acc = state.rootPath.replace(/[\\/]+$/, '');
+    for (let i = 0; i < segments.length; i++) {
+      acc = acc + sep + segments[i];
+      const isLast = i === segments.length - 1;
+      addSeparator();
+      addSegment(segments[i], acc, !isLast);
+    }
+  }
+
+  async function revealPathInTree(targetPath) {
+    if (!state.rootPath) return;
+    const targetNorm = normalizePath(targetPath);
+
+    if (targetNorm === normalizePath(state.rootPath)) {
+      el.tree.scrollTop = 0;
+      return;
+    }
+
+    let container = el.tree;
+    let depth = 0;
+    let matchedRow = null;
+
+    while (container) {
+      const rows = Array.from(container.querySelectorAll(':scope > .tree-node > .tree-row'));
+      const ancestorRow = rows.find((r) => {
+        const rPath = normalizePath(r.dataset.path);
+        return rPath === targetNorm || targetNorm.startsWith(rPath + '/');
+      });
+      if (!ancestorRow) break;
+
+      if (normalizePath(ancestorRow.dataset.path) === targetNorm) {
+        matchedRow = ancestorRow;
+        break;
+      }
+
+      const node = ancestorRow.parentElement;
+      const childrenContainer = node.querySelector(':scope > .tree-children');
+      if (!childrenContainer) break;
+      const caret = ancestorRow.querySelector('.tree-caret');
+      if (!childrenContainer.classList.contains('expanded')) {
+        childrenContainer.classList.add('expanded');
+        if (caret) caret.classList.add('expanded');
+      }
+      if (childrenContainer.dataset.loaded !== '1') {
+        childrenContainer.dataset.loaded = '1';
+        await renderTreeLevel(childrenContainer, ancestorRow.dataset.path, depth + 1, 16);
+      }
+      container = childrenContainer;
+      depth += 1;
+    }
+
+    if (matchedRow) {
+      matchedRow.scrollIntoView({ block: 'center' });
+      flashTreeRow(matchedRow);
+    }
+  }
+
+  function flashTreeRow(row) {
+    row.classList.add('tree-row-flash');
+    setTimeout(() => row.classList.remove('tree-row-flash'), 1200);
   }
 
   window.mdviewer.onFileChanged((changedPath) => {
@@ -680,12 +795,32 @@
     populateSiblingPages();
   }
 
+  // Keep in sync with the collapsed/expanded widths in ui.css (.toc-panel / .toc-panel.collapsed).
+  const TOC_WIDTH_DELTA = 240 - 32;
+  const EDITOR_MIN_WIDTH = 160;
+
   function toggleTocCollapse() {
+    const expanding = el.tocPanel.classList.contains('collapsed');
     el.tocPanel.classList.toggle('collapsed');
+    // Widening/narrowing the TOC panel would otherwise resize the preview
+    // frame (flex:1). Steal the width from the editor pane instead, so the
+    // preview stays visually fixed as long as the editor has room to give.
+    if (state.editMode && !el.mdSourceEditor.classList.contains('hidden')) {
+      const currentWidth = el.mdSourceEditor.getBoundingClientRect().width;
+      const delta = expanding ? TOC_WIDTH_DELTA : -TOC_WIDTH_DELTA;
+      const newWidth = Math.max(EDITOR_MIN_WIDTH, currentWidth - delta);
+      el.mdSourceEditor.style.width = newWidth + 'px';
+    }
     persistProjectState();
   }
 
-  el.tocCollapseBtn.addEventListener('click', toggleTocCollapse);
+  el.tocPanelHeader.addEventListener('click', toggleTocCollapse);
+  el.tocPanelHeader.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault();
+      toggleTocCollapse();
+    }
+  });
 
   // ---------------------------------------------------------------------
   // CSS editor
