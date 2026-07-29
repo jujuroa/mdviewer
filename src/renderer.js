@@ -133,6 +133,16 @@
     });
   }
 
+  // shell.openExternal can fail (missing file, no associated app, etc.);
+  // log that instead of failing silently, so it's diagnosable in DevTools.
+  function openExternalSafe(url) {
+    window.mdviewer.openExternal(url).then((result) => {
+      if (!result || !result.ok) {
+        console.error('[mdviewer] Failed to open externally:', url, result && result.error);
+      }
+    });
+  }
+
   function onPreviewClick(e) {
     const anchor = e.target.closest('a');
     if (!anchor) return;
@@ -148,10 +158,10 @@
     const href = anchor.getAttribute('href') || '';
     if (/^https?:\/\//i.test(href)) {
       e.preventDefault();
-      window.mdviewer.openExternal(href);
+      openExternalSafe(href);
     } else if (href.startsWith('mailto:')) {
       e.preventDefault();
-      window.mdviewer.openExternal(href);
+      openExternalSafe(href);
     }
     // '#fragment' links fall through to default same-doc scrolling behavior.
   }
@@ -170,7 +180,7 @@
         if (target) target.scrollIntoView();
       }
     } else if (absPath) {
-      window.mdviewer.openExternal(pathToFileUrl(absPath));
+      openExternalSafe(pathToFileUrl(absPath));
     } else if (hash) {
       const target = el.frame.contentDocument.getElementById(hash);
       if (target) target.scrollIntoView();
@@ -915,7 +925,7 @@
           : info.absPath + (info.hash ? '#' + info.hash : '');
       li.addEventListener('click', () => {
         if (info.type === 'external') {
-          window.mdviewer.openExternal(info.href);
+          openExternalSafe(info.href);
         } else if (info.type === 'anchor') {
           const target = el.frame.contentDocument.getElementById(info.hash);
           if (target) target.scrollIntoView({ behavior: 'smooth', block: 'start' });
