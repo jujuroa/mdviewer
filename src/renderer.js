@@ -180,7 +180,7 @@
   function pathToFileUrl(p) {
     let resolved = p.replace(/\\/g, '/');
     if (!resolved.startsWith('/')) resolved = '/' + resolved;
-    return 'file://' + resolved;
+    return 'file://' + encodeURI(resolved).replace(/#/g, '%23');
   }
 
   function dirnameOf(p) {

@@ -671,8 +671,13 @@ ipcMain.handle('fs:watch-file', (event, filePath) => {
   }
 });
 
-ipcMain.handle('shell:open-external', (event, url) => {
-  shell.openExternal(url);
+ipcMain.handle('shell:open-external', async (event, url) => {
+  try {
+    await shell.openExternal(url);
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
 });
 
 ipcMain.handle('shell:open-path', async (event, folderPath) => {
