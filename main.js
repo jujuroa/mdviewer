@@ -14,11 +14,22 @@ const CSS_FILE_NAME = 'custom.css';
 const MAX_RECENT_PROJECTS = 8;
 const PLANTUML_FENCE_LANGS = new Set(['plantuml', 'puml']);
 const PLANTUML_SERVER = 'https://www.plantuml.com/plantuml';
+const MERMAID_FENCE_LANGS = new Set(['mermaid']);
+const MERMAID_SERVER = 'https://mermaid.ink';
 
 function plantumlImageSrc(source) {
   const trimmed = source.trim();
   const body = /@start\w+/i.test(trimmed) ? trimmed : `@startuml\n${trimmed}\n@enduml`;
   return `${PLANTUML_SERVER}/svg/${plantumlEncoder.encode(body)}`;
+}
+
+function mermaidImageSrc(source) {
+  const encoded = Buffer.from(source.trim(), 'utf-8')
+    .toString('base64')
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/, '');
+  return `${MERMAID_SERVER}/svg/${encoded}`;
 }
 
 let mainWindow;
@@ -151,6 +162,10 @@ function createMarkdownRenderer(baseDir) {
     if (PLANTUML_FENCE_LANGS.has(lang)) {
       const src = plantumlImageSrc(token.content);
       return `<div class="plantuml-diagram"><img src="${src}" alt="PlantUML diagram"></div>\n`;
+    }
+    if (MERMAID_FENCE_LANGS.has(lang)) {
+      const src = mermaidImageSrc(token.content);
+      return `<div class="mermaid-diagram"><img src="${src}" alt="Mermaid diagram"></div>\n`;
     }
     return defaultFenceRule(tokens, idx, options, env, self);
   };

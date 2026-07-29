@@ -126,7 +126,8 @@ body.markdown-body {
 
 .markdown-body img { max-width: 100%; }
 
-.markdown-body .plantuml-diagram {
+.markdown-body .plantuml-diagram,
+.markdown-body .mermaid-diagram {
   margin-bottom: 16px;
   padding: 16px;
   overflow: auto;
@@ -136,12 +137,14 @@ body.markdown-body {
   border-radius: 4px;
 }
 
-.markdown-body .plantuml-diagram img {
+.markdown-body .plantuml-diagram img,
+.markdown-body .mermaid-diagram img {
   max-width: none;
 }
 
 @media (prefers-color-scheme: light) {
-  .markdown-body .plantuml-diagram { border-color: #e5e5e5; }
+  .markdown-body .plantuml-diagram,
+  .markdown-body .mermaid-diagram { border-color: #e5e5e5; }
 }
 
 .markdown-body code {
