@@ -133,6 +133,17 @@ function toFileUrl(p) {
   return 'file://' + encodeURI(resolved).replace(/#/g, '%23');
 }
 
+// Wiki-style links omit the extension (e.g. `[Setup](guide/setup)`). When a
+// link has no extension and isn't a directory reference, resolve it as a
+// ".md" page if that file actually exists; otherwise leave it as-is so
+// links to real extension-less files (Makefile, LICENSE, ...) still work.
+function resolveInternalLinkPath(baseDir, relPath) {
+  const absPath = path.resolve(baseDir, relPath);
+  if (relPath.endsWith('/') || path.extname(relPath)) return absPath;
+  const withMdExt = absPath + '.md';
+  return fs.existsSync(withMdExt) ? withMdExt : absPath;
+}
+
 function createMarkdownRenderer(baseDir) {
   const md = new MarkdownIt({
     html: true,
@@ -201,7 +212,7 @@ function createMarkdownRenderer(baseDir) {
         // relative link: resolve to an absolute path (+ optional #hash) so the
         // renderer can intercept the click and either open it in-app or via the OS
         const [relPath, hash] = href.split('#');
-        const absPath = relPath ? path.resolve(baseDir, relPath) : '';
+        const absPath = relPath ? resolveInternalLinkPath(baseDir, relPath) : '';
         token.attrSet('data-internal-href', absPath + (hash ? '#' + hash : ''));
       }
     }
