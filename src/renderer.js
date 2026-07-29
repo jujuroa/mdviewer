@@ -11,7 +11,11 @@
     suppressNextWatch: false,
     terminalOpen: false,
     terminalStarted: false,
+    scrollPositions: {},
+    scrollDebounceTimer: null,
   };
+
+  const SCROLL_POSITION_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
   const el = {
     btnOpenFolder: document.getElementById('btn-open-folder'),
@@ -49,6 +53,7 @@
     tocPanelHeader: document.getElementById('toc-panel-header'),
     tocCollapseBtn: document.getElementById('toc-collapse-btn'),
     tocList: document.getElementById('toc-list'),
+    tocLinksList: document.getElementById('toc-links-list'),
     tocSiblingsList: document.getElementById('toc-siblings-list'),
     editStatus: document.getElementById('edit-status'),
     btnToggleTerminal: document.getElementById('btn-toggle-terminal'),
@@ -116,6 +121,16 @@
 
     // Event delegation for link clicks inside the rendered document.
     doc.addEventListener('click', onPreviewClick, true);
+
+    // Debounced scroll-position tracking, so re-opening a file later can
+    // restore where the reader left off (see loadAndRenderFile).
+    el.frame.contentWindow.addEventListener('scroll', () => {
+      clearTimeout(state.scrollDebounceTimer);
+      state.scrollDebounceTimer = setTimeout(() => {
+        captureScrollPosition();
+        persistProjectState();
+      }, 400);
+    });
   }
 
   function onPreviewClick(e) {
@@ -126,16 +141,7 @@
     if (internal) {
       e.preventDefault();
       const [absPath, hash] = internal.split('#');
-      if (/\.(md|markdown)$/i.test(absPath)) {
-        guardNavigation().then((ok) => {
-          if (ok) loadAndRenderFile(absPath);
-        });
-      } else if (absPath) {
-        window.mdviewer.openExternal(pathToFileUrl(absPath));
-      } else if (hash) {
-        const target = el.frame.contentDocument.getElementById(hash);
-        if (target) target.scrollIntoView();
-      }
+      openInternalLink(absPath, hash);
       return;
     }
 
@@ -148,6 +154,27 @@
       window.mdviewer.openExternal(href);
     }
     // '#fragment' links fall through to default same-doc scrolling behavior.
+  }
+
+  // Shared handler for "internal" links (resolved by the main process to an
+  // absolute path): navigates in-app for markdown targets, hands off to the
+  // OS for anything else, and jumps to same-page anchors. Used both by
+  // clicks inside the rendered document and by the TOC links list.
+  async function openInternalLink(absPath, hash) {
+    if (/\.(md|markdown)$/i.test(absPath)) {
+      if (!(await guardNavigation())) return;
+      await loadAndRenderFile(absPath);
+      await revealPathInTree(absPath, { select: true });
+      if (hash) {
+        const target = el.frame.contentDocument.getElementById(hash);
+        if (target) target.scrollIntoView();
+      }
+    } else if (absPath) {
+      window.mdviewer.openExternal(pathToFileUrl(absPath));
+    } else if (hash) {
+      const target = el.frame.contentDocument.getElementById(hash);
+      if (target) target.scrollIntoView();
+    }
   }
 
   function pathToFileUrl(p) {
@@ -247,6 +274,7 @@
 
     state.cssEnabled = savedState.cssEnabled !== undefined ? savedState.cssEnabled : true;
     el.cssEnabledToggle.checked = state.cssEnabled;
+    state.scrollPositions = savedState.scrollPositions || {};
     await loadProjectCss({ silent: true });
 
     const cssEditorOpen = !!savedState.cssEditorOpen;
@@ -401,6 +429,7 @@
       cssEnabled: state.cssEnabled,
       cssEditorOpen: !el.cssPane.classList.contains('hidden'),
       tocCollapsed: el.tocPanel.classList.contains('collapsed'),
+      scrollPositions: state.scrollPositions,
     };
   }
 
@@ -409,7 +438,25 @@
     await window.mdviewer.saveProjectState(state.rootPath, currentProjectStateSnapshot());
   }
 
+  function captureScrollPosition() {
+    if (!state.currentFilePath) return;
+    const win = el.frame.contentWindow;
+    if (!win) return;
+    state.scrollPositions[state.currentFilePath] = { top: win.scrollY, savedAt: Date.now() };
+  }
+
+  function restoreScrollPosition(filePath) {
+    const saved = state.scrollPositions[filePath];
+    if (saved && Date.now() - saved.savedAt <= SCROLL_POSITION_MAX_AGE_MS) {
+      el.frame.contentWindow.scrollTo(0, saved.top);
+    } else {
+      if (saved) delete state.scrollPositions[filePath];
+      el.frame.contentWindow.scrollTo(0, 0);
+    }
+  }
+
   async function loadAndRenderFile(filePath) {
+    captureScrollPosition();
     const result = await window.mdviewer.renderMarkdown(filePath);
     if (!result.ok) {
       el.frame.contentDocument.body.innerHTML =
@@ -420,6 +467,7 @@
     renderBreadcrumb(filePath);
     state.currentFilePath = filePath;
     window.mdviewer.watchFile(filePath);
+    restoreScrollPosition(filePath);
 
     // Stay in edit mode across file switches: refresh the source editor with
     // the newly selected file's content instead of closing the edit pane.
@@ -804,6 +852,81 @@
     container.appendChild(empty);
   }
 
+  // Classifies a rendered <a> the same way onPreviewClick / openInternalLink
+  // do, so the TOC links list and in-content clicks always agree on where a
+  // link goes.
+  function classifyAnchor(anchor) {
+    const internal = anchor.getAttribute('data-internal-href');
+    if (internal) {
+      const [absPath, hash] = internal.split('#');
+      const isMarkdown = /\.(md|markdown)$/i.test(absPath);
+      return { type: isMarkdown ? 'internal-doc' : 'internal-file', absPath, hash: hash || '', key: internal };
+    }
+    const href = anchor.getAttribute('href') || '';
+    if (/^https?:\/\//i.test(href) || href.startsWith('mailto:')) {
+      return { type: 'external', href, key: href };
+    }
+    if (href.startsWith('#') && href.length > 1) {
+      return { type: 'anchor', hash: href.slice(1), key: href };
+    }
+    return null;
+  }
+
+  const LINK_TYPE_ICON = {
+    'internal-doc': '📄',
+    'internal-file': '📎',
+    anchor: '#',
+    external: '↗',
+  };
+
+  function populateLinksList() {
+    el.tocLinksList.innerHTML = '';
+    if (!state.currentFilePath) {
+      tocEmpty(el.tocLinksList, t('toc.selectDocument'));
+      return;
+    }
+
+    const anchors = Array.from(el.frame.contentDocument.querySelectorAll('a'));
+    const seen = new Set();
+    const entries = [];
+    for (const anchor of anchors) {
+      const info = classifyAnchor(anchor);
+      if (!info || seen.has(info.key)) continue;
+      seen.add(info.key);
+      const label = anchor.textContent.trim() || info.href || info.absPath || info.key;
+      entries.push({ info, label });
+    }
+
+    if (entries.length === 0) {
+      tocEmpty(el.tocLinksList, t('toc.noLinks'));
+      return;
+    }
+
+    for (const entry of entries) {
+      const { info, label } = entry;
+      const li = document.createElement('li');
+      li.className = 'toc-item';
+      li.textContent = `${LINK_TYPE_ICON[info.type]} ${label}`;
+      li.title =
+        info.type === 'external'
+          ? info.href
+          : info.type === 'anchor'
+          ? '#' + info.hash
+          : info.absPath + (info.hash ? '#' + info.hash : '');
+      li.addEventListener('click', () => {
+        if (info.type === 'external') {
+          window.mdviewer.openExternal(info.href);
+        } else if (info.type === 'anchor') {
+          const target = el.frame.contentDocument.getElementById(info.hash);
+          if (target) target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        } else {
+          openInternalLink(info.absPath, info.hash);
+        }
+      });
+      el.tocLinksList.appendChild(li);
+    }
+  }
+
   async function populateSiblingPages() {
     el.tocSiblingsList.innerHTML = '';
     if (!state.currentFilePath) {
@@ -826,6 +949,7 @@
 
   function refreshToc() {
     populateToc();
+    populateLinksList();
     populateSiblingPages();
   }
 

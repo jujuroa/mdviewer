@@ -62,7 +62,9 @@ const STRINGS = {
     'toc.heading': 'Table of Contents',
     'toc.collapseTitle': 'Collapse/expand table of contents',
     'toc.subpages': 'Sub-pages',
+    'toc.links': 'Links',
     'toc.noHeadings': 'This document has no headings',
+    'toc.noLinks': 'This document has no links',
     'toc.selectDocument': 'Select a document',
     'toc.noSubfolder': '"{name}" folder does not exist',
 
@@ -167,7 +169,9 @@ const STRINGS = {
     'toc.heading': '목차',
     'toc.collapseTitle': '목차 접기/펼치기',
     'toc.subpages': '하위 페이지',
+    'toc.links': '링크',
     'toc.noHeadings': '이 문서에는 제목이 없습니다',
+    'toc.noLinks': '이 문서에는 링크가 없습니다',
     'toc.selectDocument': '문서를 선택하세요',
     'toc.noSubfolder': '"{name}" 폴더가 없습니다',
 
