@@ -321,6 +321,23 @@ html, body {
 }
 #btn-toggle-terminal.active:hover { background: var(--btn-bg-hover); }
 
+.json-path-bar {
+  flex: 0 0 auto;
+  padding: 4px 12px;
+  font-size: 12px;
+  line-height: 1.4;
+  min-height: calc(1.4em + 8px);
+  box-sizing: border-box;
+  font-family: "D2Coding", "D2Coding ligature", Consolas, "Cascadia Mono", "Cascadia Code",
+    "SFMono-Regular", "Liberation Mono", Menlo, monospace;
+  color: var(--text-dim);
+  background: var(--bg-sidebar);
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+  overflow-x: auto;
+}
+.json-path-bar.hidden { display: none; }
+
 .preview-body {
   flex: 1;
   display: flex;

@@ -51,6 +51,7 @@
     btnToggleEdit: document.getElementById('btn-toggle-edit'),
     btnSaveSource: document.getElementById('btn-save-source'),
     btnRefreshPuml: document.getElementById('btn-refresh-puml'),
+    jsonPathBar: document.getElementById('json-path-bar'),
     tocPanel: document.getElementById('toc-panel'),
     tocPanelHeader: document.getElementById('toc-panel-header'),
     tocCollapseBtn: document.getElementById('toc-collapse-btn'),
@@ -124,6 +125,22 @@
     // Event delegation for link clicks inside the rendered document.
     doc.addEventListener('click', onPreviewClick, true);
 
+    // Event delegation for JSON tree expand/collapse toggles. Delegated on
+    // `doc` (rather than re-attached per render) since the tree is rebuilt
+    // wholesale on every keystroke while editing.
+    doc.addEventListener('click', onJsonTreeToggle);
+    doc.addEventListener('keydown', (e) => {
+      if (e.key !== 'Enter' && e.key !== ' ') return;
+      if (!e.target.classList || !e.target.classList.contains('json-toggle')) return;
+      e.preventDefault();
+      onJsonTreeToggle(e);
+    });
+
+    // Click a JSON node's key or value to see its path; double-click a leaf
+    // value to edit it in place.
+    doc.addEventListener('click', onJsonNodeClick);
+    doc.addEventListener('dblclick', onJsonNodeDblClick);
+
     // Debounced scroll-position tracking, so re-opening a file later can
     // restore where the reader left off (see loadAndRenderFile).
     el.frame.contentWindow.addEventListener('scroll', () => {
@@ -143,6 +160,13 @@
         console.error('[mdviewer] Failed to open externally:', url, result && result.error);
       }
     });
+  }
+
+  function onJsonTreeToggle(e) {
+    const toggle = e.target.closest('.json-toggle');
+    if (!toggle) return;
+    const branch = toggle.closest('.json-branch');
+    if (branch) branch.classList.toggle('collapsed');
   }
 
   function onPreviewClick(e) {
@@ -184,6 +208,10 @@
     } else if (/\.puml$/i.test(absPath)) {
       if (!(await guardNavigation())) return;
       await loadAndRenderPuml(absPath);
+      await revealPathInTree(absPath, { select: true });
+    } else if (/\.json$/i.test(absPath)) {
+      if (!(await guardNavigation())) return;
+      await loadAndRenderJson(absPath);
       await revealPathInTree(absPath, { select: true });
     } else if (absPath) {
       openExternalSafe(pathToFileUrl(absPath));
@@ -306,11 +334,7 @@
     refreshToc();
 
     if (savedState.lastOpenFile) {
-      if (/\.puml$/i.test(savedState.lastOpenFile)) {
-        await loadAndRenderPuml(savedState.lastOpenFile);
-      } else {
-        await loadAndRenderFile(savedState.lastOpenFile);
-      }
+      await loadAndRenderByPath(savedState.lastOpenFile);
       if (savedState.editModeOpen && state.currentFilePath) {
         await enterEditMode();
       }
@@ -323,11 +347,7 @@
     const dir = filePath.substring(0, Math.max(filePath.lastIndexOf('/'), filePath.lastIndexOf('\\')));
     const opened = await openFolder(dir);
     if (!opened) return;
-    if (/\.puml$/i.test(filePath)) {
-      await loadAndRenderPuml(filePath);
-    } else {
-      await loadAndRenderFile(filePath);
-    }
+    await loadAndRenderByPath(filePath);
   }
 
   async function populateRecentList() {
@@ -391,7 +411,9 @@
       node.className = 'tree-node';
 
       const row = document.createElement('div');
-      row.className = 'tree-row' + (item.isDir ? ' dir' : item.isMarkdown ? ' md' : item.isPuml ? ' puml' : ' non-md');
+      row.className =
+        'tree-row' +
+        (item.isDir ? ' dir' : item.isMarkdown ? ' md' : item.isPuml ? ' puml' : item.isJson ? ' json' : ' non-md');
       row.style.paddingLeft = 6 + depth * indentUnit + 'px';
       row.dataset.path = item.path;
 
@@ -402,7 +424,7 @@
 
       const icon = document.createElement('span');
       icon.className = 'tree-icon';
-      icon.textContent = item.isDir ? '📁' : item.isMarkdown ? '📄' : item.isPuml ? '📐' : '·';
+      icon.textContent = item.isDir ? '📁' : item.isMarkdown ? '📄' : item.isPuml ? '📐' : item.isJson ? '🗂' : '·';
       row.appendChild(icon);
 
       const label = document.createElement('span');
@@ -441,6 +463,12 @@
           if (!(await guardNavigation())) return;
           selectTreeRow(row);
           loadAndRenderPuml(item.path);
+        });
+      } else if (item.isJson) {
+        row.addEventListener('click', async () => {
+          if (!(await guardNavigation())) return;
+          selectTreeRow(row);
+          loadAndRenderJson(item.path);
         });
       }
 
@@ -488,10 +516,17 @@
     }
   }
 
-  // Toggles toolbar affordances that only make sense for one file kind (e.g.
-  // the diagram refresh button only applies to PlantUML files).
+  // Toggles toolbar/preview affordances that only make sense for one file
+  // kind (e.g. the diagram refresh button only applies to PlantUML files;
+  // the JSON tree needs the preview body's prose max-width lifted so its
+  // table columns have room instead of overlapping).
   function updateFileKindUI() {
     el.btnRefreshPuml.classList.toggle('hidden', state.currentFileKind !== 'puml');
+    el.frame.contentDocument.body.classList.toggle('json-view', state.currentFileKind === 'json');
+    // Reserve the path bar's space for the whole time a JSON file is open
+    // (even before any node has been clicked), so clicking the first node
+    // doesn't shift the layout by suddenly introducing the bar.
+    el.jsonPathBar.classList.toggle('hidden', state.currentFileKind !== 'json');
   }
 
   async function loadAndRenderFile(filePath) {
@@ -556,6 +591,17 @@
     persistProjectState();
   }
 
+  // Dispatches to the right loader for a file path based on its extension.
+  async function loadAndRenderByPath(filePath) {
+    if (/\.puml$/i.test(filePath)) {
+      await loadAndRenderPuml(filePath);
+    } else if (/\.json$/i.test(filePath)) {
+      await loadAndRenderJson(filePath);
+    } else {
+      await loadAndRenderFile(filePath);
+    }
+  }
+
   // Re-renders the current PlantUML diagram from the given source text
   // (either the live editor buffer, or freshly re-read from disk).
   async function renderPumlFromText(text) {
@@ -573,6 +619,193 @@
       const readResult = await window.mdviewer.readFile(state.currentFilePath);
       if (readResult.ok) await renderPumlFromText(readResult.content);
     }
+  }
+
+  // JSON files are shown as a collapsible tree. Like markdown (and unlike
+  // PlantUML), the tree re-renders live as you type in edit mode.
+  async function loadAndRenderJson(filePath) {
+    captureScrollPosition();
+    clearJsonPath();
+    const result = await window.mdviewer.renderJsonFile(filePath);
+    if (!result.ok) {
+      el.frame.contentDocument.body.innerHTML =
+        `<div class="mdviewer-empty-state">${escapeHtml(t('file.openFailed', { error: result.error }))}</div>`;
+      return;
+    }
+    el.frame.contentDocument.body.innerHTML = result.html;
+    renderBreadcrumb(filePath);
+    state.currentFilePath = filePath;
+    state.currentFileKind = 'json';
+    updateFileKindUI();
+    window.mdviewer.watchFile(filePath);
+    restoreScrollPosition(filePath);
+
+    if (state.editMode) {
+      const readResult = await window.mdviewer.readFile(filePath);
+      if (readResult.ok) {
+        el.mdSourceEditor.value = readResult.content;
+      }
+      state.sourceDirty = false;
+      el.editStatus.textContent = '';
+    }
+
+    refreshToc();
+    persistProjectState();
+  }
+
+  async function renderJsonFromText(text) {
+    const result = await window.mdviewer.renderJsonText(text);
+    if (result.ok) {
+      el.frame.contentDocument.body.innerHTML = result.html;
+    }
+    return result.ok;
+  }
+
+  // Clears the path bar's text without hiding it — visibility is handled
+  // separately by updateFileKindUI, which keeps it (empty) reserved for the
+  // whole time a JSON file is open rather than only once a node is clicked.
+  function clearJsonPath() {
+    el.jsonPathBar.textContent = '';
+  }
+
+  // Formats a data-path array (string keys, numeric array indices) as a
+  // JSONPath-ish string developers will recognize, e.g. $.scripts.start or
+  // $.dependencies["@xterm/addon-fit"] or $.tags[0].
+  function formatJsonPath(path) {
+    let result = '$';
+    for (const segment of path) {
+      if (typeof segment === 'number') {
+        result += `[${segment}]`;
+      } else if (/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(segment)) {
+        result += `.${segment}`;
+      } else {
+        result += `[${JSON.stringify(segment)}]`;
+      }
+    }
+    return result;
+  }
+
+  function jsonPathFromElement(node) {
+    const withPath = node.closest('[data-path]');
+    if (!withPath) return null;
+    try {
+      return JSON.parse(withPath.getAttribute('data-path'));
+    } catch (err) {
+      return null;
+    }
+  }
+
+  // Applies a single edited leaf value back into the full JSON document and
+  // re-renders. Reuses the same source-editor buffer + dirty/Save machinery
+  // as the raw-text editor, so "edit a value in the tree" and "edit the
+  // text" stay consistent and a single Save covers either.
+  async function commitJsonValueEdit(path, rawInputValue, originalText) {
+    const trimmed = rawInputValue.trim();
+    if (trimmed === originalText.trim()) return true;
+
+    let newValue;
+    try {
+      newValue = JSON.parse(trimmed);
+    } catch (err) {
+      return false;
+    }
+
+    let sourceText;
+    if (state.sourceDirty && el.mdSourceEditor.value) {
+      sourceText = el.mdSourceEditor.value;
+    } else {
+      const readResult = await window.mdviewer.readFile(state.currentFilePath);
+      if (!readResult.ok) return false;
+      sourceText = readResult.content;
+    }
+
+    let root;
+    try {
+      root = JSON.parse(sourceText);
+    } catch (err) {
+      return false;
+    }
+
+    if (path.length === 0) {
+      root = newValue;
+    } else {
+      let target = root;
+      for (let i = 0; i < path.length - 1; i++) target = target[path[i]];
+      target[path[path.length - 1]] = newValue;
+    }
+
+    const newText = JSON.stringify(root, null, 2);
+    el.mdSourceEditor.value = newText;
+    state.sourceDirty = true;
+    el.editStatus.textContent = t('edit.unsavedChanges');
+    el.btnSaveSource.classList.remove('hidden');
+
+    return renderJsonFromText(newText);
+  }
+
+  function startJsonValueEdit(span, path) {
+    if (!path || span.tagName !== 'SPAN') return;
+    const originalText = span.textContent;
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.className = 'json-value-input';
+    input.value = originalText;
+    input.style.width = `${Math.max(3, originalText.length) + 1.5}ch`;
+    span.replaceWith(input);
+    input.focus();
+    input.select();
+
+    let settled = false;
+    const finish = async (commit) => {
+      if (settled) return;
+      if (commit) {
+        const ok = await commitJsonValueEdit(path, input.value, originalText);
+        if (ok) {
+          settled = true;
+          return; // tree was re-rendered; this input is no longer in the DOM
+        }
+        input.classList.add('json-value-input-error');
+        return; // keep editing so the user can fix the invalid JSON
+      }
+      settled = true;
+      input.replaceWith(span);
+    };
+
+    input.addEventListener('input', () => input.classList.remove('json-value-input-error'));
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        finish(true);
+      } else if (e.key === 'Escape') {
+        e.preventDefault();
+        finish(false);
+      }
+    });
+    input.addEventListener('blur', () => finish(true));
+  }
+
+  // Single click (on a key or a leaf value) just shows the node's path —
+  // editing needs a double-click so casually clicking around the tree can't
+  // accidentally drop you into an edit field.
+  function onJsonNodeClick(e) {
+    if (state.currentFileKind !== 'json') return;
+    const node = e.target.closest('.json-editable-value, .json-key, .json-index');
+    if (!node) return;
+    const path = jsonPathFromElement(node);
+    if (!path) return;
+    el.jsonPathBar.textContent = formatJsonPath(path);
+    el.jsonPathBar.classList.remove('hidden');
+  }
+
+  function onJsonNodeDblClick(e) {
+    if (state.currentFileKind !== 'json') return;
+    const valueSpan = e.target.closest('.json-editable-value');
+    if (!valueSpan) return;
+    const path = jsonPathFromElement(valueSpan);
+    if (!path) return;
+    el.jsonPathBar.textContent = formatJsonPath(path);
+    el.jsonPathBar.classList.remove('hidden');
+    startJsonValueEdit(valueSpan, path);
   }
 
   function escapeHtml(str) {
@@ -736,11 +969,7 @@
       return;
     }
     if (state.editMode) return; // avoid clobbering in-progress edits
-    if (state.currentFileKind === 'puml') {
-      loadAndRenderPuml(changedPath);
-    } else {
-      loadAndRenderFile(changedPath);
-    }
+    loadAndRenderByPath(changedPath);
   });
 
   // ---------------------------------------------------------------------
@@ -797,11 +1026,7 @@
     setEditModeUI(false);
     el.editStatus.textContent = '';
     if (state.currentFilePath) {
-      if (state.currentFileKind === 'puml') {
-        loadAndRenderPuml(state.currentFilePath);
-      } else {
-        loadAndRenderFile(state.currentFilePath);
-      }
+      loadAndRenderByPath(state.currentFilePath);
     } else {
       persistProjectState();
     }
@@ -816,6 +1041,11 @@
   }
 
   async function renderSourcePreview() {
+    if (state.currentFileKind === 'json') {
+      await renderJsonFromText(el.mdSourceEditor.value);
+      refreshToc();
+      return;
+    }
     const baseDir = dirnameOf(state.currentFilePath);
     const result = await window.mdviewer.renderMarkdownText(el.mdSourceEditor.value, baseDir);
     if (result.ok) {
@@ -853,6 +1083,13 @@
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
       e.preventDefault();
       saveSource();
+      return;
+    }
+    if (e.key === 'Tab') {
+      e.preventDefault();
+      const ta = el.mdSourceEditor;
+      ta.setRangeText('\t', ta.selectionStart, ta.selectionEnd, 'end');
+      ta.dispatchEvent(new Event('input', { bubbles: true }));
     }
   });
 
@@ -967,6 +1204,7 @@
       let type = 'internal-file';
       if (/\.(md|markdown)$/i.test(absPath)) type = 'internal-doc';
       else if (/\.puml$/i.test(absPath)) type = 'internal-puml';
+      else if (/\.json$/i.test(absPath)) type = 'internal-json';
       return { type, absPath, hash: hash || '', key: internal };
     }
     const href = anchor.getAttribute('href') || '';
@@ -982,6 +1220,7 @@
   const LINK_TYPE_ICON = {
     'internal-doc': '📄',
     'internal-puml': '📐',
+    'internal-json': '🗂',
     'internal-file': '📎',
     anchor: '#',
     external: '↗',

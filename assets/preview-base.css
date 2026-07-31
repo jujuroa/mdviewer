@@ -28,6 +28,14 @@ body.markdown-body {
   word-wrap: break-word;
 }
 
+/* The JSON tree's key/value table columns need real horizontal room (nowrap
+   keys, long values) — the 900px prose width starves them and table cells
+   overlap rather than reflow. */
+body.markdown-body.json-view {
+  max-width: none;
+  padding: 16px 24px 60px;
+}
+
 @media (prefers-color-scheme: light) {
   body.markdown-body {
     color: #3b3b3b;
@@ -145,6 +153,147 @@ body.markdown-body {
 @media (prefers-color-scheme: light) {
   .markdown-body .plantuml-diagram,
   .markdown-body .mermaid-diagram { border-color: #e5e5e5; }
+}
+
+/* ---- JSON tree viewer ---- */
+
+.json-error {
+  padding: 16px;
+  color: #f48771;
+  font-family: "D2Coding", "D2Coding ligature", Consolas, "Cascadia Mono", "Cascadia Code",
+    "SFMono-Regular", "Liberation Mono", Menlo, monospace;
+  white-space: pre-wrap;
+}
+
+.json-tree {
+  font-family: "D2Coding", "D2Coding ligature", Consolas, "Cascadia Mono", "Cascadia Code",
+    "SFMono-Regular", "Liberation Mono", Menlo, monospace;
+  font-size: 13px;
+}
+
+/* Prefixed with .markdown-body throughout: the base stylesheet has
+   ".markdown-body ul/ol" (padding-left: 2em), ".markdown-body li"
+   (line-height: 1.2) and "li + li" (margin-top) rules for prose lists,
+   each a class+type selector that out-specificities a bare ".json-root"/
+   ".json-branch" class. Left unprefixed, those rules would silently win —
+   e.g. padding-left would stay a barely-there 2em instead of the wider,
+   deliberately "aggressive" 28px this tree needs to keep parent/child
+   nesting unambiguous (see the same lesson learned the hard way with
+   .markdown-body table for the earlier table-layout attempt). */
+.markdown-body .json-root,
+.markdown-body .json-children {
+  list-style: none;
+  margin: 0;
+  padding-left: 28px;
+}
+
+.markdown-body .json-tree > .json-root { padding-left: 0; }
+
+.markdown-body .json-branch,
+.markdown-body .json-leaf {
+  line-height: 1.8;
+  margin-top: 0;
+}
+
+/* A guide line per nesting level, so parent/child boundaries stay
+   unambiguous even several levels deep. */
+.json-children {
+  margin-left: 5px;
+  border-left: 1px solid rgba(255, 255, 255, 0.14);
+}
+
+.json-toggle {
+  display: inline-block;
+  width: 14px;
+  text-align: center;
+  cursor: pointer;
+  user-select: none;
+  color: #858585;
+}
+.json-toggle::before { content: "▶"; font-size: 9px; display: inline-block; transition: transform 0.1s ease; }
+.json-branch:not(.collapsed) > .json-toggle::before { transform: rotate(90deg); }
+
+.json-branch.collapsed > .json-children,
+.json-branch.collapsed > .json-closing { display: none; }
+.json-branch:not(.collapsed) > .json-summary { display: none; }
+
+/* Bold the key that opens a container, so it reads as a heading for its
+   subtree rather than just another line among its own children. */
+.json-branch > .json-key,
+.json-branch > .json-index {
+  font-weight: 600;
+}
+
+.json-summary {
+  color: #6a6a6a;
+  font-style: italic;
+  margin-left: 6px;
+}
+
+.json-key { color: #9cdcfe; }
+.json-index { color: #6a6a6a; }
+.json-colon { color: #d4d4d4; }
+.json-string { color: #ce9178; }
+.json-number { color: #b5cea8; }
+.json-boolean { color: #569cd6; }
+.json-null { color: #808080; }
+.json-brace,
+.json-bracket { color: #d4d4d4; }
+
+/* Keys are clickable (shows the node's path); leaf values are additionally
+   editable in place. */
+.json-key,
+.json-index {
+  cursor: pointer;
+  border-radius: 3px;
+}
+.json-key:hover,
+.json-index:hover {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.json-editable-value {
+  cursor: text;
+  border-radius: 3px;
+  padding: 0 2px;
+  margin: 0 -2px;
+}
+.json-editable-value:hover {
+  background: rgba(255, 255, 255, 0.1);
+  outline: 1px dashed rgba(255, 255, 255, 0.3);
+}
+
+.json-value-input {
+  font: inherit;
+  color: inherit;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid #569cd6;
+  border-radius: 3px;
+  padding: 0 2px;
+  margin: 0 -2px;
+  min-width: 3ch;
+}
+.json-value-input.json-value-input-error {
+  border-color: #f48771;
+}
+
+@media (prefers-color-scheme: light) {
+  .json-children { border-left-color: rgba(0, 0, 0, 0.14); }
+  .json-key { color: #0451a5; }
+  .json-index { color: #8c8c8c; }
+  .json-string { color: #a31515; }
+  .json-number { color: #098658; }
+  .json-boolean { color: #0000ff; }
+  .json-null { color: #767676; }
+  .json-brace,
+  .json-bracket,
+  .json-colon { color: #333333; }
+  .json-summary { color: #8c8c8c; }
+  .json-key:hover,
+  .json-index:hover,
+  .json-editable-value:hover { background: rgba(0, 0, 0, 0.08); }
+  .json-editable-value:hover { outline-color: rgba(0, 0, 0, 0.25); }
+  .json-value-input { background: rgba(0, 0, 0, 0.05); }
 }
 
 .markdown-body code {

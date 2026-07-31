@@ -274,6 +274,92 @@ function renderPlantUmlFile(filePath) {
   return renderPlantUmlText(raw);
 }
 
+function escapeHtmlText(str) {
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+// Renders one JSON value (and, recursively, its children) as a collapsible
+// <li>. Expand/collapse and value editing are wired up by the renderer via
+// event delegation (the preview iframe has no allow-scripts, so this HTML
+// must stay purely structural, no inline handlers). Every node carries a
+// data-path attribute (a JSON-encoded array of string keys / numeric
+// indices) so the renderer can show "where am I" and, for leaf values,
+// write an edit back to the right spot in the source.
+function jsonValueHtml(value, keyLabel, keyClass, isLast, isArrayIndex, path) {
+  const comma = isLast ? '' : ',';
+  const keyHtml =
+    keyLabel !== null
+      ? `<span class="${keyClass}">${escapeHtmlText(isArrayIndex ? keyLabel : JSON.stringify(keyLabel))}</span><span class="json-colon">: </span>`
+      : '';
+  const pathAttr = `data-path="${escapeHtmlText(JSON.stringify(path))}"`;
+
+  if (value === null) {
+    return `<li class="json-leaf" ${pathAttr}>${keyHtml}<span class="json-null json-editable-value">null</span>${comma}</li>`;
+  }
+  if (Array.isArray(value)) {
+    if (value.length === 0) {
+      return `<li class="json-leaf" ${pathAttr}>${keyHtml}<span class="json-bracket">[]</span>${comma}</li>`;
+    }
+    const children = value
+      .map((v, i) => jsonValueHtml(v, `[${i}]`, 'json-index', i === value.length - 1, true, [...path, i]))
+      .join('');
+    const count = `${value.length} item${value.length === 1 ? '' : 's'}`;
+    return (
+      `<li class="json-branch" ${pathAttr}><span class="json-toggle" role="button" tabindex="0" aria-label="toggle"></span>` +
+      `${keyHtml}<span class="json-bracket">[</span><span class="json-summary">${count}</span>` +
+      `<ul class="json-children">${children}</ul>` +
+      `<span class="json-bracket json-closing">]</span>${comma}</li>`
+    );
+  }
+  const type = typeof value;
+  if (type === 'object') {
+    const keys = Object.keys(value);
+    if (keys.length === 0) {
+      return `<li class="json-leaf" ${pathAttr}>${keyHtml}<span class="json-brace">{}</span>${comma}</li>`;
+    }
+    const children = keys
+      .map((k, i) => jsonValueHtml(value[k], k, 'json-key', i === keys.length - 1, false, [...path, k]))
+      .join('');
+    const count = `${keys.length} key${keys.length === 1 ? '' : 's'}`;
+    return (
+      `<li class="json-branch" ${pathAttr}><span class="json-toggle" role="button" tabindex="0" aria-label="toggle"></span>` +
+      `${keyHtml}<span class="json-brace">{</span><span class="json-summary">${count}</span>` +
+      `<ul class="json-children">${children}</ul>` +
+      `<span class="json-brace json-closing">}</span>${comma}</li>`
+    );
+  }
+  if (type === 'string') {
+    return (
+      `<li class="json-leaf" ${pathAttr}>${keyHtml}` +
+      `<span class="json-string json-editable-value">${escapeHtmlText(JSON.stringify(value))}</span>${comma}</li>`
+    );
+  }
+  // number / boolean
+  return (
+    `<li class="json-leaf" ${pathAttr}>${keyHtml}` +
+    `<span class="json-${type} json-editable-value">${value}</span>${comma}</li>`
+  );
+}
+
+function renderJsonText(text) {
+  let parsed;
+  try {
+    parsed = JSON.parse(text);
+  } catch (err) {
+    return `<div class="json-error">${escapeHtmlText(err.message)}</div>`;
+  }
+  return `<div class="json-tree"><ul class="json-root">${jsonValueHtml(parsed, null, null, true, false, [])}</ul></div>`;
+}
+
+function renderJsonFile(filePath) {
+  const raw = fs.readFileSync(filePath, 'utf-8');
+  return renderJsonText(raw);
+}
+
 function isHidden(name) {
   return name.startsWith('.');
 }
@@ -291,6 +377,7 @@ function listDir(dirPath) {
         isDir,
         isMarkdown: !isDir && /\.(md|markdown)$/i.test(e.name),
         isPuml: !isDir && /\.puml$/i.test(e.name),
+        isJson: !isDir && /\.json$/i.test(e.name),
       };
     });
   items.sort((a, b) => {
@@ -464,8 +551,6 @@ function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1280,
     height: 840,
-    minWidth: 800,
-    minHeight: 500,
     backgroundColor: '#1e1e1e',
     icon: path.join(__dirname, 'assets', 'icon.png'),
     webPreferences: {
@@ -595,9 +680,10 @@ ipcMain.handle('dialog:open-file', async () => {
   const result = await dialog.showOpenDialog(mainWindow, {
     properties: ['openFile'],
     filters: [
-      { name: 'Supported Files', extensions: ['md', 'markdown', 'puml'] },
+      { name: 'Supported Files', extensions: ['md', 'markdown', 'puml', 'json'] },
       { name: 'Markdown', extensions: ['md', 'markdown'] },
       { name: 'PlantUML', extensions: ['puml'] },
+      { name: 'JSON', extensions: ['json'] },
     ],
   });
   if (result.canceled || result.filePaths.length === 0) return null;
@@ -624,6 +710,15 @@ ipcMain.handle('fs:render-markdown', (event, filePath) => {
 ipcMain.handle('fs:render-plantuml', (event, filePath) => {
   try {
     const html = renderPlantUmlFile(filePath);
+    return { ok: true, html, name: path.basename(filePath) };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
+ipcMain.handle('fs:render-json', (event, filePath) => {
+  try {
+    const html = renderJsonFile(filePath);
     return { ok: true, html, name: path.basename(filePath) };
   } catch (err) {
     return { ok: false, error: err.message };
@@ -658,6 +753,14 @@ ipcMain.handle('md:render-text', (event, text, baseDir) => {
 ipcMain.handle('puml:render-text', (event, text) => {
   try {
     return { ok: true, html: renderPlantUmlText(text) };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
+ipcMain.handle('json:render-text', (event, text) => {
+  try {
+    return { ok: true, html: renderJsonText(text) };
   } catch (err) {
     return { ok: false, error: err.message };
   }
