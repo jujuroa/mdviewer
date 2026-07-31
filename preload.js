@@ -5,6 +5,8 @@ contextBridge.exposeInMainWorld('mdviewer', {
   openFileDialog: () => ipcRenderer.invoke('dialog:open-file'),
   listDir: (dirPath) => ipcRenderer.invoke('fs:list-dir', dirPath),
   renderMarkdown: (filePath) => ipcRenderer.invoke('fs:render-markdown', filePath),
+  renderPlantUmlFile: (filePath) => ipcRenderer.invoke('fs:render-plantuml', filePath),
+  renderPlantUmlText: (text) => ipcRenderer.invoke('puml:render-text', text),
   loadProjectCss: (rootPath) => ipcRenderer.invoke('fs:load-project-css', rootPath),
   saveProjectCss: (rootPath, css) => ipcRenderer.invoke('fs:save-project-css', rootPath, css),
   getBaseStyles: () => ipcRenderer.invoke('fs:get-base-styles'),

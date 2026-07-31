@@ -264,6 +264,16 @@ function renderMarkdownFile(filePath) {
   return renderMarkdownText(raw, path.dirname(filePath));
 }
 
+function renderPlantUmlText(text) {
+  const src = plantumlImageSrc(text);
+  return `<div class="plantuml-diagram"><img src="${src}" alt="PlantUML diagram"></div>`;
+}
+
+function renderPlantUmlFile(filePath) {
+  const raw = fs.readFileSync(filePath, 'utf-8');
+  return renderPlantUmlText(raw);
+}
+
 function isHidden(name) {
   return name.startsWith('.');
 }
@@ -280,6 +290,7 @@ function listDir(dirPath) {
         path: full,
         isDir,
         isMarkdown: !isDir && /\.(md|markdown)$/i.test(e.name),
+        isPuml: !isDir && /\.puml$/i.test(e.name),
       };
     });
   items.sort((a, b) => {
@@ -583,7 +594,11 @@ ipcMain.handle('dialog:open-folder', async () => {
 ipcMain.handle('dialog:open-file', async () => {
   const result = await dialog.showOpenDialog(mainWindow, {
     properties: ['openFile'],
-    filters: [{ name: 'Markdown', extensions: ['md', 'markdown'] }],
+    filters: [
+      { name: 'Supported Files', extensions: ['md', 'markdown', 'puml'] },
+      { name: 'Markdown', extensions: ['md', 'markdown'] },
+      { name: 'PlantUML', extensions: ['puml'] },
+    ],
   });
   if (result.canceled || result.filePaths.length === 0) return null;
   return result.filePaths[0];
@@ -600,6 +615,15 @@ ipcMain.handle('fs:list-dir', (event, dirPath) => {
 ipcMain.handle('fs:render-markdown', (event, filePath) => {
   try {
     const html = renderMarkdownFile(filePath);
+    return { ok: true, html, name: path.basename(filePath) };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
+ipcMain.handle('fs:render-plantuml', (event, filePath) => {
+  try {
+    const html = renderPlantUmlFile(filePath);
     return { ok: true, html, name: path.basename(filePath) };
   } catch (err) {
     return { ok: false, error: err.message };
@@ -626,6 +650,14 @@ ipcMain.handle('fs:write-file', (event, filePath, content) => {
 ipcMain.handle('md:render-text', (event, text, baseDir) => {
   try {
     return { ok: true, html: renderMarkdownText(text, baseDir) };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
+ipcMain.handle('puml:render-text', (event, text) => {
+  try {
+    return { ok: true, html: renderPlantUmlText(text) };
   } catch (err) {
     return { ok: false, error: err.message };
   }

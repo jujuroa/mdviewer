@@ -2,6 +2,7 @@
   const state = {
     rootPath: null,
     currentFilePath: null,
+    currentFileKind: 'markdown',
     cssDirty: false,
     cssDebounceTimer: null,
     cssEnabled: true,
@@ -49,6 +50,7 @@
     editorResizer: document.getElementById('editor-resizer'),
     btnToggleEdit: document.getElementById('btn-toggle-edit'),
     btnSaveSource: document.getElementById('btn-save-source'),
+    btnRefreshPuml: document.getElementById('btn-refresh-puml'),
     tocPanel: document.getElementById('toc-panel'),
     tocPanelHeader: document.getElementById('toc-panel-header'),
     tocCollapseBtn: document.getElementById('toc-collapse-btn'),
@@ -179,6 +181,10 @@
         const target = el.frame.contentDocument.getElementById(hash);
         if (target) target.scrollIntoView();
       }
+    } else if (/\.puml$/i.test(absPath)) {
+      if (!(await guardNavigation())) return;
+      await loadAndRenderPuml(absPath);
+      await revealPathInTree(absPath, { select: true });
     } else if (absPath) {
       openExternalSafe(pathToFileUrl(absPath));
     } else if (hash) {
@@ -255,6 +261,8 @@
 
     state.rootPath = folderPath;
     state.currentFilePath = null;
+    state.currentFileKind = 'markdown';
+    updateFileKindUI();
 
     // Restart the shell in the newly opened project's folder so its cwd
     // stays in sync with what's shown in the tree/preview.
@@ -298,7 +306,11 @@
     refreshToc();
 
     if (savedState.lastOpenFile) {
-      await loadAndRenderFile(savedState.lastOpenFile);
+      if (/\.puml$/i.test(savedState.lastOpenFile)) {
+        await loadAndRenderPuml(savedState.lastOpenFile);
+      } else {
+        await loadAndRenderFile(savedState.lastOpenFile);
+      }
       if (savedState.editModeOpen && state.currentFilePath) {
         await enterEditMode();
       }
@@ -310,7 +322,12 @@
   async function openSingleFile(filePath) {
     const dir = filePath.substring(0, Math.max(filePath.lastIndexOf('/'), filePath.lastIndexOf('\\')));
     const opened = await openFolder(dir);
-    if (opened) await loadAndRenderFile(filePath);
+    if (!opened) return;
+    if (/\.puml$/i.test(filePath)) {
+      await loadAndRenderPuml(filePath);
+    } else {
+      await loadAndRenderFile(filePath);
+    }
   }
 
   async function populateRecentList() {
@@ -374,7 +391,7 @@
       node.className = 'tree-node';
 
       const row = document.createElement('div');
-      row.className = 'tree-row' + (item.isDir ? ' dir' : item.isMarkdown ? ' md' : ' non-md');
+      row.className = 'tree-row' + (item.isDir ? ' dir' : item.isMarkdown ? ' md' : item.isPuml ? ' puml' : ' non-md');
       row.style.paddingLeft = 6 + depth * indentUnit + 'px';
       row.dataset.path = item.path;
 
@@ -385,7 +402,7 @@
 
       const icon = document.createElement('span');
       icon.className = 'tree-icon';
-      icon.textContent = item.isDir ? '📁' : item.isMarkdown ? '📄' : '·';
+      icon.textContent = item.isDir ? '📁' : item.isMarkdown ? '📄' : item.isPuml ? '📐' : '·';
       row.appendChild(icon);
 
       const label = document.createElement('span');
@@ -418,6 +435,12 @@
           if (!(await guardNavigation())) return;
           selectTreeRow(row);
           loadAndRenderFile(item.path);
+        });
+      } else if (item.isPuml) {
+        row.addEventListener('click', async () => {
+          if (!(await guardNavigation())) return;
+          selectTreeRow(row);
+          loadAndRenderPuml(item.path);
         });
       }
 
@@ -465,6 +488,12 @@
     }
   }
 
+  // Toggles toolbar affordances that only make sense for one file kind (e.g.
+  // the diagram refresh button only applies to PlantUML files).
+  function updateFileKindUI() {
+    el.btnRefreshPuml.classList.toggle('hidden', state.currentFileKind !== 'puml');
+  }
+
   async function loadAndRenderFile(filePath) {
     captureScrollPosition();
     const result = await window.mdviewer.renderMarkdown(filePath);
@@ -476,6 +505,8 @@
     el.frame.contentDocument.body.innerHTML = result.html;
     renderBreadcrumb(filePath);
     state.currentFilePath = filePath;
+    state.currentFileKind = 'markdown';
+    updateFileKindUI();
     window.mdviewer.watchFile(filePath);
     restoreScrollPosition(filePath);
 
@@ -492,6 +523,56 @@
 
     refreshToc();
     persistProjectState();
+  }
+
+  // PlantUML files are viewed as a rendered diagram (no live-render-on-type):
+  // re-rendering only happens on open, save, and the explicit refresh button.
+  async function loadAndRenderPuml(filePath) {
+    captureScrollPosition();
+    const result = await window.mdviewer.renderPlantUmlFile(filePath);
+    if (!result.ok) {
+      el.frame.contentDocument.body.innerHTML =
+        `<div class="mdviewer-empty-state">${escapeHtml(t('file.openFailed', { error: result.error }))}</div>`;
+      return;
+    }
+    el.frame.contentDocument.body.innerHTML = result.html;
+    renderBreadcrumb(filePath);
+    state.currentFilePath = filePath;
+    state.currentFileKind = 'puml';
+    updateFileKindUI();
+    window.mdviewer.watchFile(filePath);
+    restoreScrollPosition(filePath);
+
+    if (state.editMode) {
+      const readResult = await window.mdviewer.readFile(filePath);
+      if (readResult.ok) {
+        el.mdSourceEditor.value = readResult.content;
+      }
+      state.sourceDirty = false;
+      el.editStatus.textContent = '';
+    }
+
+    refreshToc();
+    persistProjectState();
+  }
+
+  // Re-renders the current PlantUML diagram from the given source text
+  // (either the live editor buffer, or freshly re-read from disk).
+  async function renderPumlFromText(text) {
+    const result = await window.mdviewer.renderPlantUmlText(text);
+    if (result.ok) {
+      el.frame.contentDocument.body.innerHTML = result.html;
+    }
+  }
+
+  async function refreshPumlPreview() {
+    if (state.currentFileKind !== 'puml' || !state.currentFilePath) return;
+    if (state.editMode) {
+      await renderPumlFromText(el.mdSourceEditor.value);
+    } else {
+      const readResult = await window.mdviewer.readFile(state.currentFilePath);
+      if (readResult.ok) await renderPumlFromText(readResult.content);
+    }
   }
 
   function escapeHtml(str) {
@@ -655,7 +736,11 @@
       return;
     }
     if (state.editMode) return; // avoid clobbering in-progress edits
-    loadAndRenderFile(changedPath);
+    if (state.currentFileKind === 'puml') {
+      loadAndRenderPuml(changedPath);
+    } else {
+      loadAndRenderFile(changedPath);
+    }
   });
 
   // ---------------------------------------------------------------------
@@ -712,7 +797,11 @@
     setEditModeUI(false);
     el.editStatus.textContent = '';
     if (state.currentFilePath) {
-      loadAndRenderFile(state.currentFilePath);
+      if (state.currentFileKind === 'puml') {
+        loadAndRenderPuml(state.currentFilePath);
+      } else {
+        loadAndRenderFile(state.currentFilePath);
+      }
     } else {
       persistProjectState();
     }
@@ -742,6 +831,9 @@
     if (result.ok) {
       state.sourceDirty = false;
       el.editStatus.textContent = t('edit.saved');
+      if (state.currentFileKind === 'puml') {
+        await renderPumlFromText(el.mdSourceEditor.value);
+      }
     } else {
       state.suppressNextWatch = false;
       el.editStatus.textContent = t('edit.saveFailed', { error: result.error });
@@ -749,10 +841,12 @@
   }
 
   el.mdSourceEditor.addEventListener('input', () => {
-    clearTimeout(state.sourceDebounceTimer);
-    state.sourceDebounceTimer = setTimeout(renderSourcePreview, 200);
     state.sourceDirty = true;
     el.editStatus.textContent = t('edit.unsavedChanges');
+    // PlantUML re-renders only on open/save/refresh, not on every keystroke.
+    if (state.currentFileKind === 'puml') return;
+    clearTimeout(state.sourceDebounceTimer);
+    state.sourceDebounceTimer = setTimeout(renderSourcePreview, 200);
   });
 
   el.mdSourceEditor.addEventListener('keydown', (e) => {
@@ -764,6 +858,7 @@
 
   el.btnToggleEdit.addEventListener('click', toggleEditMode);
   el.btnSaveSource.addEventListener('click', saveSource);
+  el.btnRefreshPuml.addEventListener('click', refreshPumlPreview);
 
   window.mdviewer.onMenuToggleEditMode(toggleEditMode);
   window.mdviewer.onMenuSaveFile(() => {
@@ -869,8 +964,10 @@
     const internal = anchor.getAttribute('data-internal-href');
     if (internal) {
       const [absPath, hash] = internal.split('#');
-      const isMarkdown = /\.(md|markdown)$/i.test(absPath);
-      return { type: isMarkdown ? 'internal-doc' : 'internal-file', absPath, hash: hash || '', key: internal };
+      let type = 'internal-file';
+      if (/\.(md|markdown)$/i.test(absPath)) type = 'internal-doc';
+      else if (/\.puml$/i.test(absPath)) type = 'internal-puml';
+      return { type, absPath, hash: hash || '', key: internal };
     }
     const href = anchor.getAttribute('href') || '';
     if (/^https?:\/\//i.test(href) || href.startsWith('mailto:')) {
@@ -884,6 +981,7 @@
 
   const LINK_TYPE_ICON = {
     'internal-doc': '📄',
+    'internal-puml': '📐',
     'internal-file': '📎',
     anchor: '#',
     external: '↗',
