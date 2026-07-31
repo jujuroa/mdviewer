@@ -36,19 +36,30 @@ let mainWindow;
 const fileWatchers = new Map(); // webContents.id -> fs.FSWatcher
 const terminals = new Map(); // webContents.id -> { proc: ChildProcess }
 
-// When launched by double-clicking a .md file (file association) or via
-// `mdviewer.exe file.md`, Windows/argv passes the file path as a plain
-// argument. Packaged apps also get electron's own args prepended, so only
-// argv beyond index 1 (dev) / index 0 (packaged) are candidates.
-function extractFilePathFromArgv(argv) {
+// When launched by double-clicking a .md file (file association), via
+// `mdviewer.exe file.md`, or via `mdviewer .` from a shell (PATH-installed),
+// Windows/argv passes the path as a plain argument. Packaged apps also get
+// electron's own args prepended, so only argv beyond index 1 (dev) / index 0
+// (packaged) are candidates.
+function extractOpenTargetFromArgv(argv, cwd) {
   const args = app.isPackaged ? argv.slice(1) : argv.slice(2);
-  const candidate = args.find((a) => !a.startsWith('-') && /\.(md|markdown)$/i.test(a));
-  return candidate ? path.resolve(candidate) : null;
+  const candidate = args.find((a) => !a.startsWith('-'));
+  if (!candidate) return null;
+  const resolved = path.resolve(cwd || process.cwd(), candidate);
+  try {
+    const stat = fs.statSync(resolved);
+    if (stat.isDirectory()) return { type: 'folder', path: resolved };
+    if (stat.isFile() && /\.(md|markdown)$/i.test(resolved)) return { type: 'file', path: resolved };
+  } catch (err) {
+    /* argument isn't a real path; ignore */
+  }
+  return null;
 }
 
-function openFileInWindow(filePath) {
+function openTargetInWindow(target) {
   if (!mainWindow) return;
-  const send = () => mainWindow.webContents.send('file:open-path', filePath);
+  const channel = target.type === 'folder' ? 'folder:open-path' : 'file:open-path';
+  const send = () => mainWindow.webContents.send(channel, target.path);
   if (mainWindow.webContents.isLoadingMainFrame()) {
     mainWindow.webContents.once('did-finish-load', send);
   } else {
@@ -535,19 +546,19 @@ const gotSingleInstanceLock = app.requestSingleInstanceLock();
 if (!gotSingleInstanceLock) {
   app.quit();
 } else {
-  app.on('second-instance', (event, argv) => {
-    const filePath = extractFilePathFromArgv(argv);
+  app.on('second-instance', (event, argv, workingDirectory) => {
+    const target = extractOpenTargetFromArgv(argv, workingDirectory);
     if (mainWindow) {
       if (mainWindow.isMinimized()) mainWindow.restore();
       mainWindow.focus();
     }
-    if (filePath) openFileInWindow(filePath);
+    if (target) openTargetInWindow(target);
   });
 
   app.whenReady().then(() => {
     createWindow();
-    const filePath = extractFilePathFromArgv(process.argv);
-    if (filePath) openFileInWindow(filePath);
+    const target = extractOpenTargetFromArgv(process.argv);
+    if (target) openTargetInWindow(target);
 
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) createWindow();

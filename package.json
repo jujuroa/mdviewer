@@ -28,6 +28,7 @@
   "build": {
     "appId": "com.mdviewer.desktop",
     "productName": "MD Viewer",
+    "executableName": "mdviewer",
     "copyright": "Copyright © 2026 MD Viewer",
     "npmRebuild": false,
     "directories": {
@@ -60,7 +61,8 @@
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "shortcutName": "MD Viewer"
+      "shortcutName": "MD Viewer",
+      "include": "build/installer.nsh"
     },
     "fileAssociations": [
       {

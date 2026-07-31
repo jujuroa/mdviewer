@@ -1177,6 +1177,10 @@
     openSingleFile(filePath);
   });
 
+  window.mdviewer.onOpenFolderFromOS((folderPath) => {
+    openFolder(folderPath);
+  });
+
   // ---------------------------------------------------------------------
   // Bottom terminal panel
   // ---------------------------------------------------------------------
