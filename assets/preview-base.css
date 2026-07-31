@@ -28,10 +28,10 @@ body.markdown-body {
   word-wrap: break-word;
 }
 
-/* The JSON tree's key/value table columns need real horizontal room (nowrap
-   keys, long values) — the 900px prose width starves them and table cells
-   overlap rather than reflow. */
-body.markdown-body.json-view {
+/* Non-prose views (JSON tree, plain text) need real horizontal room — long
+   log lines, wide JSON key/value columns — rather than being squeezed into
+   the 900px prose reading width. */
+body.markdown-body.wide-view {
   max-width: none;
   padding: 16px 24px 60px;
 }
@@ -153,6 +153,28 @@ body.markdown-body.json-view {
 @media (prefers-color-scheme: light) {
   .markdown-body .plantuml-diagram,
   .markdown-body .mermaid-diagram { border-color: #e5e5e5; }
+}
+
+/* ---- Plain text (.txt / .log) viewer ---- */
+
+/* Prefixed with .markdown-body: a plain <pre> would otherwise also match
+   ".markdown-body pre" (boxed/bordered code-block styling) — the same
+   specificity gotcha as the JSON tree's table rules; a whole-file text view
+   should be full-bleed, not look like a fenced code snippet. */
+.markdown-body .plaintext-view {
+  margin: 0;
+  padding: 0;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  overflow: visible;
+  font-family: "D2Coding", "D2Coding ligature", Consolas, "Cascadia Mono", "Cascadia Code",
+    "SFMono-Regular", "Liberation Mono", Menlo, monospace;
+  font-size: 13px;
+  line-height: 1.6;
+  color: inherit;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 /* ---- JSON tree viewer ---- */

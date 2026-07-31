@@ -131,6 +131,22 @@
     </div>
     <div id="terminal-xterm" class="terminal-xterm"></div>
   </section>
+
+  <div id="ext-settings-overlay" class="modal-overlay hidden">
+    <div class="modal-box">
+      <div class="modal-header">
+        <span data-i18n="ext.title">사용자 지정 텍스트 확장자</span>
+        <button id="btn-close-ext-settings" class="modal-close" aria-label="Close">✕</button>
+      </div>
+      <p class="modal-desc" data-i18n="ext.desc">지정한 확장자의 파일은 .txt/.log와 동일하게 일반 텍스트로 보고 편집할 수 있습니다.</p>
+      <div class="ext-add-row">
+        <input id="ext-input" type="text" spellcheck="false" data-i18n-placeholder="ext.inputPlaceholder" placeholder="예: yaml" />
+        <button id="btn-ext-add" class="btn-primary" data-i18n="ext.addBtn">추가</button>
+      </div>
+      <div id="ext-error" class="ext-error hidden"></div>
+      <ul id="ext-list" class="ext-list"></ul>
+    </div>
+  </div>
   </div>
 
   <script src="vendor/xterm/xterm.js"></script>

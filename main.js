@@ -93,6 +93,39 @@ function saveSettings(settings) {
   fs.writeFileSync(settingsFilePath(), JSON.stringify(settings, null, 2), 'utf-8');
 }
 
+const BUILTIN_KIND_EXTENSIONS = new Set(['md', 'markdown', 'puml', 'json', 'txt', 'log']);
+
+function normalizeExtensionList(list) {
+  if (!Array.isArray(list)) return [];
+  const seen = new Set();
+  const result = [];
+  for (const raw of list) {
+    if (typeof raw !== 'string') continue;
+    const ext = raw.trim().replace(/^\./, '').toLowerCase();
+    if (!ext || !/^[a-z0-9]+$/.test(ext)) continue;
+    if (BUILTIN_KIND_EXTENSIONS.has(ext)) continue;
+    if (seen.has(ext)) continue;
+    seen.add(ext);
+    result.push(ext);
+  }
+  return result;
+}
+
+function getCustomTextExtensions() {
+  return normalizeExtensionList(loadSettings().customTextExtensions);
+}
+
+function setCustomTextExtensions(list) {
+  const normalized = normalizeExtensionList(list);
+  saveSettings({ ...loadSettings(), customTextExtensions: normalized });
+  return normalized;
+}
+
+function plainTextExtensionPattern() {
+  const all = ['txt', 'log', ...getCustomTextExtensions()];
+  return new RegExp('\\.(' + all.join('|') + ')$', 'i');
+}
+
 function setLanguage(lang) {
   if (!SUPPORTED_LANGUAGES.includes(lang) || lang === currentLanguage) return;
   currentLanguage = lang;
@@ -360,12 +393,22 @@ function renderJsonFile(filePath) {
   return renderJsonText(raw);
 }
 
+function renderPlainText(text) {
+  return `<pre class="plaintext-view">${escapeHtmlText(text)}</pre>`;
+}
+
+function renderPlainTextFile(filePath) {
+  const raw = fs.readFileSync(filePath, 'utf-8');
+  return renderPlainText(raw);
+}
+
 function isHidden(name) {
   return name.startsWith('.');
 }
 
 function listDir(dirPath) {
   const entries = fs.readdirSync(dirPath, { withFileTypes: true });
+  const plainTextPattern = plainTextExtensionPattern();
   const items = entries
     .filter((e) => !isHidden(e.name))
     .map((e) => {
@@ -378,6 +421,7 @@ function listDir(dirPath) {
         isMarkdown: !isDir && /\.(md|markdown)$/i.test(e.name),
         isPuml: !isDir && /\.puml$/i.test(e.name),
         isJson: !isDir && /\.json$/i.test(e.name),
+        isPlainText: !isDir && plainTextPattern.test(e.name),
       };
     });
   items.sort((a, b) => {
@@ -511,6 +555,11 @@ function buildAppMenu() {
               click: () => setLanguage('ko'),
             },
           ],
+        },
+        { type: 'separator' },
+        {
+          label: t('menu.customExtensions'),
+          click: () => mainWindow.webContents.send('menu:manage-custom-extensions'),
         },
       ],
     },
@@ -677,13 +726,18 @@ ipcMain.handle('dialog:open-folder', async () => {
 });
 
 ipcMain.handle('dialog:open-file', async () => {
+  const customExtensions = getCustomTextExtensions();
   const result = await dialog.showOpenDialog(mainWindow, {
     properties: ['openFile'],
     filters: [
-      { name: 'Supported Files', extensions: ['md', 'markdown', 'puml', 'json'] },
+      {
+        name: 'Supported Files',
+        extensions: ['md', 'markdown', 'puml', 'json', 'txt', 'log', ...customExtensions],
+      },
       { name: 'Markdown', extensions: ['md', 'markdown'] },
       { name: 'PlantUML', extensions: ['puml'] },
       { name: 'JSON', extensions: ['json'] },
+      { name: 'Text', extensions: ['txt', 'log', ...customExtensions] },
     ],
   });
   if (result.canceled || result.filePaths.length === 0) return null;
@@ -719,6 +773,15 @@ ipcMain.handle('fs:render-plantuml', (event, filePath) => {
 ipcMain.handle('fs:render-json', (event, filePath) => {
   try {
     const html = renderJsonFile(filePath);
+    return { ok: true, html, name: path.basename(filePath) };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
+ipcMain.handle('fs:render-plaintext', (event, filePath) => {
+  try {
+    const html = renderPlainTextFile(filePath);
     return { ok: true, html, name: path.basename(filePath) };
   } catch (err) {
     return { ok: false, error: err.message };
@@ -761,6 +824,14 @@ ipcMain.handle('puml:render-text', (event, text) => {
 ipcMain.handle('json:render-text', (event, text) => {
   try {
     return { ok: true, html: renderJsonText(text) };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
+ipcMain.handle('plaintext:render-text', (event, text) => {
+  try {
+    return { ok: true, html: renderPlainText(text) };
   } catch (err) {
     return { ok: false, error: err.message };
   }
@@ -863,6 +934,14 @@ ipcMain.handle('i18n:get', () => {
 ipcMain.handle('settings:set-language', (event, lang) => {
   setLanguage(lang);
   return { ok: true, language: currentLanguage };
+});
+
+ipcMain.handle('settings:get-custom-extensions', () => {
+  return { ok: true, extensions: getCustomTextExtensions() };
+});
+
+ipcMain.handle('settings:set-custom-extensions', (event, list) => {
+  return { ok: true, extensions: setCustomTextExtensions(list) };
 });
 
 ipcMain.handle('recent:list', () => {

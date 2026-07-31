@@ -9,6 +9,8 @@ contextBridge.exposeInMainWorld('mdviewer', {
   renderPlantUmlText: (text) => ipcRenderer.invoke('puml:render-text', text),
   renderJsonFile: (filePath) => ipcRenderer.invoke('fs:render-json', filePath),
   renderJsonText: (text) => ipcRenderer.invoke('json:render-text', text),
+  renderPlainTextFile: (filePath) => ipcRenderer.invoke('fs:render-plaintext', filePath),
+  renderPlainTextText: (text) => ipcRenderer.invoke('plaintext:render-text', text),
   loadProjectCss: (rootPath) => ipcRenderer.invoke('fs:load-project-css', rootPath),
   saveProjectCss: (rootPath, css) => ipcRenderer.invoke('fs:save-project-css', rootPath, css),
   getBaseStyles: () => ipcRenderer.invoke('fs:get-base-styles'),
@@ -30,6 +32,8 @@ contextBridge.exposeInMainWorld('mdviewer', {
 
   getI18n: () => ipcRenderer.invoke('i18n:get'),
   setLanguage: (lang) => ipcRenderer.invoke('settings:set-language', lang),
+  getCustomExtensions: () => ipcRenderer.invoke('settings:get-custom-extensions'),
+  setCustomExtensions: (list) => ipcRenderer.invoke('settings:set-custom-extensions', list),
 
   startTerminal: (cwd, cols, rows) => ipcRenderer.invoke('term:start', cwd, cols, rows),
   sendTerminalInput: (data) => ipcRenderer.invoke('term:input', data),
@@ -62,6 +66,7 @@ contextBridge.exposeInMainWorld('mdviewer', {
     return () => ipcRenderer.removeListener('menu:open-recent', listener);
   },
   onMenuToggleCssEditor: (callback) => ipcRenderer.on('menu:toggle-css-editor', callback),
+  onMenuManageCustomExtensions: (callback) => ipcRenderer.on('menu:manage-custom-extensions', callback),
   onMenuToggleEditMode: (callback) => ipcRenderer.on('menu:toggle-edit-mode', callback),
   onMenuSaveFile: (callback) => ipcRenderer.on('menu:save-file', callback),
   onMenuToggleTerminal: (callback) => ipcRenderer.on('menu:toggle-terminal', callback),

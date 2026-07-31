@@ -14,6 +14,7 @@
     terminalStarted: false,
     scrollPositions: {},
     scrollDebounceTimer: null,
+    customTextExtensions: [],
   };
 
   const SCROLL_POSITION_MAX_AGE_MS = 24 * 60 * 60 * 1000;
@@ -67,6 +68,12 @@
     btnTerminalClear: document.getElementById('btn-terminal-clear'),
     btnTerminalRestart: document.getElementById('btn-terminal-restart'),
     btnTerminalClose: document.getElementById('btn-terminal-close'),
+    extOverlay: document.getElementById('ext-settings-overlay'),
+    extInput: document.getElementById('ext-input'),
+    btnExtAdd: document.getElementById('btn-ext-add'),
+    extList: document.getElementById('ext-list'),
+    extError: document.getElementById('ext-error'),
+    btnCloseExtSettings: document.getElementById('btn-close-ext-settings'),
   };
 
   // ---------------------------------------------------------------------
@@ -104,6 +111,118 @@
     document.documentElement.lang = result.language;
     applyStaticTranslations();
   }
+
+  // ---------------------------------------------------------------------
+  // Custom text extensions settings
+  // ---------------------------------------------------------------------
+
+  const BUILTIN_KIND_EXTENSIONS = new Set(['md', 'markdown', 'puml', 'json', 'txt', 'log']);
+
+  async function loadCustomExtensions() {
+    const result = await window.mdviewer.getCustomExtensions();
+    state.customTextExtensions = result.ok ? result.extensions : [];
+  }
+
+  async function refreshTreeRoot() {
+    if (!state.rootPath) return;
+    const result = await window.mdviewer.listDir(state.rootPath);
+    if (!result.ok) return;
+    el.tree.innerHTML = '';
+    buildTreeNodes(el.tree, result.items, 0);
+  }
+
+  function renderExtList() {
+    el.extList.innerHTML = '';
+    if (state.customTextExtensions.length === 0) {
+      const empty = document.createElement('li');
+      empty.className = 'ext-list-empty';
+      empty.textContent = t('ext.empty');
+      el.extList.appendChild(empty);
+      return;
+    }
+    for (const ext of state.customTextExtensions) {
+      const li = document.createElement('li');
+      li.className = 'ext-list-item';
+      const label = document.createElement('span');
+      label.textContent = '.' + ext;
+      li.appendChild(label);
+      const removeBtn = document.createElement('button');
+      removeBtn.className = 'ext-list-remove';
+      removeBtn.textContent = '✕';
+      removeBtn.title = t('ext.removeTitle');
+      removeBtn.addEventListener('click', () => removeCustomExtension(ext));
+      li.appendChild(removeBtn);
+      el.extList.appendChild(li);
+    }
+  }
+
+  function showExtError(key) {
+    el.extError.textContent = t(key);
+    el.extError.classList.remove('hidden');
+  }
+
+  function hideExtError() {
+    el.extError.classList.add('hidden');
+    el.extError.textContent = '';
+  }
+
+  async function addCustomExtension() {
+    const raw = el.extInput.value.trim().replace(/^\./, '').toLowerCase();
+    if (!raw || !/^[a-z0-9]+$/.test(raw)) {
+      showExtError('ext.errorInvalid');
+      return;
+    }
+    if (BUILTIN_KIND_EXTENSIONS.has(raw)) {
+      showExtError('ext.errorBuiltin');
+      return;
+    }
+    if (state.customTextExtensions.includes(raw)) {
+      showExtError('ext.errorDuplicate');
+      return;
+    }
+    hideExtError();
+    const next = [...state.customTextExtensions, raw];
+    const result = await window.mdviewer.setCustomExtensions(next);
+    state.customTextExtensions = result.ok ? result.extensions : next;
+    el.extInput.value = '';
+    renderExtList();
+    await refreshTreeRoot();
+  }
+
+  async function removeCustomExtension(ext) {
+    const next = state.customTextExtensions.filter((e) => e !== ext);
+    const result = await window.mdviewer.setCustomExtensions(next);
+    state.customTextExtensions = result.ok ? result.extensions : next;
+    renderExtList();
+    await refreshTreeRoot();
+  }
+
+  function openExtSettings() {
+    hideExtError();
+    el.extInput.value = '';
+    renderExtList();
+    el.extOverlay.classList.remove('hidden');
+    el.extInput.focus();
+  }
+
+  function closeExtSettings() {
+    el.extOverlay.classList.add('hidden');
+  }
+
+  el.btnCloseExtSettings.addEventListener('click', closeExtSettings);
+  el.extOverlay.addEventListener('click', (e) => {
+    if (e.target === el.extOverlay) closeExtSettings();
+  });
+  el.btnExtAdd.addEventListener('click', addCustomExtension);
+  el.extInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      addCustomExtension();
+    } else if (e.key === 'Escape') {
+      closeExtSettings();
+    }
+  });
+  window.mdviewer.onMenuManageCustomExtensions(openExtSettings);
 
   // ---------------------------------------------------------------------
   // Preview iframe setup
@@ -192,6 +311,16 @@
     // '#fragment' links fall through to default same-doc scrolling behavior.
   }
 
+  // Whether a path's extension should open in the plain-text viewer/editor:
+  // the built-in .txt/.log set, plus any user-added custom extensions from
+  // the "Custom Extensions..." settings dialog.
+  function isPlainTextPath(filePath) {
+    if (/\.(txt|log)$/i.test(filePath)) return true;
+    const m = /\.([a-zA-Z0-9]+)$/.exec(filePath);
+    if (!m) return false;
+    return state.customTextExtensions.includes(m[1].toLowerCase());
+  }
+
   // Shared handler for "internal" links (resolved by the main process to an
   // absolute path): navigates in-app for markdown targets, hands off to the
   // OS for anything else, and jumps to same-page anchors. Used both by
@@ -212,6 +341,10 @@
     } else if (/\.json$/i.test(absPath)) {
       if (!(await guardNavigation())) return;
       await loadAndRenderJson(absPath);
+      await revealPathInTree(absPath, { select: true });
+    } else if (isPlainTextPath(absPath)) {
+      if (!(await guardNavigation())) return;
+      await loadAndRenderText(absPath);
       await revealPathInTree(absPath, { select: true });
     } else if (absPath) {
       openExternalSafe(pathToFileUrl(absPath));
@@ -413,7 +546,17 @@
       const row = document.createElement('div');
       row.className =
         'tree-row' +
-        (item.isDir ? ' dir' : item.isMarkdown ? ' md' : item.isPuml ? ' puml' : item.isJson ? ' json' : ' non-md');
+        (item.isDir
+          ? ' dir'
+          : item.isMarkdown
+          ? ' md'
+          : item.isPuml
+          ? ' puml'
+          : item.isJson
+          ? ' json'
+          : item.isPlainText
+          ? ' plaintext'
+          : ' non-md');
       row.style.paddingLeft = 6 + depth * indentUnit + 'px';
       row.dataset.path = item.path;
 
@@ -424,7 +567,18 @@
 
       const icon = document.createElement('span');
       icon.className = 'tree-icon';
-      icon.textContent = item.isDir ? '📁' : item.isMarkdown ? '📄' : item.isPuml ? '📐' : item.isJson ? '🗂' : '·';
+      icon.textContent =
+        item.isDir
+          ? '📁'
+          : item.isMarkdown
+          ? '📄'
+          : item.isPuml
+          ? '📐'
+          : item.isJson
+          ? '🗂'
+          : item.isPlainText
+          ? '📃'
+          : '·';
       row.appendChild(icon);
 
       const label = document.createElement('span');
@@ -469,6 +623,12 @@
           if (!(await guardNavigation())) return;
           selectTreeRow(row);
           loadAndRenderJson(item.path);
+        });
+      } else if (item.isPlainText) {
+        row.addEventListener('click', async () => {
+          if (!(await guardNavigation())) return;
+          selectTreeRow(row);
+          loadAndRenderText(item.path);
         });
       }
 
@@ -518,11 +678,13 @@
 
   // Toggles toolbar/preview affordances that only make sense for one file
   // kind (e.g. the diagram refresh button only applies to PlantUML files;
-  // the JSON tree needs the preview body's prose max-width lifted so its
-  // table columns have room instead of overlapping).
+  // JSON/plain-text views need the preview body's prose max-width lifted so
+  // wide content (JSON columns, long log lines) has room instead of being
+  // squeezed).
   function updateFileKindUI() {
     el.btnRefreshPuml.classList.toggle('hidden', state.currentFileKind !== 'puml');
-    el.frame.contentDocument.body.classList.toggle('json-view', state.currentFileKind === 'json');
+    const isWideView = state.currentFileKind === 'json' || state.currentFileKind === 'text';
+    el.frame.contentDocument.body.classList.toggle('wide-view', isWideView);
     // Reserve the path bar's space for the whole time a JSON file is open
     // (even before any node has been clicked), so clicking the first node
     // doesn't shift the layout by suddenly introducing the bar.
@@ -597,6 +759,8 @@
       await loadAndRenderPuml(filePath);
     } else if (/\.json$/i.test(filePath)) {
       await loadAndRenderJson(filePath);
+    } else if (isPlainTextPath(filePath)) {
+      await loadAndRenderText(filePath);
     } else {
       await loadAndRenderFile(filePath);
     }
@@ -636,6 +800,37 @@
     renderBreadcrumb(filePath);
     state.currentFilePath = filePath;
     state.currentFileKind = 'json';
+    updateFileKindUI();
+    window.mdviewer.watchFile(filePath);
+    restoreScrollPosition(filePath);
+
+    if (state.editMode) {
+      const readResult = await window.mdviewer.readFile(filePath);
+      if (readResult.ok) {
+        el.mdSourceEditor.value = readResult.content;
+      }
+      state.sourceDirty = false;
+      el.editStatus.textContent = '';
+    }
+
+    refreshToc();
+    persistProjectState();
+  }
+
+  // .txt/.log files are shown as plain, unrendered text. Like markdown and
+  // JSON (and unlike PlantUML), it re-renders live as you type.
+  async function loadAndRenderText(filePath) {
+    captureScrollPosition();
+    const result = await window.mdviewer.renderPlainTextFile(filePath);
+    if (!result.ok) {
+      el.frame.contentDocument.body.innerHTML =
+        `<div class="mdviewer-empty-state">${escapeHtml(t('file.openFailed', { error: result.error }))}</div>`;
+      return;
+    }
+    el.frame.contentDocument.body.innerHTML = result.html;
+    renderBreadcrumb(filePath);
+    state.currentFilePath = filePath;
+    state.currentFileKind = 'text';
     updateFileKindUI();
     window.mdviewer.watchFile(filePath);
     restoreScrollPosition(filePath);
@@ -1046,6 +1241,14 @@
       refreshToc();
       return;
     }
+    if (state.currentFileKind === 'text') {
+      const result = await window.mdviewer.renderPlainTextText(el.mdSourceEditor.value);
+      if (result.ok) {
+        el.frame.contentDocument.body.innerHTML = result.html;
+        refreshToc();
+      }
+      return;
+    }
     const baseDir = dirnameOf(state.currentFilePath);
     const result = await window.mdviewer.renderMarkdownText(el.mdSourceEditor.value, baseDir);
     if (result.ok) {
@@ -1205,6 +1408,7 @@
       if (/\.(md|markdown)$/i.test(absPath)) type = 'internal-doc';
       else if (/\.puml$/i.test(absPath)) type = 'internal-puml';
       else if (/\.json$/i.test(absPath)) type = 'internal-json';
+      else if (isPlainTextPath(absPath)) type = 'internal-text';
       return { type, absPath, hash: hash || '', key: internal };
     }
     const href = anchor.getAttribute('href') || '';
@@ -1221,6 +1425,7 @@
     'internal-doc': '📄',
     'internal-puml': '📐',
     'internal-json': '🗂',
+    'internal-text': '📃',
     'internal-file': '📎',
     anchor: '#',
     external: '↗',
@@ -1678,6 +1883,7 @@
 
   (async () => {
     await initI18n();
+    await loadCustomExtensions();
     initPreviewFrame();
     showWelcomeScreen();
     updateCssAppliedBadge();
