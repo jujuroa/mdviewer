@@ -1,7 +1,7 @@
 const { app, BrowserWindow, ipcMain, dialog, shell, Menu, clipboard } = require('electron');
 const path = require('path');
 const fs = require('fs');
-const { spawnSync } = require('child_process');
+const { spawn } = require('child_process');
 const pty = require('node-pty');
 const MarkdownIt = require('markdown-it');
 const taskLists = require('markdown-it-task-lists');
@@ -30,28 +30,66 @@ function plantumlRuntimePaths() {
   };
 }
 
-function renderPlantUmlSvg(source) {
+// Renders in flight, keyed by the renderer-supplied requestId — a single
+// request (e.g. a markdown file with several puml fences) can own more than
+// one child process, hence a Set per id. Lets the renderer cancel
+// (render:cancel below) whatever's still running for a request once the
+// user has navigated away from it, instead of leaving java to burn CPU on
+// a diagram nobody will see.
+const activeRenderAborts = new Map();
+
+function registerAbort(requestId, controller) {
+  if (!requestId) return;
+  if (!activeRenderAborts.has(requestId)) activeRenderAborts.set(requestId, new Set());
+  activeRenderAborts.get(requestId).add(controller);
+}
+
+function unregisterAbort(requestId, controller) {
+  const set = activeRenderAborts.get(requestId);
+  if (!set) return;
+  set.delete(controller);
+  if (set.size === 0) activeRenderAborts.delete(requestId);
+}
+
+// Runs java as an async child process rather than spawnSync: large/complex
+// diagrams can take java a few seconds (JVM startup + layout), and
+// spawnSync blocks the ENTIRE main process's event loop for that whole
+// time — freezing every window, menu, and IPC call in the app, not just the
+// diagram being rendered. spawn() lets the main process keep servicing
+// everything else while java runs in its own OS process.
+function renderPlantUmlSvg(source, signal) {
   const { jar, java } = plantumlRuntimePaths();
   if (!fs.existsSync(jar) || !fs.existsSync(java)) {
-    throw new Error('PlantUML runtime not found. Run "npm run prepare:plantuml" (or npm start / npm run dist, which do this automatically).');
+    return Promise.reject(new Error(
+      'PlantUML runtime not found. Run "npm run prepare:plantuml" (or npm start / npm run dist, which do this automatically).'
+    ));
   }
   const trimmed = source.trim();
   const body = /@start\w+/i.test(trimmed) ? trimmed : `@startuml\n${trimmed}\n@enduml`;
-  const result = spawnSync(java, ['-Djava.awt.headless=true', '-jar', jar, '-tsvg', '-pipe', '-charset', 'UTF-8'], {
-    input: body,
-    encoding: 'utf-8',
-    maxBuffer: 64 * 1024 * 1024,
+
+  return new Promise((resolve, reject) => {
+    const child = spawn(java, ['-Djava.awt.headless=true', '-jar', jar, '-tsvg', '-pipe', '-charset', 'UTF-8'], { signal });
+    const stdoutChunks = [];
+    const stderrChunks = [];
+    child.stdout.on('data', (chunk) => stdoutChunks.push(chunk));
+    child.stderr.on('data', (chunk) => stderrChunks.push(chunk));
+    child.on('error', reject);
+    child.on('close', (code) => {
+      const svg = Buffer.concat(stdoutChunks).toString('utf-8').trim();
+      if (code !== 0 || !svg.startsWith('<')) {
+        const stderr = Buffer.concat(stderrChunks).toString('utf-8').trim();
+        reject(new Error(stderr || 'PlantUML rendering failed'));
+        return;
+      }
+      resolve(svg);
+    });
+    child.stdin.write(body, 'utf-8');
+    child.stdin.end();
   });
-  if (result.error) throw result.error;
-  const svg = (result.stdout || '').trim();
-  if (result.status !== 0 || !svg.startsWith('<')) {
-    throw new Error((result.stderr && result.stderr.trim()) || 'PlantUML rendering failed');
-  }
-  return svg;
 }
 
-function plantumlImageSrc(source) {
-  const svg = renderPlantUmlSvg(source);
+async function plantumlImageSrc(source, signal) {
+  const svg = await renderPlantUmlSvg(source, signal);
   return `data:image/svg+xml;base64,${Buffer.from(svg, 'utf-8').toString('base64')}`;
 }
 
@@ -279,12 +317,11 @@ function createMarkdownRenderer(baseDir) {
     const token = tokens[idx];
     const lang = token.info.trim().split(/\s+/)[0].toLowerCase();
     if (PLANTUML_FENCE_LANGS.has(lang)) {
-      try {
-        const src = plantumlImageSrc(token.content);
-        return plantumlDiagramHtml(src) + '\n';
-      } catch (err) {
-        return `<div class="plantuml-diagram plantuml-error">${md.utils.escapeHtml(err.message)}</div>\n`;
-      }
+      // PlantUML rendering is async (see renderPlantUmlSvg) but markdown-it's
+      // own render pass is synchronous, so every puml/plantuml fence in this
+      // document is pre-rendered up front by renderMarkdownText and stashed
+      // on env — this rule just looks the result up.
+      return (env.pumlResults && env.pumlResults.get(token)) || '';
     }
     if (MERMAID_FENCE_LANGS.has(lang)) {
       const src = mermaidImageSrc(token.content);
@@ -359,28 +396,56 @@ function sanitizeMarkdownHtml(rawHtml) {
   });
 }
 
-function renderMarkdownText(text, baseDir) {
+async function renderMarkdownText(text, baseDir, requestId) {
   const md = createMarkdownRenderer(baseDir);
-  return sanitizeMarkdownHtml(md.render(text));
+  const env = {};
+  const tokens = md.parse(text, env);
+
+  const pumlTokens = tokens.filter(
+    (token) => token.type === 'fence' && PLANTUML_FENCE_LANGS.has(token.info.trim().split(/\s+/)[0].toLowerCase())
+  );
+  const pumlResults = new Map();
+  await Promise.all(
+    pumlTokens.map(async (token) => {
+      const controller = new AbortController();
+      registerAbort(requestId, controller);
+      try {
+        const src = await plantumlImageSrc(token.content, controller.signal);
+        pumlResults.set(token, plantumlDiagramHtml(src) + '\n');
+      } catch (err) {
+        pumlResults.set(token, `<div class="plantuml-diagram plantuml-error">${md.utils.escapeHtml(err.message)}</div>\n`);
+      } finally {
+        unregisterAbort(requestId, controller);
+      }
+    })
+  );
+  env.pumlResults = pumlResults;
+
+  const html = md.renderer.render(tokens, md.options, env);
+  return sanitizeMarkdownHtml(html);
 }
 
-function renderMarkdownFile(filePath) {
+async function renderMarkdownFile(filePath, requestId) {
   const raw = fs.readFileSync(filePath, 'utf-8');
-  return renderMarkdownText(raw, path.dirname(filePath));
+  return renderMarkdownText(raw, path.dirname(filePath), requestId);
 }
 
-function renderPlantUmlText(text) {
+async function renderPlantUmlText(text, requestId) {
+  const controller = new AbortController();
+  registerAbort(requestId, controller);
   try {
-    const src = plantumlImageSrc(text);
+    const src = await plantumlImageSrc(text, controller.signal);
     return plantumlDiagramHtml(src);
   } catch (err) {
     return `<div class="plantuml-diagram plantuml-error">${escapeHtmlText(err.message)}</div>`;
+  } finally {
+    unregisterAbort(requestId, controller);
   }
 }
 
-function renderPlantUmlFile(filePath) {
+async function renderPlantUmlFile(filePath, requestId) {
   const raw = fs.readFileSync(filePath, 'utf-8');
-  return renderPlantUmlText(raw);
+  return renderPlantUmlText(raw, requestId);
 }
 
 function escapeHtmlText(str) {
@@ -834,18 +899,18 @@ ipcMain.handle('fs:list-dir', (event, dirPath) => {
   }
 });
 
-ipcMain.handle('fs:render-markdown', (event, filePath) => {
+ipcMain.handle('fs:render-markdown', async (event, filePath, requestId) => {
   try {
-    const html = renderMarkdownFile(filePath);
+    const html = await renderMarkdownFile(filePath, requestId);
     return { ok: true, html, name: path.basename(filePath) };
   } catch (err) {
     return { ok: false, error: err.message };
   }
 });
 
-ipcMain.handle('fs:render-plantuml', (event, filePath) => {
+ipcMain.handle('fs:render-plantuml', async (event, filePath, requestId) => {
   try {
-    const html = renderPlantUmlFile(filePath);
+    const html = await renderPlantUmlFile(filePath, requestId);
     return { ok: true, html, name: path.basename(filePath) };
   } catch (err) {
     return { ok: false, error: err.message };
@@ -887,20 +952,32 @@ ipcMain.handle('fs:write-file', (event, filePath, content) => {
   }
 });
 
-ipcMain.handle('md:render-text', (event, text, baseDir) => {
+ipcMain.handle('md:render-text', async (event, text, baseDir, requestId) => {
   try {
-    return { ok: true, html: renderMarkdownText(text, baseDir) };
+    return { ok: true, html: await renderMarkdownText(text, baseDir, requestId) };
   } catch (err) {
     return { ok: false, error: err.message };
   }
 });
 
-ipcMain.handle('puml:render-text', (event, text) => {
+ipcMain.handle('puml:render-text', async (event, text, requestId) => {
   try {
-    return { ok: true, html: renderPlantUmlText(text) };
+    return { ok: true, html: await renderPlantUmlText(text, requestId) };
   } catch (err) {
     return { ok: false, error: err.message };
   }
+});
+
+// Lets the renderer abort whatever java process(es) are still running for a
+// render request once the user has navigated away from it (see
+// activeRenderAborts above) — otherwise a huge diagram nobody's looking at
+// anymore would keep burning CPU until it finishes on its own.
+ipcMain.handle('render:cancel', (event, requestId) => {
+  const controllers = activeRenderAborts.get(requestId);
+  if (controllers) {
+    for (const controller of controllers) controller.abort();
+  }
+  return { ok: true };
 });
 
 ipcMain.handle('json:render-text', (event, text) => {

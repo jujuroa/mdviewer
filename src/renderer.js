@@ -16,6 +16,7 @@
     scrollDebounceTimer: null,
     suppressScrollSync: false,
     customTextExtensions: [],
+    activeRequestId: null,
   };
 
   const SCROLL_POSITION_MAX_AGE_MS = 24 * 60 * 60 * 1000;
@@ -789,9 +790,50 @@
     el.jsonPathBar.classList.toggle('hidden', state.currentFileKind !== 'json');
   }
 
+  // PlantUML rendering (java, spawned per-diagram — see main.js) can take a
+  // few seconds for large/complex diagrams. Rendering itself runs off the
+  // main process's event loop (async spawn, not spawnSync) so the app stays
+  // responsive while it waits, but the preview pane still needs to show
+  // *something* other than stale/blank content in the meantime. Only shown
+  // if the render is still running after `delayMs`, so quick renders (the
+  // common case — most files have no diagrams at all) never flash it.
+  function scheduleLoadingIndicator(delayMs = 150) {
+    const timer = setTimeout(() => {
+      el.frame.contentDocument.body.innerHTML =
+        `<div class="mdviewer-loading-state"><div class="mdviewer-spinner"></div><div>${escapeHtml(t('preview.rendering'))}</div></div>`;
+    }, delayMs);
+    return () => clearTimeout(timer);
+  }
+
+  // Renders (particularly PlantUML ones) are async and can take a few
+  // seconds — long enough that the user may switch to a different file, or
+  // this same file may get re-rendered again (edit/refresh/re-save), before
+  // an earlier one finishes. Each render call gets a fresh id; starting a
+  // new one cancels whatever was previously in flight (killing its
+  // still-running java process(es) via main.js's render:cancel — see
+  // activeRenderAborts there), and any render whose id no longer matches
+  // state.activeRequestId by the time it resolves is stale and must not be
+  // applied to the DOM, however it turns out (success or error).
+  function beginRenderRequest() {
+    if (state.activeRequestId) {
+      window.mdviewer.cancelRender(state.activeRequestId);
+    }
+    const requestId = `req-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    state.activeRequestId = requestId;
+    return requestId;
+  }
+
+  function isStaleRequest(requestId) {
+    return requestId !== state.activeRequestId;
+  }
+
   async function loadAndRenderFile(filePath) {
     captureScrollPosition();
-    const result = await window.mdviewer.renderMarkdown(filePath);
+    const requestId = beginRenderRequest();
+    const cancelLoading = scheduleLoadingIndicator();
+    const result = await window.mdviewer.renderMarkdown(filePath, requestId);
+    cancelLoading();
+    if (isStaleRequest(requestId)) return;
     if (!result.ok) {
       el.frame.contentDocument.body.innerHTML =
         `<div class="mdviewer-empty-state">${escapeHtml(t('file.openFailed', { error: result.error }))}</div>`;
@@ -824,7 +866,11 @@
   // re-rendering only happens on open, save, and the explicit refresh button.
   async function loadAndRenderPuml(filePath) {
     captureScrollPosition();
-    const result = await window.mdviewer.renderPlantUmlFile(filePath);
+    const requestId = beginRenderRequest();
+    const cancelLoading = scheduleLoadingIndicator();
+    const result = await window.mdviewer.renderPlantUmlFile(filePath, requestId);
+    cancelLoading();
+    if (isStaleRequest(requestId)) return;
     if (!result.ok) {
       el.frame.contentDocument.body.innerHTML =
         `<div class="mdviewer-empty-state">${escapeHtml(t('file.openFailed', { error: result.error }))}</div>`;
@@ -867,7 +913,11 @@
   // Re-renders the current PlantUML diagram from the given source text
   // (either the live editor buffer, or freshly re-read from disk).
   async function renderPumlFromText(text) {
-    const result = await window.mdviewer.renderPlantUmlText(text);
+    const requestId = beginRenderRequest();
+    const cancelLoading = scheduleLoadingIndicator();
+    const result = await window.mdviewer.renderPlantUmlText(text, requestId);
+    cancelLoading();
+    if (isStaleRequest(requestId)) return;
     if (result.ok) {
       el.frame.contentDocument.body.innerHTML = result.html;
     }
@@ -907,6 +957,7 @@
   // PlantUML), the tree re-renders live as you type in edit mode.
   async function loadAndRenderJson(filePath) {
     captureScrollPosition();
+    beginRenderRequest(); // JSON itself renders synchronously; this just cancels/invalidates any slower request left over from before navigating here.
     clearJsonPath();
     const result = await window.mdviewer.renderJsonFile(filePath);
     if (!result.ok) {
@@ -939,6 +990,7 @@
   // JSON (and unlike PlantUML), it re-renders live as you type.
   async function loadAndRenderText(filePath) {
     captureScrollPosition();
+    beginRenderRequest(); // plain text itself renders synchronously; this just cancels/invalidates any slower request left over from before navigating here.
     const result = await window.mdviewer.renderPlainTextFile(filePath);
     if (!result.ok) {
       el.frame.contentDocument.body.innerHTML =
@@ -1456,6 +1508,12 @@
   }
 
   async function renderSourcePreview() {
+    // Each keystroke re-render cancels/invalidates whatever the previous one
+    // kicked off — relevant mainly for markdown with an embedded puml fence,
+    // where a still-rendering diagram from a few keystrokes ago must not
+    // land after a newer one (or after the user's stopped editing this file).
+    const requestId = beginRenderRequest();
+
     if (state.currentFileKind === 'json') {
       await renderJsonFromText(el.mdSourceEditor.value);
       refreshToc();
@@ -1470,7 +1528,8 @@
       return;
     }
     const baseDir = dirnameOf(state.currentFilePath);
-    const result = await window.mdviewer.renderMarkdownText(el.mdSourceEditor.value, baseDir);
+    const result = await window.mdviewer.renderMarkdownText(el.mdSourceEditor.value, baseDir, requestId);
+    if (isStaleRequest(requestId)) return;
     if (result.ok) {
       el.frame.contentDocument.body.innerHTML = result.html;
       refreshToc();
