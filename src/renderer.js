@@ -775,12 +775,12 @@
   }
 
   // Toggles toolbar/preview affordances that only make sense for one file
-  // kind (e.g. the diagram refresh button only applies to PlantUML files;
-  // JSON/plain-text views need the preview body's prose max-width lifted so
-  // wide content (JSON columns, long log lines) has room instead of being
-  // squeezed).
+  // kind (e.g. JSON/plain-text views need the preview body's prose
+  // max-width lifted so wide content (JSON columns, long log lines) has
+  // room instead of being squeezed). The refresh button applies to any open
+  // file, so it only depends on whether one is open at all.
   function updateFileKindUI() {
-    el.btnRefreshPuml.classList.toggle('hidden', state.currentFileKind !== 'puml');
+    el.btnRefreshPuml.classList.toggle('hidden', !state.currentFilePath);
     const isWideView = state.currentFileKind === 'json' || state.currentFileKind === 'text';
     el.frame.contentDocument.body.classList.toggle('wide-view', isWideView);
     // Reserve the path bar's space for the whole time a JSON file is open
@@ -873,13 +873,33 @@
     }
   }
 
-  async function refreshPumlPreview() {
-    if (state.currentFileKind !== 'puml' || !state.currentFilePath) return;
-    if (state.editMode) {
-      await renderPumlFromText(el.mdSourceEditor.value);
+  // Reloads the currently open file from disk, whatever its kind — picks up
+  // changes made in another editor. Outside edit mode the file watcher
+  // already does this automatically, but it deliberately stays silent
+  // during edit mode to avoid clobbering in-progress edits (see the
+  // 'file-changed' handler below), so this button is the manual way to
+  // pull in external changes while editing. Confirms first if there are
+  // unsaved edits, since this discards them the same way switching files
+  // or exiting edit mode does.
+  async function refreshCurrentFile() {
+    if (!state.currentFilePath) return;
+    if (!confirmDiscardIfDirty()) return;
+
+    if (!state.editMode) {
+      await loadAndRenderByPath(state.currentFilePath);
+      return;
+    }
+
+    const readResult = await window.mdviewer.readFile(state.currentFilePath);
+    if (!readResult.ok) return;
+    el.mdSourceEditor.value = readResult.content;
+    state.sourceDirty = false;
+    el.editStatus.textContent = '';
+
+    if (state.currentFileKind === 'puml') {
+      await renderPumlFromText(readResult.content);
     } else {
-      const readResult = await window.mdviewer.readFile(state.currentFilePath);
-      if (readResult.ok) await renderPumlFromText(readResult.content);
+      await renderSourcePreview();
     }
   }
 
@@ -1502,7 +1522,7 @@
 
   el.btnToggleEdit.addEventListener('click', toggleEditMode);
   el.btnSaveSource.addEventListener('click', saveSource);
-  el.btnRefreshPuml.addEventListener('click', refreshPumlPreview);
+  el.btnRefreshPuml.addEventListener('click', refreshCurrentFile);
 
   window.mdviewer.onMenuToggleEditMode(toggleEditMode);
   window.mdviewer.onMenuSaveFile(() => {
