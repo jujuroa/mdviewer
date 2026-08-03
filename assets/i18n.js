@@ -12,6 +12,7 @@ const STRINGS = {
     'menu.recentProjects': 'Recent Projects',
     'menu.noRecentProjects': 'No recent projects',
     'menu.view': 'View',
+    'menu.find': 'Find in Document',
     'menu.toggleCssEditor': 'Toggle CSS Editor',
     'menu.toggleEditMode': 'Toggle Edit Mode',
     'menu.toggleTerminal': 'Toggle Terminal',
@@ -54,6 +55,13 @@ const STRINGS = {
     'toolbar.cssEditTitle': 'Open/close CSS editor (Ctrl+E)',
     'toolbar.terminalBtn': 'Terminal',
     'toolbar.terminalTitle': 'Open/close terminal (Ctrl+`)',
+
+    'find.placeholder': 'Find in document',
+    'find.noResults': 'No results',
+    'find.matchCount': '{current}/{total}',
+    'find.prevTitle': 'Previous match (Shift+Enter)',
+    'find.nextTitle': 'Next match (Enter)',
+    'find.closeTitle': 'Close (Esc)',
 
     'editor.placeholder': 'Enter markdown source',
 
@@ -132,6 +140,7 @@ const STRINGS = {
     'menu.recentProjects': '최근 프로젝트',
     'menu.noRecentProjects': '최근 프로젝트 없음',
     'menu.view': '보기',
+    'menu.find': '문서 내 찾기',
     'menu.toggleCssEditor': 'CSS 편집기 전환',
     'menu.toggleEditMode': '편집 모드 전환',
     'menu.toggleTerminal': '터미널 전환',
@@ -174,6 +183,13 @@ const STRINGS = {
     'toolbar.cssEditTitle': 'CSS 편집기 열기/닫기 (Ctrl+E)',
     'toolbar.terminalBtn': '터미널',
     'toolbar.terminalTitle': '터미널 열기/닫기 (Ctrl+`)',
+
+    'find.placeholder': '문서 내 찾기',
+    'find.noResults': '검색 결과 없음',
+    'find.matchCount': '{current}/{total}',
+    'find.prevTitle': '이전 항목 (Shift+Enter)',
+    'find.nextTitle': '다음 항목 (Enter)',
+    'find.closeTitle': '닫기 (Esc)',
 
     'editor.placeholder': '마크다운 소스를 입력하세요',
 

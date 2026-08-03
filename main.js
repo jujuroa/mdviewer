@@ -1,26 +1,77 @@
 const { app, BrowserWindow, ipcMain, dialog, shell, Menu, clipboard } = require('electron');
 const path = require('path');
 const fs = require('fs');
+const { spawnSync } = require('child_process');
 const pty = require('node-pty');
 const MarkdownIt = require('markdown-it');
 const taskLists = require('markdown-it-task-lists');
 const hljs = require('highlight.js');
 const sanitizeHtml = require('sanitize-html');
-const plantumlEncoder = require('plantuml-encoder');
 const { DEFAULT_LANGUAGE, SUPPORTED_LANGUAGES, STRINGS, translate } = require('./assets/i18n.js');
 
 const CONFIG_DIR_NAME = '.mdviewer';
 const CSS_FILE_NAME = 'custom.css';
 const MAX_RECENT_PROJECTS = 8;
 const PLANTUML_FENCE_LANGS = new Set(['plantuml', 'puml']);
-const PLANTUML_SERVER = 'https://www.plantuml.com/plantuml';
 const MERMAID_FENCE_LANGS = new Set(['mermaid']);
 const MERMAID_SERVER = 'https://mermaid.ink';
 
-function plantumlImageSrc(source) {
+// PlantUML is rendered locally via a bundled plantuml.jar + minimal jlink'd JRE
+// (see scripts/prepare-plantuml.js), rather than the public plantuml.com server:
+// that server rejects large/complex diagrams once the encoded source pushes the
+// request URL past its ~8KB limit (HTTP 400), which showed up as a broken image.
+function plantumlRuntimePaths() {
+  const base = app.isPackaged
+    ? path.join(process.resourcesPath, 'thirdparty', 'plantuml')
+    : path.join(__dirname, 'thirdparty', 'plantuml');
+  return {
+    jar: path.join(base, 'plantuml.jar'),
+    java: path.join(base, 'jre', 'bin', process.platform === 'win32' ? 'java.exe' : 'java'),
+  };
+}
+
+function renderPlantUmlSvg(source) {
+  const { jar, java } = plantumlRuntimePaths();
+  if (!fs.existsSync(jar) || !fs.existsSync(java)) {
+    throw new Error('PlantUML runtime not found. Run "npm run prepare:plantuml" (or npm start / npm run dist, which do this automatically).');
+  }
   const trimmed = source.trim();
   const body = /@start\w+/i.test(trimmed) ? trimmed : `@startuml\n${trimmed}\n@enduml`;
-  return `${PLANTUML_SERVER}/svg/${plantumlEncoder.encode(body)}`;
+  const result = spawnSync(java, ['-Djava.awt.headless=true', '-jar', jar, '-tsvg', '-pipe', '-charset', 'UTF-8'], {
+    input: body,
+    encoding: 'utf-8',
+    maxBuffer: 64 * 1024 * 1024,
+  });
+  if (result.error) throw result.error;
+  const svg = (result.stdout || '').trim();
+  if (result.status !== 0 || !svg.startsWith('<')) {
+    throw new Error((result.stderr && result.stderr.trim()) || 'PlantUML rendering failed');
+  }
+  return svg;
+}
+
+function plantumlImageSrc(source) {
+  const svg = renderPlantUmlSvg(source);
+  return `data:image/svg+xml;base64,${Buffer.from(svg, 'utf-8').toString('base64')}`;
+}
+
+// Wraps the rendered diagram with a zoom control bar and a separate scroll
+// area, so the controls stay fixed in a corner while the (potentially huge)
+// diagram scrolls underneath. Zoom/pan interactivity itself is wired up from
+// the renderer (see initPreviewFrame in src/renderer.js) since the preview
+// iframe is sandboxed without allow-scripts.
+function plantumlDiagramHtml(imgSrc) {
+  return (
+    '<div class="plantuml-diagram" data-zoom="100">' +
+      '<div class="plantuml-zoom-controls">' +
+        '<button type="button" class="puml-zoom-out" title="Zoom out">−</button>' +
+        '<span class="puml-zoom-level">100%</span>' +
+        '<button type="button" class="puml-zoom-in" title="Zoom in">+</button>' +
+        '<button type="button" class="puml-zoom-reset" title="Reset zoom">⟳</button>' +
+      '</div>' +
+      `<div class="plantuml-scroll"><img src="${imgSrc}" alt="PlantUML diagram"></div>` +
+    '</div>'
+  );
 }
 
 function mermaidImageSrc(source) {
@@ -206,6 +257,19 @@ function createMarkdownRenderer(baseDir) {
     },
   }).use(taskLists, { enabled: true, label: true });
 
+  // Tags block-level elements with their originating source line range, so
+  // the renderer can map a match found while searching the preview (see
+  // docFind in src/renderer.js) back to an exact position in the source
+  // editor — token.map is [startLine, endLine) in the original markdown.
+  md.core.ruler.push('inject_source_line', (state) => {
+    state.tokens.forEach((token) => {
+      if (token.map && !token.type.endsWith('_close')) {
+        token.attrSet('data-source-line', String(token.map[0]));
+        token.attrSet('data-source-endline', String(token.map[1]));
+      }
+    });
+  });
+
   const defaultFenceRule =
     md.renderer.rules.fence ||
     function (tokens, idx, options, env, self) {
@@ -215,8 +279,12 @@ function createMarkdownRenderer(baseDir) {
     const token = tokens[idx];
     const lang = token.info.trim().split(/\s+/)[0].toLowerCase();
     if (PLANTUML_FENCE_LANGS.has(lang)) {
-      const src = plantumlImageSrc(token.content);
-      return `<div class="plantuml-diagram"><img src="${src}" alt="PlantUML diagram"></div>\n`;
+      try {
+        const src = plantumlImageSrc(token.content);
+        return plantumlDiagramHtml(src) + '\n';
+      } catch (err) {
+        return `<div class="plantuml-diagram plantuml-error">${md.utils.escapeHtml(err.message)}</div>\n`;
+      }
     }
     if (MERMAID_FENCE_LANGS.has(lang)) {
       const src = mermaidImageSrc(token.content);
@@ -269,17 +337,21 @@ function createMarkdownRenderer(baseDir) {
 function sanitizeMarkdownHtml(rawHtml) {
   return sanitizeHtml(rawHtml, {
     allowedTags: sanitizeHtml.defaults.allowedTags.concat([
-      'img', 'h1', 'h2', 'input', 'details', 'summary', 'video', 'audio', 'source',
+      'img', 'h1', 'h2', 'input', 'details', 'summary', 'video', 'audio', 'source', 'button',
     ]),
     allowedAttributes: {
       ...sanitizeHtml.defaults.allowedAttributes,
-      '*': ['id', 'class', 'style', 'title', 'data-internal-href'],
+      '*': [
+        'id', 'class', 'style', 'title', 'data-internal-href', 'data-zoom',
+        'data-source-line', 'data-source-endline',
+      ],
       a: ['href', 'name', 'target', 'rel', 'data-internal-href'],
       img: ['src', 'alt', 'title', 'width', 'height'],
       input: ['type', 'checked', 'disabled'],
       video: ['src', 'controls', 'width', 'height'],
       audio: ['src', 'controls'],
       source: ['src', 'type'],
+      button: ['type'],
     },
     allowedSchemes: ['http', 'https', 'mailto', 'file', 'data'],
     allowProtocolRelative: false,
@@ -298,8 +370,12 @@ function renderMarkdownFile(filePath) {
 }
 
 function renderPlantUmlText(text) {
-  const src = plantumlImageSrc(text);
-  return `<div class="plantuml-diagram"><img src="${src}" alt="PlantUML diagram"></div>`;
+  try {
+    const src = plantumlImageSrc(text);
+    return plantumlDiagramHtml(src);
+  } catch (err) {
+    return `<div class="plantuml-diagram plantuml-error">${escapeHtmlText(err.message)}</div>`;
+  }
 }
 
 function renderPlantUmlFile(filePath) {
@@ -516,6 +592,12 @@ function buildAppMenu() {
     {
       label: t('menu.view'),
       submenu: [
+        {
+          label: t('menu.find'),
+          accelerator: 'CmdOrCtrl+F',
+          click: () => mainWindow.webContents.send('menu:toggle-find'),
+        },
+        { type: 'separator' },
         {
           label: t('menu.toggleCssEditor'),
           accelerator: 'CmdOrCtrl+E',

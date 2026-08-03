@@ -14,6 +14,7 @@
     terminalStarted: false,
     scrollPositions: {},
     scrollDebounceTimer: null,
+    suppressScrollSync: false,
     customTextExtensions: [],
   };
 
@@ -53,6 +54,12 @@
     btnSaveSource: document.getElementById('btn-save-source'),
     btnRefreshPuml: document.getElementById('btn-refresh-puml'),
     jsonPathBar: document.getElementById('json-path-bar'),
+    findBar: document.getElementById('find-bar'),
+    findInput: document.getElementById('find-input'),
+    findCount: document.getElementById('find-count'),
+    findPrev: document.getElementById('find-prev'),
+    findNext: document.getElementById('find-next'),
+    findClose: document.getElementById('find-close'),
     tocPanel: document.getElementById('toc-panel'),
     tocPanelHeader: document.getElementById('toc-panel-header'),
     tocCollapseBtn: document.getElementById('toc-collapse-btn'),
@@ -260,14 +267,31 @@
     doc.addEventListener('click', onJsonNodeClick);
     doc.addEventListener('dblclick', onJsonNodeDblClick);
 
+    // PlantUML diagram zoom (+/-/reset buttons, Ctrl+wheel) and click-drag pan.
+    doc.addEventListener('click', onPumlZoomControlClick);
+    doc.addEventListener('wheel', onPumlWheel, { passive: false });
+    doc.addEventListener('mousedown', onPumlPanStart);
+    doc.addEventListener('mousemove', onPumlPanMove);
+    doc.addEventListener('mouseup', onPumlPanEnd);
+    doc.addEventListener('mouseleave', onPumlPanEnd);
+
     // Debounced scroll-position tracking, so re-opening a file later can
     // restore where the reader left off (see loadAndRenderFile).
+    let viewerEditorSyncQueued = false;
     el.frame.contentWindow.addEventListener('scroll', () => {
       clearTimeout(state.scrollDebounceTimer);
       state.scrollDebounceTimer = setTimeout(() => {
         captureScrollPosition();
         persistProjectState();
       }, 400);
+
+      if (!state.suppressScrollSync && !viewerEditorSyncQueued) {
+        viewerEditorSyncQueued = true;
+        requestAnimationFrame(() => {
+          viewerEditorSyncQueued = false;
+          syncEditorScrollToViewer();
+        });
+      }
     });
   }
 
@@ -286,6 +310,80 @@
     if (!toggle) return;
     const branch = toggle.closest('.json-branch');
     if (branch) branch.classList.toggle('collapsed');
+  }
+
+  // ---------------------------------------------------------------------
+  // PlantUML diagram zoom / pan
+  //
+  // The preview iframe is sandboxed without allow-scripts (see
+  // initPreviewFrame), so the diagram markup itself carries no behavior —
+  // all interactivity is wired up here from the parent frame instead.
+  // ---------------------------------------------------------------------
+
+  const PUML_ZOOM_MIN = 25;
+  const PUML_ZOOM_MAX = 400;
+  const PUML_ZOOM_STEP = 25;
+  let pumlPanState = null;
+
+  function setPumlZoom(diagramEl, percent) {
+    const clamped = Math.max(PUML_ZOOM_MIN, Math.min(PUML_ZOOM_MAX, Math.round(percent)));
+    diagramEl.dataset.zoom = String(clamped);
+    const img = diagramEl.querySelector('.plantuml-scroll img');
+    if (img) {
+      const naturalWidth = img.naturalWidth || parseInt(img.getAttribute('width'), 10) || 0;
+      img.style.width = clamped === 100 || !naturalWidth ? '' : `${Math.round(naturalWidth * clamped / 100)}px`;
+    }
+    const label = diagramEl.querySelector('.puml-zoom-level');
+    if (label) label.textContent = `${clamped}%`;
+  }
+
+  function onPumlZoomControlClick(e) {
+    const btn = e.target.closest('.puml-zoom-in, .puml-zoom-out, .puml-zoom-reset');
+    if (!btn) return;
+    const diagramEl = btn.closest('.plantuml-diagram');
+    if (!diagramEl) return;
+    e.preventDefault();
+    const current = parseInt(diagramEl.dataset.zoom || '100', 10);
+    if (btn.classList.contains('puml-zoom-in')) setPumlZoom(diagramEl, current + PUML_ZOOM_STEP);
+    else if (btn.classList.contains('puml-zoom-out')) setPumlZoom(diagramEl, current - PUML_ZOOM_STEP);
+    else setPumlZoom(diagramEl, 100);
+  }
+
+  function onPumlWheel(e) {
+    if (!e.ctrlKey) return;
+    const diagramEl = e.target.closest('.plantuml-diagram');
+    if (!diagramEl) return;
+    e.preventDefault();
+    const current = parseInt(diagramEl.dataset.zoom || '100', 10);
+    setPumlZoom(diagramEl, current + (e.deltaY < 0 ? PUML_ZOOM_STEP : -PUML_ZOOM_STEP));
+  }
+
+  function onPumlPanStart(e) {
+    const scrollEl = e.target.closest('.plantuml-scroll');
+    if (!scrollEl || e.button !== 0) return;
+    if (scrollEl.scrollWidth <= scrollEl.clientWidth && scrollEl.scrollHeight <= scrollEl.clientHeight) return;
+    pumlPanState = {
+      scrollEl,
+      startX: e.clientX,
+      startY: e.clientY,
+      startLeft: scrollEl.scrollLeft,
+      startTop: scrollEl.scrollTop,
+    };
+    scrollEl.classList.add('puml-panning');
+    e.preventDefault();
+  }
+
+  function onPumlPanMove(e) {
+    if (!pumlPanState) return;
+    const { scrollEl, startX, startY, startLeft, startTop } = pumlPanState;
+    scrollEl.scrollLeft = startLeft - (e.clientX - startX);
+    scrollEl.scrollTop = startTop - (e.clientY - startY);
+  }
+
+  function onPumlPanEnd() {
+    if (!pumlPanState) return;
+    pumlPanState.scrollEl.classList.remove('puml-panning');
+    pumlPanState = null;
   }
 
   function onPreviewClick(e) {
@@ -1168,6 +1266,105 @@
   });
 
   // ---------------------------------------------------------------------
+  // Split-view scroll sync (editor <-> viewer)
+  //
+  // Keeps the source editor and the rendered preview scrolled to the same
+  // spot at all times while both are visible, using the same
+  // data-source-line/data-source-endline block markers the find feature
+  // uses to map matches back to source lines (see inject_source_line in
+  // main.js). Each side's scroll handler drives the other, guarded by
+  // state.suppressScrollSync so a synced scroll doesn't immediately bounce
+  // back and forth between the two.
+  // ---------------------------------------------------------------------
+
+  function splitViewActive() {
+    return state.editMode && !el.mdSourceEditor.classList.contains('hidden');
+  }
+
+  function getEditorLineHeight() {
+    return parseFloat(getComputedStyle(el.mdSourceEditor).lineHeight) || 20;
+  }
+
+  function getSourceLineElements() {
+    const doc = el.frame.contentDocument;
+    if (!doc || !doc.body) return [];
+    return Array.from(doc.body.querySelectorAll('[data-source-line]'));
+  }
+
+  function viewerDocTop(node) {
+    return node.getBoundingClientRect().top + el.frame.contentWindow.scrollY;
+  }
+
+  // The last block whose source line starts at or before `line` — i.e. the
+  // block that would be visible at the top of the viewer if the editor's
+  // current top line were scrolled into view.
+  function findViewerElementForLine(line) {
+    const elems = getSourceLineElements();
+    let best = null;
+    for (const node of elems) {
+      const start = parseInt(node.getAttribute('data-source-line'), 10);
+      if (Number.isNaN(start)) continue;
+      if (start <= line) best = node;
+      else break;
+    }
+    return best || elems[0] || null;
+  }
+
+  // The topmost block currently visible in the viewer's viewport.
+  function findTopVisibleViewerElement() {
+    const elems = getSourceLineElements();
+    const scrollY = el.frame.contentWindow.scrollY;
+    let best = null;
+    for (const node of elems) {
+      if (viewerDocTop(node) <= scrollY + 2) best = node;
+      else break;
+    }
+    return best || elems[0] || null;
+  }
+
+  function withScrollSyncSuppressed(fn) {
+    state.suppressScrollSync = true;
+    fn();
+    // The resulting 'scroll' event dispatches asynchronously (next frame or
+    // later); a plain requestAnimationFrame can race it, so give it a bit
+    // more room before letting the other side's scroll listener re-arm.
+    setTimeout(() => {
+      state.suppressScrollSync = false;
+    }, 100);
+  }
+
+  function syncViewerScrollToEditor() {
+    if (!splitViewActive()) return;
+    const topLine = Math.floor(el.mdSourceEditor.scrollTop / getEditorLineHeight());
+    const target = findViewerElementForLine(topLine);
+    if (!target) return;
+    withScrollSyncSuppressed(() => {
+      el.frame.contentWindow.scrollTo(0, Math.max(0, viewerDocTop(target)));
+    });
+  }
+
+  function syncEditorScrollToViewer() {
+    if (!splitViewActive()) return;
+    const target = findTopVisibleViewerElement();
+    if (!target) return;
+    const line = parseInt(target.getAttribute('data-source-line'), 10);
+    if (Number.isNaN(line)) return;
+    withScrollSyncSuppressed(() => {
+      el.mdSourceEditor.scrollTop = Math.max(0, line * getEditorLineHeight());
+    });
+  }
+
+  let viewerSyncQueued = false;
+  el.mdSourceEditor.addEventListener('scroll', () => {
+    if (state.suppressScrollSync || viewerSyncQueued) return;
+    viewerSyncQueued = true;
+    requestAnimationFrame(() => {
+      viewerSyncQueued = false;
+      syncViewerScrollToEditor();
+    });
+  });
+
+  // ---------------------------------------------------------------------
   // Body (source) editing
   // ---------------------------------------------------------------------
 
@@ -1209,6 +1406,9 @@
     state.sourceDirty = false;
     setEditModeUI(true);
     el.editStatus.textContent = '';
+    // Start the split view aligned to wherever the viewer was already
+    // scrolled to, rather than snapping the editor back to the top.
+    syncEditorScrollToViewer();
     el.mdSourceEditor.focus();
     populateToc();
     persistProjectState();
@@ -1254,6 +1454,10 @@
     if (result.ok) {
       el.frame.contentDocument.body.innerHTML = result.html;
       refreshToc();
+      // Re-rendering replaces the whole preview body, which would otherwise
+      // reset its scroll to the top on every keystroke — snap it back to
+      // wherever the editor currently is instead.
+      syncViewerScrollToEditor();
     }
   }
 
@@ -1304,6 +1508,209 @@
   window.mdviewer.onMenuSaveFile(() => {
     if (state.editMode) saveSource();
   });
+
+  // ---------------------------------------------------------------------
+  // Find in document (Ctrl+F)
+  //
+  // Searches only the rendered preview (the "viewer"), not the whole app
+  // window. An earlier version delegated to Electron's native
+  // webContents.findInPage, but that searches the entire window — sidebar
+  // tree, TOC panel, toolbar labels — so next/prev would jump through
+  // unrelated UI matches instead of staying within the document. This
+  // walks the preview iframe's own text nodes and wraps matches in <mark>
+  // directly, which also lets it map a match back to its markdown source
+  // line (via data-source-line, see inject_source_line in main.js) to
+  // sync the split-view editor to the viewer's current match afterward.
+  // ---------------------------------------------------------------------
+
+  let docFindMatches = [];
+  let docFindIndex = -1;
+
+  function clearDocFindHighlights() {
+    const doc = el.frame.contentDocument;
+    if (!doc) return;
+    doc.querySelectorAll('mark.mdviewer-find-hit').forEach((mark) => {
+      const parent = mark.parentNode;
+      if (!parent) return;
+      parent.replaceChild(doc.createTextNode(mark.textContent), mark);
+      parent.normalize();
+    });
+  }
+
+  // Wraps every case-insensitive occurrence of `query` within the preview
+  // body's text nodes in a <mark>, and returns them in document order.
+  function highlightDocFindMatches(query) {
+    const doc = el.frame.contentDocument;
+    if (!doc || !doc.body) return [];
+    const lowerQuery = query.toLowerCase();
+
+    const walker = doc.createTreeWalker(doc.body, NodeFilter.SHOW_TEXT, {
+      acceptNode(node) {
+        if (!node.nodeValue || !node.nodeValue.trim()) return NodeFilter.FILTER_REJECT;
+        const parentTag = node.parentNode && node.parentNode.nodeName;
+        if (parentTag === 'MARK' || parentTag === 'SCRIPT' || parentTag === 'STYLE') {
+          return NodeFilter.FILTER_REJECT;
+        }
+        return NodeFilter.FILTER_ACCEPT;
+      },
+    });
+    const textNodes = [];
+    let node;
+    while ((node = walker.nextNode())) textNodes.push(node);
+
+    const marks = [];
+    textNodes.forEach((textNode) => {
+      const text = textNode.nodeValue;
+      const lowerText = text.toLowerCase();
+      const spans = [];
+      let searchFrom = 0;
+      let at;
+      while ((at = lowerText.indexOf(lowerQuery, searchFrom)) !== -1) {
+        spans.push([at, at + query.length]);
+        searchFrom = at + query.length;
+      }
+      if (!spans.length) return;
+
+      const frag = doc.createDocumentFragment();
+      let cursor = 0;
+      spans.forEach(([start, end]) => {
+        if (start > cursor) frag.appendChild(doc.createTextNode(text.slice(cursor, start)));
+        const mark = doc.createElement('mark');
+        mark.className = 'mdviewer-find-hit';
+        mark.textContent = text.slice(start, end);
+        frag.appendChild(mark);
+        marks.push(mark);
+        cursor = end;
+      });
+      if (cursor < text.length) frag.appendChild(doc.createTextNode(text.slice(cursor)));
+      textNode.parentNode.replaceChild(frag, textNode);
+    });
+    return marks;
+  }
+
+  // After the viewer jumps to a match, scroll the split-view source editor
+  // to the corresponding line — the editor follows the viewer, not the
+  // other way around, and only once the viewer's own jump has happened.
+  // How many lines of context to keep above the synced match, rather than
+  // centering it — makes the surrounding source easier to read at a glance.
+  const EDITOR_SYNC_CONTEXT_LINES = 8;
+
+  function syncEditorToDocFindMatch(mark) {
+    if (!state.editMode || el.mdSourceEditor.classList.contains('hidden')) return;
+    const lineEl = mark.closest('[data-source-line]');
+    if (!lineEl) return;
+    const startLine = parseInt(lineEl.getAttribute('data-source-line'), 10);
+    if (Number.isNaN(startLine)) return;
+    const endLineAttr = parseInt(lineEl.getAttribute('data-source-endline'), 10);
+    const endLine = Number.isNaN(endLineAttr) ? startLine + 1 : endLineAttr;
+
+    const sourceLines = el.mdSourceEditor.value.split('\n');
+    let blockStart = 0;
+    for (let i = 0; i < startLine && i < sourceLines.length; i++) blockStart += sourceLines[i].length + 1;
+    let blockEnd = blockStart;
+    for (let i = startLine; i < endLine && i < sourceLines.length; i++) blockEnd += sourceLines[i].length + 1;
+
+    // The block may span several source lines (e.g. a wrapped paragraph);
+    // locate the exact occurrence of the matched text within it so the
+    // editor selects the same text the viewer highlighted, not just the
+    // start of the block.
+    const blockText = el.mdSourceEditor.value.slice(blockStart, blockEnd);
+    const query = mark.textContent;
+    const localIndex = blockText.toLowerCase().indexOf(query.toLowerCase());
+
+    let selStart, targetLine;
+    if (localIndex !== -1) {
+      selStart = blockStart + localIndex;
+      targetLine = startLine + blockText.slice(0, localIndex).split('\n').length - 1;
+    } else {
+      selStart = blockStart;
+      targetLine = startLine;
+    }
+    el.mdSourceEditor.setSelectionRange(selStart, selStart + (localIndex !== -1 ? query.length : 0));
+
+    const lineHeight = parseFloat(getComputedStyle(el.mdSourceEditor).lineHeight) || 20;
+    el.mdSourceEditor.scrollTop = Math.max(0, (targetLine - EDITOR_SYNC_CONTEXT_LINES) * lineHeight);
+  }
+
+  function updateFindCountUI() {
+    if (!docFindMatches.length) {
+      const hasQuery = !!el.findInput.value;
+      el.findCount.classList.toggle('no-results', hasQuery);
+      el.findCount.textContent = hasQuery ? t('find.noResults') : '';
+      return;
+    }
+    el.findCount.classList.remove('no-results');
+    el.findCount.textContent = t('find.matchCount', {
+      current: docFindIndex + 1,
+      total: docFindMatches.length,
+    });
+  }
+
+  function gotoDocFindMatch(index) {
+    const prevMark = docFindMatches[docFindIndex];
+    if (prevMark) prevMark.classList.remove('current');
+    docFindIndex = index;
+    const mark = docFindMatches[docFindIndex];
+    if (mark) {
+      mark.classList.add('current');
+      mark.scrollIntoView({ block: 'center' });
+      syncEditorToDocFindMatch(mark);
+    }
+    updateFindCountUI();
+  }
+
+  function runDocFind() {
+    clearDocFindHighlights();
+    docFindMatches = [];
+    docFindIndex = -1;
+    const query = el.findInput.value;
+    if (!query) {
+      updateFindCountUI();
+      return;
+    }
+    docFindMatches = highlightDocFindMatches(query);
+    if (docFindMatches.length) gotoDocFindMatch(0);
+    else updateFindCountUI();
+  }
+
+  function stepDocFind(delta) {
+    if (!docFindMatches.length) {
+      runDocFind();
+      return;
+    }
+    gotoDocFindMatch((docFindIndex + delta + docFindMatches.length) % docFindMatches.length);
+  }
+
+  function openFindBar() {
+    el.findBar.classList.remove('hidden');
+    el.findInput.focus();
+    el.findInput.select();
+    if (el.findInput.value) runDocFind();
+  }
+
+  function closeFindBar() {
+    el.findBar.classList.add('hidden');
+    clearDocFindHighlights();
+    docFindMatches = [];
+    docFindIndex = -1;
+    updateFindCountUI();
+  }
+
+  el.findInput.addEventListener('input', runDocFind);
+  el.findInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      stepDocFind(e.shiftKey ? -1 : 1);
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      closeFindBar();
+    }
+  });
+  el.findPrev.addEventListener('click', () => stepDocFind(-1));
+  el.findNext.addEventListener('click', () => stepDocFind(1));
+  el.findClose.addEventListener('click', closeFindBar);
+
+  window.mdviewer.onMenuToggleFind(openFindBar);
 
   // ---------------------------------------------------------------------
   // Floating table of contents / sibling pages

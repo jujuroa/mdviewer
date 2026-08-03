@@ -65,6 +65,7 @@ contextBridge.exposeInMainWorld('mdviewer', {
     ipcRenderer.on('menu:open-recent', listener);
     return () => ipcRenderer.removeListener('menu:open-recent', listener);
   },
+  onMenuToggleFind: (callback) => ipcRenderer.on('menu:toggle-find', callback),
   onMenuToggleCssEditor: (callback) => ipcRenderer.on('menu:toggle-css-editor', callback),
   onMenuManageCustomExtensions: (callback) => ipcRenderer.on('menu:manage-custom-extensions', callback),
   onMenuToggleEditMode: (callback) => ipcRenderer.on('menu:toggle-edit-mode', callback),

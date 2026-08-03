@@ -147,3 +147,7 @@ vite.config.ts.timestamp-*
 
 # Per-project runtime state written by MD Viewer itself
 .mdviewer/
+
+# Local PlantUML runtime (jar + jlink'd JRE), fetched/built by
+# scripts/prepare-plantuml.js — not committed, regenerated on demand.
+/thirdparty/

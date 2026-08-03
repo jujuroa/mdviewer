@@ -4,8 +4,12 @@
   "description": "웹 엔진 기반 마크다운 뷰어 (CSS 커스터마이징 + 프로젝트 트리뷰)",
   "main": "main.js",
   "scripts": {
+    "prepare:plantuml": "node scripts/prepare-plantuml.js",
+    "prestart": "npm run prepare:plantuml",
     "start": "node scripts/start.js",
+    "prepack": "npm run prepare:plantuml",
     "pack": "electron-builder --dir",
+    "predist": "npm run prepare:plantuml",
     "dist": "electron-builder --win nsis"
   },
   "author": "",
@@ -22,7 +26,6 @@
     "markdown-it": "^14.1.0",
     "markdown-it-task-lists": "^2.1.1",
     "node-pty": "^1.1.0",
-    "plantuml-encoder": "^1.4.0",
     "sanitize-html": "^2.13.0"
   },
   "build": {
@@ -43,6 +46,12 @@
     ],
     "asarUnpack": [
       "node_modules/node-pty/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": "thirdparty/plantuml",
+        "to": "thirdparty/plantuml"
+      }
     ],
     "win": {
       "target": [

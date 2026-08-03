@@ -136,13 +136,17 @@ body.markdown-body.wide-view {
 
 .markdown-body .plantuml-diagram,
 .markdown-body .mermaid-diagram {
+  position: relative;
   margin-bottom: 16px;
-  padding: 16px;
-  overflow: auto;
-  text-align: center;
   background: #ffffff;
   border: 1px solid #3c3c3c;
   border-radius: 4px;
+}
+
+.markdown-body .mermaid-diagram {
+  padding: 16px;
+  overflow: auto;
+  text-align: center;
 }
 
 .markdown-body .plantuml-diagram img,
@@ -153,6 +157,89 @@ body.markdown-body.wide-view {
 @media (prefers-color-scheme: light) {
   .markdown-body .plantuml-diagram,
   .markdown-body .mermaid-diagram { border-color: #e5e5e5; }
+}
+
+.markdown-body mark.mdviewer-find-hit {
+  background: #ffd54f;
+  color: #1a1a1a;
+  border-radius: 2px;
+}
+.markdown-body mark.mdviewer-find-hit.current {
+  background: #ff9800;
+  outline: 2px solid #ff9800;
+}
+
+.markdown-body .plantuml-diagram.plantuml-error {
+  padding: 16px;
+  text-align: left;
+  white-space: pre-wrap;
+  font-family: monospace;
+  color: #e06c75;
+  border-color: #e06c75;
+}
+
+/* Scrollable/zoomable area, kept separate from .plantuml-diagram itself so
+   the zoom control bar (position: absolute) stays fixed in the corner
+   instead of scrolling away with an oversized diagram. */
+.markdown-body .plantuml-diagram .plantuml-scroll {
+  overflow: auto;
+  padding: 16px;
+  text-align: center;
+}
+
+.markdown-body .plantuml-diagram .plantuml-scroll.puml-panning {
+  cursor: grabbing;
+  user-select: none;
+}
+
+.markdown-body .plantuml-zoom-controls {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  background: rgba(30, 30, 30, 0.72);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 6px;
+  font-family: system-ui, sans-serif;
+  font-size: 12px;
+  line-height: 1;
+}
+
+.markdown-body .plantuml-zoom-controls button {
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: #f0f0f0;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.markdown-body .plantuml-zoom-controls button:hover {
+  background: rgba(255, 255, 255, 0.18);
+}
+
+.markdown-body .plantuml-zoom-controls .puml-zoom-level {
+  min-width: 38px;
+  text-align: center;
+  color: #f0f0f0;
+  user-select: none;
+}
+
+@media (prefers-color-scheme: light) {
+  .markdown-body .plantuml-zoom-controls {
+    background: rgba(255, 255, 255, 0.85);
+    border-color: rgba(0, 0, 0, 0.15);
+  }
+  .markdown-body .plantuml-zoom-controls button { color: #1a1a1a; }
+  .markdown-body .plantuml-zoom-controls button:hover { background: rgba(0, 0, 0, 0.08); }
+  .markdown-body .plantuml-zoom-controls .puml-zoom-level { color: #1a1a1a; }
 }
 
 /* ---- Plain text (.txt / .log) viewer ---- */

@@ -338,6 +338,56 @@ html, body {
 }
 .json-path-bar.hidden { display: none; }
 
+.find-bar {
+  position: absolute;
+  top: 44px;
+  right: 16px;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  background: var(--bg-sidebar);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
+}
+.find-bar.hidden { display: none; }
+
+.find-bar input {
+  width: 200px;
+  border: 1px solid var(--border);
+  background: var(--bg-app);
+  color: var(--text);
+  border-radius: 4px;
+  padding: 5px 8px;
+  font-size: 12px;
+}
+
+.find-count {
+  min-width: 52px;
+  text-align: center;
+  font-size: 11px;
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+.find-count.no-results { color: #e06c75; }
+
+.find-bar button {
+  font-size: 12px;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid var(--border);
+  background: var(--bg-sidebar);
+  color: var(--text);
+  border-radius: 4px;
+  cursor: pointer;
+}
+.find-bar button:hover { background: var(--hover); }
+.find-bar button:disabled { opacity: 0.4; cursor: default; }
+.find-bar button:disabled:hover { background: var(--bg-sidebar); }
+
 .preview-body {
   flex: 1;
   display: flex;
