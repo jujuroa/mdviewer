@@ -470,8 +470,34 @@ body.markdown-body.wide-view {
   border-collapse: collapse;
   width: 100%;
   max-width: 100%;
-  table-layout: fixed;
+  /* auto (not fixed): fixed splits every column equally regardless of
+     content, which wastes space on short columns and cramps long ones.
+     auto sizes each column from its content instead; the first-child rule
+     below only seeds the first column's share, not a hard cap — long
+     content in it can still grow the column, same as any other. */
+  table-layout: auto;
   border-bottom: 1px solid #3c3c3c;
+}
+
+.markdown-body table th:first-child,
+.markdown-body table td:first-child {
+  width: 25%;
+}
+
+/* A flat 25% for just the first column stops making sense as more columns
+   have to share what's left — 25% + 4 more columns already leaves each of
+   those under 19% on average, and it only gets tighter from there. Taper
+   the hint down (quantity queries via :has(), not JS) as column count
+   grows, down to no hint at all once there are enough columns that pure
+   content-based auto sizing is the more sensible default. */
+.markdown-body table tr:has(> :nth-child(5)) th:first-child,
+.markdown-body table tr:has(> :nth-child(5)) td:first-child {
+  width: 18%;
+}
+
+.markdown-body table tr:has(> :nth-child(8)) th:first-child,
+.markdown-body table tr:has(> :nth-child(8)) td:first-child {
+  width: auto;
 }
 
 .markdown-body table th,
