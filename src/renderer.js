@@ -735,6 +735,166 @@
     }
   }
 
+  // Finds the .tree-row for an arbitrary path anywhere in the tree,
+  // regardless of nesting depth. Used to refresh/reveal a specific folder
+  // after creating a new file/folder in it — revealPathInTree can't be
+  // reused for this since it only lazy-loads folders it hasn't already
+  // loaded, and stops as soon as an ancestor isn't in the (possibly stale)
+  // DOM yet.
+  function findTreeRow(targetPath) {
+    const targetNorm = normalizePath(targetPath);
+    const rows = el.tree.querySelectorAll('.tree-row');
+    for (const row of rows) {
+      if (row.dataset.path && normalizePath(row.dataset.path) === targetNorm) return row;
+    }
+    return null;
+  }
+
+  // A row's nesting depth is however many .tree-children containers sit
+  // between it and the tree root — matches the `depth` param
+  // buildTreeNodes/renderTreeLevel used when that row itself was built.
+  function treeRowDepth(row) {
+    let depth = 0;
+    let node = row.parentElement;
+    while (node && node !== el.tree) {
+      if (node.classList.contains('tree-children')) depth += 1;
+      node = node.parentElement;
+    }
+    return depth;
+  }
+
+  // Re-renders a directory's children in place (expanding it first if
+  // needed) — used after creating a new file/folder inside it, since the
+  // existing DOM (if already loaded) has no idea the new entry exists.
+  async function refreshTreeDir(dirPath) {
+    if (!state.rootPath) return;
+    if (normalizePath(dirPath) === normalizePath(state.rootPath)) {
+      await refreshTreeRoot();
+      return;
+    }
+    const row = findTreeRow(dirPath);
+    if (!row) return;
+    const childrenContainer = row.parentElement.querySelector(':scope > .tree-children');
+    if (!childrenContainer) return;
+    childrenContainer.classList.add('expanded');
+    const caret = row.querySelector('.tree-caret');
+    if (caret) caret.classList.add('expanded');
+    const depth = treeRowDepth(row) + 1;
+    childrenContainer.innerHTML = '';
+    childrenContainer.dataset.loaded = '1';
+    await renderTreeLevel(childrenContainer, dirPath, depth, 16);
+  }
+
+  // Shows an inline text input in the tree (VS Code-style "new file/folder"
+  // UX) as a child of targetDir, expanding/loading targetDir first if
+  // needed. Enter creates the entry via IPC and opens it (for files);
+  // Escape cancels without creating anything.
+  async function beginCreateTreeEntry({ targetDir, kind }) {
+    if (!state.rootPath) return;
+
+    let parentContainer;
+    let depth;
+    if (normalizePath(targetDir) === normalizePath(state.rootPath)) {
+      parentContainer = el.tree;
+      depth = 0;
+    } else {
+      const dirRow = findTreeRow(targetDir);
+      if (!dirRow) return; // target folder isn't currently visible in the tree
+      const childrenContainer = dirRow.parentElement.querySelector(':scope > .tree-children');
+      if (!childrenContainer) return;
+      depth = treeRowDepth(dirRow) + 1;
+      if (!childrenContainer.classList.contains('expanded') || childrenContainer.dataset.loaded !== '1') {
+        childrenContainer.classList.add('expanded');
+        const caret = dirRow.querySelector('.tree-caret');
+        if (caret) caret.classList.add('expanded');
+        childrenContainer.innerHTML = '';
+        childrenContainer.dataset.loaded = '1';
+        await renderTreeLevel(childrenContainer, targetDir, depth, 16);
+      }
+      parentContainer = childrenContainer;
+    }
+
+    // Only one in-progress "new entry" row at a time.
+    const stale = el.tree.querySelector('.tree-row-editing');
+    if (stale) stale.closest('.tree-node').remove();
+
+    const node = document.createElement('div');
+    node.className = 'tree-node';
+    const row = document.createElement('div');
+    row.className = 'tree-row tree-row-editing';
+    row.style.paddingLeft = 6 + depth * 16 + 'px';
+
+    const caret = document.createElement('span');
+    caret.className = 'tree-caret';
+    row.appendChild(caret);
+
+    const icon = document.createElement('span');
+    icon.className = 'tree-icon';
+    icon.textContent = kind === 'folder' ? '📁' : '📄';
+    row.appendChild(icon);
+
+    const input = document.createElement('input');
+    input.className = 'tree-new-input';
+    input.type = 'text';
+    input.spellcheck = false;
+    input.placeholder = kind === 'folder' ? t('tree.newFolderPlaceholder') : t('tree.newFilePlaceholder');
+    row.appendChild(input);
+
+    node.appendChild(row);
+    parentContainer.prepend(node);
+    input.focus();
+
+    let settled = false;
+    let submitting = false;
+    const cancel = () => {
+      settled = true;
+      if (node.parentElement) node.remove();
+    };
+
+    input.addEventListener('keydown', async (e) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        cancel();
+        return;
+      }
+      if (e.key !== 'Enter') return;
+      e.preventDefault();
+      if (settled || submitting) return;
+      const name = input.value.trim();
+      if (!name) return;
+
+      submitting = true;
+      input.classList.remove('tree-new-input-error');
+      const result = kind === 'folder'
+        ? await window.mdviewer.createFolder(targetDir, name)
+        : await window.mdviewer.createFile(targetDir, name);
+      submitting = false;
+
+      if (!result.ok) {
+        input.classList.add('tree-new-input-error');
+        input.title = result.error;
+        return;
+      }
+      settled = true;
+      node.remove();
+      await refreshTreeDir(targetDir);
+      await revealPathInTree(result.path, { select: true });
+      if (kind === 'file') {
+        if (!(await guardNavigation())) return;
+        await loadAndRenderByPath(result.path);
+      }
+    });
+
+    input.addEventListener('blur', () => {
+      // input.disabled would fire blur too, but we never disable it, so a
+      // blur here always means the user clicked/tabbed away — cancel,
+      // unless a submit is still in flight (rare, only for a slow fs call).
+      setTimeout(() => {
+        if (!settled && !submitting) cancel();
+      }, 100);
+    });
+  }
+
   let selectedRow = null;
   function selectTreeRow(row) {
     if (selectedRow) selectedRow.classList.remove('selected');
@@ -2185,6 +2345,21 @@
   el.welcomeOpenFile.addEventListener('click', async () => {
     const file = await window.mdviewer.openFileDialog();
     if (file) openSingleFile(file);
+  });
+
+  // Right-clicking empty tree space (not any specific row) creates new
+  // files/folders at the project root — row-level contextmenu handlers
+  // (see buildTreeNodes) don't call stopPropagation, so this only fires
+  // when the click didn't land on a row.
+  el.tree.addEventListener('contextmenu', (e) => {
+    if (e.target.closest('.tree-row')) return;
+    e.preventDefault();
+    if (!state.rootPath) return;
+    window.mdviewer.showTreeContextMenu(state.rootPath);
+  });
+
+  window.mdviewer.onTreeCreateNew(({ targetDir, kind }) => {
+    beginCreateTreeEntry({ targetDir, kind });
   });
 
   window.mdviewer.onMenuOpenFolder(async () => {

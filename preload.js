@@ -19,6 +19,8 @@ contextBridge.exposeInMainWorld('mdviewer', {
   openExternal: (url) => ipcRenderer.invoke('shell:open-external', url),
   readFile: (filePath) => ipcRenderer.invoke('fs:read-file', filePath),
   writeFile: (filePath, content) => ipcRenderer.invoke('fs:write-file', filePath, content),
+  createFile: (dirPath, name) => ipcRenderer.invoke('fs:create-file', dirPath, name),
+  createFolder: (dirPath, name) => ipcRenderer.invoke('fs:create-folder', dirPath, name),
   renderMarkdownText: (text, baseDir, requestId) => ipcRenderer.invoke('md:render-text', text, baseDir, requestId),
   showTreeContextMenu: (itemPath) => ipcRenderer.invoke('tree:show-context-menu', itemPath),
   showInFolder: (itemPath) => ipcRenderer.invoke('shell:show-in-folder', itemPath),
@@ -67,6 +69,11 @@ contextBridge.exposeInMainWorld('mdviewer', {
     return () => ipcRenderer.removeListener('menu:open-recent', listener);
   },
   onMenuToggleFind: (callback) => ipcRenderer.on('menu:toggle-find', callback),
+  onTreeCreateNew: (callback) => {
+    const listener = (event, payload) => callback(payload);
+    ipcRenderer.on('tree:create-new', listener);
+    return () => ipcRenderer.removeListener('tree:create-new', listener);
+  },
   onMenuToggleCssEditor: (callback) => ipcRenderer.on('menu:toggle-css-editor', callback),
   onMenuManageCustomExtensions: (callback) => ipcRenderer.on('menu:manage-custom-extensions', callback),
   onMenuToggleEditMode: (callback) => ipcRenderer.on('menu:toggle-edit-mode', callback),

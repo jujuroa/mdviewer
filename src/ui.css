@@ -170,6 +170,20 @@ html, body {
 
 .tree-icon { width: 16px; flex-shrink: 0; text-align: center; }
 
+.tree-row.tree-row-editing { cursor: default; }
+.tree-new-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  border: 1px solid var(--accent);
+  background: var(--bg-app);
+  color: var(--text);
+  border-radius: 3px;
+  padding: 1px 4px;
+  font-size: inherit;
+  font-family: inherit;
+}
+.tree-new-input.tree-new-input-error { border-color: #e06c75; }
+
 .tree-label {
   flex: 1 1 auto;
   min-width: 0;

@@ -990,6 +990,35 @@ ipcMain.handle('fs:write-file', (event, filePath, content) => {
   }
 });
 
+// Windows-illegal filename characters, plus the path separators and control
+// characters — a bare name for a single new entry, not a path, so any of
+// these means it's trying to escape the target directory or would fail at
+// the filesystem level anyway.
+function validateNewEntryName(name) {
+  const trimmed = (name || '').trim();
+  if (!trimmed) return { ok: false, error: t('tree.newNameEmpty') };
+  if (trimmed === '.' || trimmed === '..') return { ok: false, error: t('tree.newNameInvalid') };
+  if (/[\\/<>:"|?*\x00-\x1f]/.test(trimmed)) return { ok: false, error: t('tree.newNameInvalid') };
+  return { ok: true, name: trimmed };
+}
+
+function createTreeEntry(dirPath, name, kind) {
+  const validation = validateNewEntryName(name);
+  if (!validation.ok) return { ok: false, error: validation.error };
+  const fullPath = path.join(dirPath, validation.name);
+  if (fs.existsSync(fullPath)) return { ok: false, error: t('tree.newAlreadyExists') };
+  try {
+    if (kind === 'folder') fs.mkdirSync(fullPath);
+    else fs.writeFileSync(fullPath, '', 'utf-8');
+    return { ok: true, path: fullPath };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+}
+
+ipcMain.handle('fs:create-file', (event, dirPath, name) => createTreeEntry(dirPath, name, 'file'));
+ipcMain.handle('fs:create-folder', (event, dirPath, name) => createTreeEntry(dirPath, name, 'folder'));
+
 ipcMain.handle('md:render-text', async (event, text, baseDir, requestId) => {
   try {
     return { ok: true, html: await renderMarkdownText(text, baseDir, requestId) };
@@ -1106,13 +1135,28 @@ ipcMain.handle('shell:show-in-folder', (event, itemPath) => {
 
 ipcMain.handle('tree:show-context-menu', (event, itemPath) => {
   const win = BrowserWindow.fromWebContents(event.sender);
+  const isDir = fs.statSync(itemPath).isDirectory();
+  // New File/Folder are created next to whatever was right-clicked: inside
+  // it for a folder (or empty tree space, whose itemPath is the project
+  // root), or as a sibling for a file — matching common editor convention.
+  const targetDir = isDir ? itemPath : path.dirname(itemPath);
+
   const items = [
+    {
+      label: t('context.newFile'),
+      click: () => win.webContents.send('tree:create-new', { targetDir, kind: 'file' }),
+    },
+    {
+      label: t('context.newFolder'),
+      click: () => win.webContents.send('tree:create-new', { targetDir, kind: 'folder' }),
+    },
+    { type: 'separator' },
     {
       label: t('context.openInExplorer'),
       click: () => shell.showItemInFolder(itemPath),
     },
   ];
-  if (/\.(md|markdown)$/i.test(itemPath)) {
+  if (!isDir && /\.(md|markdown)$/i.test(itemPath)) {
     items.push({ type: 'separator' });
     items.push({
       label: t('context.exportPdf'),

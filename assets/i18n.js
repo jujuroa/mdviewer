@@ -35,8 +35,17 @@ const STRINGS = {
 
     'context.openInExplorer': 'Show in Explorer',
     'context.exportPdf': 'Export to PDF...',
+    'context.newFile': 'New File...',
+    'context.newFolder': 'New Folder...',
     'export.pdfFailedTitle': 'PDF export failed',
     'export.pdfFailedMessage': 'Could not export {name} to PDF: {error}',
+
+    'tree.newFilePlaceholder': 'file-name.md',
+    'tree.newFolderPlaceholder': 'folder-name',
+    'tree.newNameEmpty': 'Name cannot be empty',
+    'tree.newNameInvalid': 'Name contains invalid characters',
+    'tree.newAlreadyExists': 'An item with that name already exists',
+    'tree.newCreateFailed': 'Could not create it: {error}',
 
     'term.noRunningTerminal': 'No terminal is running',
 
@@ -171,8 +180,17 @@ const STRINGS = {
 
     'context.openInExplorer': '탐색기에서 상위 폴더 열기',
     'context.exportPdf': 'PDF로 내보내기...',
+    'context.newFile': '새 파일...',
+    'context.newFolder': '새 폴더...',
     'export.pdfFailedTitle': 'PDF 내보내기 실패',
     'export.pdfFailedMessage': '{name} 파일을 PDF로 내보내지 못했습니다: {error}',
+
+    'tree.newFilePlaceholder': '파일이름.md',
+    'tree.newFolderPlaceholder': '폴더이름',
+    'tree.newNameEmpty': '이름을 입력해주세요',
+    'tree.newNameInvalid': '사용할 수 없는 문자가 포함되어 있습니다',
+    'tree.newAlreadyExists': '같은 이름의 항목이 이미 있습니다',
+    'tree.newCreateFailed': '생성하지 못했습니다: {error}',
 
     'term.noRunningTerminal': '실행 중인 터미널이 없습니다',
 
