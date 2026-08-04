@@ -22,6 +22,10 @@ const STRINGS = {
     'menu.language': 'Language',
     'menu.languageEnglish': 'English',
     'menu.languageKorean': '한국어',
+    'menu.theme': 'Theme',
+    'menu.themeSystem': 'Use System Setting',
+    'menu.themeLight': 'Light',
+    'menu.themeDark': 'Dark',
     'menu.customExtensions': 'Custom Extensions...',
     'menu.help': 'Help',
     'menu.about': 'About MD Viewer',
@@ -30,6 +34,9 @@ const STRINGS = {
     'about.detail': 'Version {version}\n\nElectron {electron}\nChromium {chrome}\nNode.js {node}\n\nCopyright © {year} MD Viewer',
 
     'context.openInExplorer': 'Show in Explorer',
+    'context.exportPdf': 'Export to PDF...',
+    'export.pdfFailedTitle': 'PDF export failed',
+    'export.pdfFailedMessage': 'Could not export {name} to PDF: {error}',
 
     'term.noRunningTerminal': 'No terminal is running',
 
@@ -151,6 +158,10 @@ const STRINGS = {
     'menu.language': '언어',
     'menu.languageEnglish': 'English',
     'menu.languageKorean': '한국어',
+    'menu.theme': '테마',
+    'menu.themeSystem': '시스템 설정 사용',
+    'menu.themeLight': '라이트',
+    'menu.themeDark': '다크',
     'menu.customExtensions': '사용자 지정 확장자...',
     'menu.help': '도움말',
     'menu.about': 'MD Viewer 정보',
@@ -159,6 +170,9 @@ const STRINGS = {
     'about.detail': '버전 {version}\n\nElectron {electron}\nChromium {chrome}\nNode.js {node}\n\nCopyright © {year} MD Viewer',
 
     'context.openInExplorer': '탐색기에서 상위 폴더 열기',
+    'context.exportPdf': 'PDF로 내보내기...',
+    'export.pdfFailedTitle': 'PDF 내보내기 실패',
+    'export.pdfFailedMessage': '{name} 파일을 PDF로 내보내지 못했습니다: {error}',
 
     'term.noRunningTerminal': '실행 중인 터미널이 없습니다',
 

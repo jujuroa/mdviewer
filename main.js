@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, dialog, shell, Menu, clipboard } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell, Menu, clipboard, nativeTheme } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const { spawn } = require('child_process');
@@ -220,6 +220,20 @@ function setLanguage(lang) {
   currentLanguage = lang;
   saveSettings({ ...loadSettings(), language: lang });
   buildAppMenu();
+  if (mainWindow) mainWindow.reload();
+}
+
+const THEME_SOURCES = ['system', 'light', 'dark'];
+
+function setThemeSource(source) {
+  if (!THEME_SOURCES.includes(source) || source === nativeTheme.themeSource) return;
+  nativeTheme.themeSource = source;
+  saveSettings({ ...loadSettings(), themeSource: source });
+  buildAppMenu();
+  // nativeTheme.themeSource updates prefers-color-scheme for *new* pages
+  // reliably, but doesn't consistently repaint an already-loaded one in
+  // practice — reload to guarantee the change actually shows up, same as
+  // setLanguage does for the same class of "settings changed" update.
   if (mainWindow) mainWindow.reload();
 }
 
@@ -703,6 +717,29 @@ function buildAppMenu() {
             },
           ],
         },
+        {
+          label: t('menu.theme'),
+          submenu: [
+            {
+              label: t('menu.themeSystem'),
+              type: 'radio',
+              checked: nativeTheme.themeSource === 'system',
+              click: () => setThemeSource('system'),
+            },
+            {
+              label: t('menu.themeLight'),
+              type: 'radio',
+              checked: nativeTheme.themeSource === 'light',
+              click: () => setThemeSource('light'),
+            },
+            {
+              label: t('menu.themeDark'),
+              type: 'radio',
+              checked: nativeTheme.themeSource === 'dark',
+              click: () => setThemeSource('dark'),
+            },
+          ],
+        },
         { type: 'separator' },
         {
           label: t('menu.customExtensions'),
@@ -741,8 +778,9 @@ function showAboutDialog() {
 }
 
 function createWindow() {
-  const savedLanguage = loadSettings().language;
-  if (SUPPORTED_LANGUAGES.includes(savedLanguage)) currentLanguage = savedLanguage;
+  const savedSettings = loadSettings();
+  if (SUPPORTED_LANGUAGES.includes(savedSettings.language)) currentLanguage = savedSettings.language;
+  if (THEME_SOURCES.includes(savedSettings.themeSource)) nativeTheme.themeSource = savedSettings.themeSource;
 
   mainWindow = new BrowserWindow({
     width: 1280,
@@ -1030,17 +1068,7 @@ ipcMain.handle('fs:save-project-state', (event, rootPath, projectState) => {
   }
 });
 
-ipcMain.handle('fs:get-base-styles', () => {
-  const defaultCss = fs.readFileSync(
-    path.join(__dirname, 'assets', 'preview-base.css'),
-    'utf-8'
-  );
-  const hljsCss = fs.readFileSync(
-    require.resolve('highlight.js/styles/vs2015.css'),
-    'utf-8'
-  );
-  return { defaultCss, hljsCss };
-});
+ipcMain.handle('fs:get-base-styles', () => getBaseStyles());
 
 ipcMain.handle('fs:watch-file', (event, filePath) => {
   const wcId = event.sender.id;
@@ -1077,14 +1105,162 @@ ipcMain.handle('shell:show-in-folder', (event, itemPath) => {
 });
 
 ipcMain.handle('tree:show-context-menu', (event, itemPath) => {
-  const menu = Menu.buildFromTemplate([
+  const win = BrowserWindow.fromWebContents(event.sender);
+  const items = [
     {
       label: t('context.openInExplorer'),
       click: () => shell.showItemInFolder(itemPath),
     },
-  ]);
-  menu.popup({ window: BrowserWindow.fromWebContents(event.sender) });
+  ];
+  if (/\.(md|markdown)$/i.test(itemPath)) {
+    items.push({ type: 'separator' });
+    items.push({
+      label: t('context.exportPdf'),
+      click: () => exportMarkdownToPdf(itemPath, win),
+    });
+  }
+  const menu = Menu.buildFromTemplate(items);
+  menu.popup({ window: win });
 });
+
+// Renders the file the same way the preview does, then prints that HTML to
+// PDF from an offscreen window rather than the app's own window — the app
+// window shows the whole UI chrome (sidebar, toolbar...), not just the
+// document, and printToPDF prints whatever a webContents currently shows.
+// Forces light colors for the duration of the export via nativeTheme (a
+// dark-background PDF is rarely what anyone wants out of "export to PDF")
+// — this is process-wide, so it very briefly affects the main window's own
+// colors too, but the export completes in well under a second for a
+// typical document, same as e.g. a quick native print-preview flash.
+async function exportMarkdownToPdf(filePath, parentWindow) {
+  const defaultName = `${path.basename(filePath, path.extname(filePath))}.pdf`;
+  const saveResult = await dialog.showSaveDialog(parentWindow, {
+    defaultPath: path.join(path.dirname(filePath), defaultName),
+    filters: [{ name: 'PDF', extensions: ['pdf'] }],
+  });
+  if (saveResult.canceled || !saveResult.filePath) return;
+
+  let exportWin;
+  const previousThemeSource = nativeTheme.themeSource;
+  try {
+    const html = await renderMarkdownFile(filePath);
+    const { defaultCss, hljsCss } = getBaseStyles();
+    const fullHtml =
+      '<!DOCTYPE html><html><head><meta charset="utf-8">' +
+      `<style>${defaultCss}</style><style>${hljsCss}</style>` +
+      '</head><body class="markdown-body">' + html + '</body></html>';
+
+    nativeTheme.themeSource = 'light';
+    exportWin = new BrowserWindow({ show: false, webPreferences: { sandbox: true } });
+    await exportWin.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(fullHtml)}`);
+    const pdfData = await exportWin.webContents.printToPDF({
+      printBackground: true,
+      pageSize: 'A4',
+      margins: { marginType: 'none' },
+    });
+    fs.writeFileSync(saveResult.filePath, pdfData);
+    shell.showItemInFolder(saveResult.filePath);
+  } catch (err) {
+    dialog.showErrorBox(
+      t('export.pdfFailedTitle'),
+      t('export.pdfFailedMessage', { name: path.basename(filePath), error: err.message })
+    );
+  } finally {
+    nativeTheme.themeSource = previousThemeSource;
+    if (exportWin) exportWin.destroy();
+  }
+}
+
+// Light-mode counterpart to highlight.js's own github-dark.css (used below
+// as the unconditional/dark default), matching the exact same class
+// groupings so every token category dark defines also gets a light value —
+// no gaps for a dark color to leak through unstyled. Values are the exact
+// "prettylights" hex colors from VS Code's own bundled Default Light 2026
+// theme (extensions/theme-defaults/themes/2026-light.json), not an
+// approximation — cross-checked token-by-token against 2026-dark.json,
+// where github-dark.css's shipped colors already matched exactly.
+//
+// .hljs-params/.hljs-tag/.hljs-link/etc. are deliberately left unstyled
+// here too (matching github-dark.css and the real theme's
+// variable.parameter.function, which is styled as plain text, not a
+// special color) — they fall through to .markdown-body pre code's
+// color: inherit, i.e. the same color as normal prose text.
+const HLJS_LIGHT_OVERRIDE_CSS = `
+@media (prefers-color-scheme: light) {
+  .hljs-doctag,
+  .hljs-keyword,
+  .hljs-meta .hljs-keyword,
+  .hljs-template-tag,
+  .hljs-template-variable,
+  .hljs-type,
+  .hljs-variable.language_ {
+    color: #cf222e;
+  }
+  .hljs-title,
+  .hljs-title.class_,
+  .hljs-title.class_.inherited__,
+  .hljs-title.function_ {
+    color: #8250df;
+  }
+  .hljs-attr,
+  .hljs-attribute,
+  .hljs-literal,
+  .hljs-meta,
+  .hljs-number,
+  .hljs-operator,
+  .hljs-variable,
+  .hljs-selector-attr,
+  .hljs-selector-class,
+  .hljs-selector-id {
+    color: #0550ae;
+  }
+  .hljs-regexp,
+  .hljs-string,
+  .hljs-meta .hljs-string {
+    color: #0a3069;
+  }
+  .hljs-built_in,
+  .hljs-symbol {
+    color: #953800;
+  }
+  .hljs-comment,
+  .hljs-code,
+  .hljs-formula {
+    color: #6e7781;
+  }
+  .hljs-name,
+  .hljs-quote,
+  .hljs-selector-tag,
+  .hljs-selector-pseudo {
+    color: #116329;
+  }
+  .hljs-subst {
+    color: #1f2328;
+  }
+  .hljs-section {
+    color: #0550ae;
+    font-weight: bold;
+  }
+  .hljs-emphasis {
+    color: #1f2328;
+    font-style: italic;
+  }
+  .hljs-strong {
+    color: #1f2328;
+    font-weight: bold;
+  }
+}
+`;
+
+// Shared between the preview iframe's 'fs:get-base-styles' handler and PDF
+// export above, so exported PDFs and the in-app preview stay visually
+// consistent.
+function getBaseStyles() {
+  const defaultCss = fs.readFileSync(path.join(__dirname, 'assets', 'preview-base.css'), 'utf-8');
+  const hljsDarkCss = fs.readFileSync(require.resolve('highlight.js/styles/github-dark.css'), 'utf-8');
+  const hljsCss = hljsDarkCss + HLJS_LIGHT_OVERRIDE_CSS;
+  return { defaultCss, hljsCss };
+}
 
 ipcMain.handle('i18n:get', () => {
   return { language: currentLanguage, strings: STRINGS[currentLanguage] };
