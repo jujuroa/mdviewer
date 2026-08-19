@@ -110,6 +110,10 @@ html, body {
   font-size: 13px;
   user-select: none;
 }
+/* Focusable (tabindex) for arrow-key navigation, but .selected already
+   marks the current row — a native focus ring around the whole container
+   would just be visual noise on top of that. */
+.tree:focus { outline: none; }
 
 .sidebar-footer {
   padding: 8px;
@@ -714,6 +718,143 @@ html, body {
   cursor: pointer;
 }
 .import-browse-btn:hover { background: var(--hover); }
+
+.css-ref-panel {
+  flex: 0 0 auto;
+  border-bottom: 1px solid var(--border);
+  max-height: 45vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.css-ref-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  user-select: none;
+  flex-shrink: 0;
+}
+.css-ref-header:hover { background: var(--hover); }
+
+.css-ref-chevron {
+  display: inline-block;
+  font-size: 10px;
+  color: var(--text-dim);
+  transition: transform 0.1s ease;
+}
+.css-ref-chevron.expanded { transform: rotate(90deg); }
+
+.css-ref-body {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  padding: 0 10px 8px;
+}
+.css-ref-body.hidden { display: none; }
+
+.css-ref-search {
+  flex: 0 0 auto;
+  margin-bottom: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg-app);
+  color: var(--text);
+  border-radius: 4px;
+  padding: 4px 8px;
+  font-size: 12px;
+}
+
+.css-ref-tree {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  font-size: 12px;
+  font-family: "D2Coding", "D2Coding ligature", Consolas, "Cascadia Mono", "Cascadia Code",
+    "SFMono-Regular", Menlo, monospace;
+}
+
+.css-ref-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 4px;
+  border-radius: 3px;
+  cursor: pointer;
+}
+.css-ref-row:hover { background: var(--hover); }
+.css-ref-row.css-ref-leaf { cursor: default; padding-left: 20px; }
+.css-ref-row.css-ref-leaf:hover { background: none; }
+
+.css-ref-caret {
+  width: 10px;
+  flex-shrink: 0;
+  display: inline-block;
+  font-size: 9px;
+  color: var(--text-dim);
+  transition: transform 0.1s ease;
+}
+.css-ref-caret.expanded { transform: rotate(90deg); }
+
+.css-ref-category > .css-ref-row .css-ref-label,
+.css-ref-category .css-ref-label { font-weight: 600; }
+
+.css-ref-children { display: none; padding-left: 14px; }
+.css-ref-children.expanded { display: block; }
+
+.css-ref-selector {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--accent);
+}
+
+.css-ref-copy-btn,
+.css-ref-reset-btn {
+  flex-shrink: 0;
+  border: none;
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 11px;
+  padding: 0 2px;
+  border-radius: 3px;
+}
+.css-ref-copy-btn:hover,
+.css-ref-reset-btn:hover { background: var(--selected); color: var(--text); }
+
+.css-ref-prop { flex-shrink: 0; color: var(--text-dim); }
+
+.css-ref-value {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: text;
+  border-radius: 3px;
+  padding: 0 2px;
+}
+.css-ref-value:hover { outline: 1px dashed var(--text-dim); }
+.css-ref-value-overridden {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.css-ref-value-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  border: 1px solid var(--accent);
+  background: var(--bg-app);
+  color: var(--text);
+  border-radius: 3px;
+  padding: 0 2px;
+  font: inherit;
+}
 
 #css-editor {
   flex: 1;

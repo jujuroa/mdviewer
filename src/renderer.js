@@ -15,8 +15,20 @@
     scrollPositions: {},
     scrollDebounceTimer: null,
     suppressScrollSync: false,
+    // Custom back-navigation (see navigateBack): docHistoryStack holds the
+    // documents visited before the current one; scrollJumpStack holds
+    // pre-jump scroll offsets for same-document anchor jumps (TOC/§-ref/
+    // in-page links) made within the *current* document. Back pops the
+    // scroll stack first, and only falls back to switching documents once
+    // it's empty.
+    docHistoryStack: [],
+    scrollJumpStack: [],
+    navigatingBack: false,
     customTextExtensions: [],
     activeRequestId: null,
+    baseCss: '',
+    hljsCss: '',
+    cssRefExpanded: false,
   };
 
   const SCROLL_POSITION_MAX_AGE_MS = 24 * 60 * 60 * 1000;
@@ -34,6 +46,12 @@
     cssEditor: document.getElementById('css-editor'),
     btnSaveCss: document.getElementById('btn-save-css'),
     btnResetCss: document.getElementById('btn-reset-css'),
+    cssRefPanel: document.getElementById('css-ref-panel'),
+    cssRefHeader: document.getElementById('css-ref-header'),
+    cssRefChevron: document.getElementById('css-ref-chevron'),
+    cssRefBody: document.getElementById('css-ref-body'),
+    cssRefSearch: document.getElementById('css-ref-search'),
+    cssRefTree: document.getElementById('css-ref-tree'),
     cssStatus: document.getElementById('css-status'),
     resizerLeft: document.getElementById('resizer-left'),
     resizerRight: document.getElementById('resizer-right'),
@@ -238,6 +256,8 @@
 
   async function initPreviewFrame() {
     const { defaultCss, hljsCss } = await window.mdviewer.getBaseStyles();
+    state.baseCss = defaultCss;
+    state.hljsCss = hljsCss;
     const doc = el.frame.contentDocument;
     doc.open();
     doc.write(
@@ -275,6 +295,13 @@
     doc.addEventListener('mousemove', onPumlPanMove);
     doc.addEventListener('mouseup', onPumlPanEnd);
     doc.addEventListener('mouseleave', onPumlPanEnd);
+
+    // Mouse "back" button — see the window-level listener further down for
+    // why this is also bound here: the iframe is a separate browsing
+    // context, so a plain `window.addEventListener` on the outer document
+    // never sees mouse events that occur while the cursor is over the
+    // preview.
+    doc.addEventListener('mouseup', onMouseBackButton);
 
     // Debounced scroll-position tracking, so re-opening a file later can
     // restore where the reader left off (see loadAndRenderFile).
@@ -406,8 +433,20 @@
     } else if (href.startsWith('mailto:')) {
       e.preventDefault();
       openExternalSafe(href);
+    } else if (href.startsWith('#') && href.length > 1) {
+      // Handled manually (rather than left to the default same-doc
+      // navigation) so it goes through pushScrollJumpHistory and mouse-back
+      // can undo it — the default behavior would otherwise add a real
+      // browsing-context history entry that Electron's own back handling
+      // can pick up and get confused by once the body has since been
+      // swapped out for a different document.
+      e.preventDefault();
+      const target = el.frame.contentDocument.getElementById(href.slice(1));
+      if (target) {
+        pushScrollJumpHistory();
+        target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }
     }
-    // '#fragment' links fall through to default same-doc scrolling behavior.
   }
 
   // Whether a path's extension should open in the plain-text viewer/editor:
@@ -449,7 +488,10 @@
       openExternalSafe(pathToFileUrl(absPath));
     } else if (hash) {
       const target = el.frame.contentDocument.getElementById(hash);
-      if (target) target.scrollIntoView();
+      if (target) {
+        pushScrollJumpHistory();
+        target.scrollIntoView();
+      }
     }
   }
 
@@ -484,6 +526,7 @@
   function applyLiveCss() {
     setUserCssLive(state.cssEnabled ? el.cssEditor.value : '');
     updateCssAppliedBadge();
+    renderCssRefTree();
   }
 
   // ---------------------------------------------------------------------
@@ -522,6 +565,8 @@
     state.rootPath = folderPath;
     state.currentFilePath = null;
     state.currentFileKind = 'markdown';
+    state.docHistoryStack = [];
+    state.scrollJumpStack = [];
     updateFileKindUI();
 
     // Restart the shell in the newly opened project's folder so its cwd
@@ -689,7 +734,7 @@
 
       row.addEventListener('contextmenu', (e) => {
         e.preventDefault();
-        window.mdviewer.showTreeContextMenu(item.path);
+        window.mdviewer.showTreeContextMenu(item.path, state.rootPath);
       });
 
       if (item.isDir) {
@@ -698,6 +743,7 @@
         node.appendChild(childrenContainer);
 
         row.addEventListener('click', async () => {
+          selectTreeRow(row);
           const expanded = childrenContainer.classList.toggle('expanded');
           caret.classList.toggle('expanded', expanded);
           if (expanded && childrenContainer.dataset.loaded !== '1') {
@@ -729,6 +775,14 @@
           selectTreeRow(row);
           loadAndRenderText(item.path);
         });
+      } else {
+        // No in-app renderer for this type — a single click just selects it
+        // (matching a native file explorer, since there's nothing to
+        // preview), and a double-click (or Enter once selected via
+        // keyboard — see the tree's keydown handler) hands it to the OS's
+        // default application instead.
+        row.addEventListener('click', () => selectTreeRow(row));
+        row.addEventListener('dblclick', () => window.mdviewer.openPath(item.path));
       }
 
       container.appendChild(node);
@@ -900,7 +954,69 @@
     if (selectedRow) selectedRow.classList.remove('selected');
     selectedRow = row;
     if (row) row.classList.add('selected');
+    // Keep keyboard focus on the tree container itself (not per-row) so
+    // arrow keys keep working right after any click, without adding a tab
+    // stop per row.
+    el.tree.focus({ preventScroll: true });
   }
+
+  // Collapsed rows stay in the DOM (see .tree-children { display: none }),
+  // so a plain query for .tree-row would let arrow navigation wander into
+  // rows the user can't actually see — offsetParent is null exactly when an
+  // ancestor (or the element itself) is display:none, a cheap way to filter
+  // to what's currently visible without re-deriving depth/expand state.
+  function getVisibleTreeRows() {
+    return Array.from(el.tree.querySelectorAll('.tree-row')).filter((row) => row.offsetParent !== null);
+  }
+
+  // Arrow-key tree navigation (Up/Down move the selection, Right/Left
+  // expand/collapse a folder or step into/out of it, Enter/Space activates
+  // the selected row) — everything else about "what activating a row does"
+  // is already implemented per-row in buildTreeNodes, so this reuses it by
+  // simulating the same click/dblclick rather than duplicating that logic.
+  el.tree.addEventListener('keydown', (e) => {
+    if (!['ArrowDown', 'ArrowUp', 'ArrowRight', 'ArrowLeft', 'Enter', ' '].includes(e.key)) return;
+    const rows = getVisibleTreeRows();
+    if (!rows.length) return;
+    const currentIndex = selectedRow ? rows.indexOf(selectedRow) : -1;
+
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      const next = rows[Math.min(currentIndex + 1, rows.length - 1)];
+      selectTreeRow(next);
+      next.scrollIntoView({ block: 'nearest' });
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      const prev = rows[Math.max(currentIndex - 1, 0)];
+      selectTreeRow(prev);
+      prev.scrollIntoView({ block: 'nearest' });
+    } else if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') {
+      if (!selectedRow || !selectedRow.classList.contains('dir')) return;
+      e.preventDefault();
+      const childrenContainer = selectedRow.parentElement.querySelector(':scope > .tree-children');
+      if (!childrenContainer) return;
+      const isExpanded = childrenContainer.classList.contains('expanded');
+      if (e.key === 'ArrowRight' && !isExpanded) {
+        selectedRow.click();
+      } else if (e.key === 'ArrowRight' && isExpanded) {
+        const firstChildRow = childrenContainer.querySelector(':scope > .tree-node > .tree-row');
+        if (firstChildRow) {
+          selectTreeRow(firstChildRow);
+          firstChildRow.scrollIntoView({ block: 'nearest' });
+        }
+      } else if (e.key === 'ArrowLeft' && isExpanded) {
+        selectedRow.click();
+      }
+    } else if (e.key === 'Enter' || e.key === ' ') {
+      if (!selectedRow) return;
+      e.preventDefault();
+      if (selectedRow.classList.contains('non-md')) {
+        selectedRow.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
+      } else {
+        selectedRow.click();
+      }
+    }
+  });
 
   function currentProjectStateSnapshot() {
     return {
@@ -933,6 +1049,20 @@
       if (saved) delete state.scrollPositions[filePath];
       el.frame.contentWindow.scrollTo(0, 0);
     }
+  }
+
+  // Shared preamble for every loadAndRender* entry point: saves the
+  // outgoing document's scroll offset (as captureScrollPosition always
+  // did), and — unless this switch is itself a navigateBack() call — records
+  // the outgoing document on the back-navigation stack so mouse-back can
+  // return to it. Any pending same-document anchor-jump history belongs to
+  // the document being left, so it's cleared here rather than carried over.
+  function beginDocumentNavigation(nextFilePath) {
+    captureScrollPosition();
+    if (!state.navigatingBack && state.currentFilePath && state.currentFilePath !== nextFilePath) {
+      state.docHistoryStack.push(state.currentFilePath);
+    }
+    state.scrollJumpStack = [];
   }
 
   // Toggles toolbar/preview affordances that only make sense for one file
@@ -988,7 +1118,7 @@
   }
 
   async function loadAndRenderFile(filePath) {
-    captureScrollPosition();
+    beginDocumentNavigation(filePath);
     const requestId = beginRenderRequest();
     const cancelLoading = scheduleLoadingIndicator();
     const result = await window.mdviewer.renderMarkdown(filePath, requestId);
@@ -1025,7 +1155,7 @@
   // PlantUML files are viewed as a rendered diagram (no live-render-on-type):
   // re-rendering only happens on open, save, and the explicit refresh button.
   async function loadAndRenderPuml(filePath) {
-    captureScrollPosition();
+    beginDocumentNavigation(filePath);
     const requestId = beginRenderRequest();
     const cancelLoading = scheduleLoadingIndicator();
     const result = await window.mdviewer.renderPlantUmlFile(filePath, requestId);
@@ -1068,6 +1198,37 @@
     } else {
       await loadAndRenderFile(filePath);
     }
+  }
+
+  // Mouse-back navigation (triggered by main.js's 'app-command' handler and
+  // the mouseup listeners below, for the Windows XButton1 "back" button).
+  // Undoes same-document anchor jumps (TOC/§-ref/in-page links) one at a
+  // time — see pushScrollJumpHistory — before falling back to switching to
+  // whichever document was open right before the current one.
+  async function navigateBack() {
+    if (state.scrollJumpStack.length > 0) {
+      const y = state.scrollJumpStack.pop();
+      el.frame.contentWindow.scrollTo(0, y);
+      return;
+    }
+    if (state.docHistoryStack.length === 0) return;
+    if (!(await guardNavigation())) return;
+    const prevPath = state.docHistoryStack.pop();
+    state.navigatingBack = true;
+    try {
+      await loadAndRenderByPath(prevPath);
+      await revealPathInTree(prevPath, { select: true });
+    } finally {
+      state.navigatingBack = false;
+    }
+  }
+
+  // Records where the viewer was scrolled to before an in-document anchor
+  // jump (TOC click, §-ref link, in-content "#hash" link), so navigateBack
+  // can undo it. Call this immediately before performing the jump.
+  function pushScrollJumpHistory() {
+    const win = el.frame.contentWindow;
+    if (win) state.scrollJumpStack.push(win.scrollY);
   }
 
   // Re-renders the current PlantUML diagram from the given source text
@@ -1116,7 +1277,7 @@
   // JSON files are shown as a collapsible tree. Like markdown (and unlike
   // PlantUML), the tree re-renders live as you type in edit mode.
   async function loadAndRenderJson(filePath) {
-    captureScrollPosition();
+    beginDocumentNavigation(filePath);
     beginRenderRequest(); // JSON itself renders synchronously; this just cancels/invalidates any slower request left over from before navigating here.
     clearJsonPath();
     const result = await window.mdviewer.renderJsonFile(filePath);
@@ -1149,7 +1310,7 @@
   // .txt/.log files are shown as plain, unrendered text. Like markdown and
   // JSON (and unlike PlantUML), it re-renders live as you type.
   async function loadAndRenderText(filePath) {
-    captureScrollPosition();
+    beginDocumentNavigation(filePath);
     beginRenderRequest(); // plain text itself renders synchronously; this just cancels/invalidates any slower request left over from before navigating here.
     const result = await window.mdviewer.renderPlainTextFile(filePath);
     if (!result.ok) {
@@ -1596,6 +1757,25 @@
     });
   });
 
+  // Resizing either pane (window resize, dragging the sidebar/editor/css
+  // splitters) reflows both the wrapped editor text and the rendered
+  // preview without firing a 'scroll' event, so the two sides drift apart
+  // until the next manual scroll. Re-anchor the editor to whatever is
+  // currently at the top of the viewer once sizes settle. The viewer is
+  // used as the source of truth because its data-source-line lookup is
+  // based on actual layout position, unlike the editor's line-height
+  // estimate which assumes unwrapped lines.
+  let splitViewResizeTimer = null;
+  const splitViewResizeObserver = new ResizeObserver(() => {
+    if (!splitViewActive()) return;
+    clearTimeout(splitViewResizeTimer);
+    splitViewResizeTimer = setTimeout(() => {
+      syncEditorScrollToViewer();
+    }, 150);
+  });
+  splitViewResizeObserver.observe(el.mdSourceEditor);
+  splitViewResizeObserver.observe(el.frame);
+
   // ---------------------------------------------------------------------
   // Body (source) editing
   // ---------------------------------------------------------------------
@@ -1747,6 +1927,25 @@
   window.mdviewer.onMenuSaveFile(() => {
     if (state.editMode) saveSource();
   });
+  window.mdviewer.onMenuExportPdf(() => {
+    if (state.currentFileKind === 'markdown' && state.currentFilePath) {
+      window.mdviewer.exportPdf(state.currentFilePath, state.rootPath);
+    }
+  });
+
+  // Mouse "back" button. main.js's 'app-command' listener catches the
+  // Windows-level XButton1 command; the mouseup listeners here are a
+  // fallback for whenever that command doesn't fire (e.g. some non-Windows
+  // mouse/OS combinations still deliver a plain DOM button-3 mouseup). Both
+  // routes converge on the same navigateBack().
+  window.mdviewer.onNavBack(() => navigateBack());
+  function onMouseBackButton(e) {
+    if (e.button === 3) {
+      e.preventDefault();
+      navigateBack();
+    }
+  }
+  window.addEventListener('mouseup', onMouseBackButton);
 
   // ---------------------------------------------------------------------
   // Find in document (Ctrl+F)
@@ -2027,12 +2226,80 @@
       li.textContent = heading.textContent;
       li.title = heading.textContent;
       li.addEventListener('click', () => {
+        pushScrollJumpHistory();
         heading.scrollIntoView({ behavior: 'smooth', block: 'start' });
         if (sourceLines && sourceLines[index] !== undefined) {
           scrollSourceToLine(sourceLines[index]);
         }
       });
       el.tocList.appendChild(li);
+    });
+
+    linkifySectionRefs(headings);
+  }
+
+  // In-document reference convention — two forms, both turned into a link
+  // to the referenced heading so clicking scrolls straight to it:
+  //   §/섹션명/   — matched against a heading's full text (e.g. "§/설치 방법/")
+  //   §2.1        — matched against a heading's leading number (e.g. a
+  //                 heading rendered as "### 2.1 새 로그 종류: ...")
+  // Runs after the heading id-assignment loop above so every candidate
+  // target already has an id to link to.
+  const SECTION_REF_TEST_RE = /§(?:\/[^/\n]+\/|\d+(?:\.\d+)*)/;
+  const SECTION_REF_RE = /§(?:\/([^/\n]+)\/|(\d+(?:\.\d+)*))/g;
+  const HEADING_NUMBER_RE = /^(\d+(?:\.\d+)*)\.?(?=\s|$)/;
+
+  function linkifySectionRefs(headings) {
+    const byExactText = new Map();
+    const bySlug = new Map();
+    const byNumber = new Map();
+    headings.forEach((heading) => {
+      const text = heading.textContent.trim();
+      if (!byExactText.has(text)) byExactText.set(text, heading.id);
+      const slug = slugify(text);
+      if (slug && !bySlug.has(slug)) bySlug.set(slug, heading.id);
+      const numberMatch = HEADING_NUMBER_RE.exec(text);
+      if (numberMatch && !byNumber.has(numberMatch[1])) byNumber.set(numberMatch[1], heading.id);
+    });
+
+    const doc = el.frame.contentDocument;
+    const walker = doc.createTreeWalker(doc.body, NodeFilter.SHOW_TEXT, {
+      acceptNode(node) {
+        if (!SECTION_REF_TEST_RE.test(node.nodeValue)) return NodeFilter.FILTER_REJECT;
+        return node.parentElement.closest('a, code, pre, script, style')
+          ? NodeFilter.FILTER_REJECT
+          : NodeFilter.FILTER_ACCEPT;
+      },
+    });
+    const textNodes = [];
+    let node;
+    while ((node = walker.nextNode())) textNodes.push(node);
+
+    textNodes.forEach((textNode) => {
+      const text = textNode.nodeValue;
+      SECTION_REF_RE.lastIndex = 0;
+      let match;
+      let lastIndex = 0;
+      let changed = false;
+      const frag = doc.createDocumentFragment();
+      while ((match = SECTION_REF_RE.exec(text))) {
+        const [sectionName, number] = [match[1], match[2]];
+        const targetId = number
+          ? byNumber.get(number)
+          : byExactText.get(sectionName.trim()) || bySlug.get(slugify(sectionName.trim()));
+        if (!targetId) continue;
+        frag.appendChild(doc.createTextNode(text.slice(lastIndex, match.index)));
+        const a = doc.createElement('a');
+        a.href = '#' + targetId;
+        a.className = 'section-ref-link';
+        a.textContent = match[0];
+        frag.appendChild(a);
+        lastIndex = match.index + match[0].length;
+        changed = true;
+      }
+      if (!changed) return;
+      frag.appendChild(doc.createTextNode(text.slice(lastIndex)));
+      textNode.parentNode.replaceChild(frag, textNode);
     });
   }
 
@@ -2116,7 +2383,10 @@
           openExternalSafe(info.href);
         } else if (info.type === 'anchor') {
           const target = el.frame.contentDocument.getElementById(info.hash);
-          if (target) target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+          if (target) {
+            pushScrollJumpHistory();
+            target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+          }
         } else {
           openInternalLink(info.absPath, info.hash);
         }
@@ -2177,6 +2447,351 @@
       toggleTocCollapse();
     }
   });
+
+  // ---------------------------------------------------------------------
+  // CSS reference tree — browsable, editable list of every selector the
+  // preview's base stylesheet (and the active code-highlight theme) define,
+  // since there's no other way to discover what's customizable. Editing a
+  // value here writes an override into a dedicated, clearly-delimited block
+  // at the end of the custom CSS textarea (CSS_REF_BLOCK_START/END below),
+  // rather than touching anywhere else in it — the user's own hand-written
+  // CSS is never rewritten or reformatted.
+  // ---------------------------------------------------------------------
+
+  // Not a general CSS parser — just enough to read our own hand-written
+  // stylesheets (flat rules, one level of @media nesting, no @supports/
+  // CSS-in-JS edge cases), which is all this ever needs to handle.
+  function findMatchingBrace(source, openIdx) {
+    let depth = 0;
+    for (let i = openIdx; i < source.length; i++) {
+      if (source[i] === '{') depth++;
+      else if (source[i] === '}') {
+        depth--;
+        if (depth === 0) return i;
+      }
+    }
+    return source.length - 1;
+  }
+
+  function parseCssRules(cssText) {
+    const rules = [];
+    const text = (cssText || '').replace(/\/\*[\s\S]*?\*\//g, '');
+
+    function parseBlock(source, media) {
+      let pos = 0;
+      while (pos < source.length) {
+        const braceIdx = source.indexOf('{', pos);
+        if (braceIdx === -1) break;
+        const selectorPart = source.slice(pos, braceIdx).trim();
+        if (!selectorPart) {
+          pos = braceIdx + 1;
+          continue;
+        }
+        if (/^@media/.test(selectorPart)) {
+          const end = findMatchingBrace(source, braceIdx);
+          parseBlock(source.slice(braceIdx + 1, end), selectorPart);
+          pos = end + 1;
+          continue;
+        }
+        if (/^@(keyframes|font-face|supports|import)/.test(selectorPart)) {
+          pos = findMatchingBrace(source, braceIdx) + 1;
+          continue;
+        }
+        const end = source.indexOf('}', braceIdx);
+        if (end === -1) break;
+        const declarations = source
+          .slice(braceIdx + 1, end)
+          .split(';')
+          .map((d) => d.trim())
+          .filter(Boolean)
+          .map((d) => {
+            const idx = d.indexOf(':');
+            if (idx === -1) return null;
+            return { prop: d.slice(0, idx).trim(), value: d.slice(idx + 1).trim() };
+          })
+          .filter(Boolean);
+        if (declarations.length) rules.push({ selector: selectorPart, media: media || null, declarations });
+        pos = end + 1;
+      }
+    }
+    parseBlock(text, null);
+    return rules;
+  }
+
+  function deriveCssRefCategory(selector) {
+    const first = selector.split(',')[0].trim();
+    if (/\.hljs-/.test(first)) return t('cssRef.categoryHighlight');
+    if (/^:root/.test(first) || first === '*' || /^html\b/.test(first)) return t('cssRef.categoryBase');
+    const stripped = first.replace(/^body\.markdown-body\.?/, '').replace(/^\.markdown-body\.?/, '').trim();
+    const token = (stripped || first)
+      .replace(/^\./, '')
+      .split(/[\s.>:#[]+/)
+      .filter(Boolean)[0];
+    return token || first;
+  }
+
+  const CSS_REF_BLOCK_START = '/* mdviewer:ref-editor:start */';
+  const CSS_REF_BLOCK_END = '/* mdviewer:ref-editor:end */';
+
+  function splitCssRefBlock(customCssText) {
+    const startIdx = customCssText.indexOf(CSS_REF_BLOCK_START);
+    const endIdx = customCssText.indexOf(CSS_REF_BLOCK_END);
+    if (startIdx === -1 || endIdx === -1 || endIdx < startIdx) {
+      return { before: customCssText, after: '' };
+    }
+    return {
+      before: customCssText.slice(0, startIdx),
+      after: customCssText.slice(endIdx + CSS_REF_BLOCK_END.length),
+    };
+  }
+
+  // selector -> Map(prop -> value), read from the managed block only (never
+  // from the user's own rules elsewhere in the textarea).
+  function getCssRefOverrides() {
+    const { before, after } = splitCssRefBlock(el.cssEditor.value);
+    const full = el.cssEditor.value;
+    const blockText = full.slice(before.length, full.length - after.length);
+    const rules = parseCssRules(blockText);
+    const map = new Map();
+    for (const rule of rules) {
+      if (!map.has(rule.selector)) map.set(rule.selector, new Map());
+      const propMap = map.get(rule.selector);
+      for (const d of rule.declarations) propMap.set(d.prop, d.value);
+    }
+    return map;
+  }
+
+  function writeCssRefOverrides(overrides) {
+    const { before, after } = splitCssRefBlock(el.cssEditor.value);
+    if (overrides.size === 0) {
+      el.cssEditor.value = (before + after).replace(/\n{3,}/g, '\n\n');
+    } else {
+      const ruleTexts = [];
+      for (const [selector, propMap] of overrides) {
+        const decls = Array.from(propMap.entries())
+          .map(([prop, value]) => `  ${prop}: ${value};`)
+          .join('\n');
+        ruleTexts.push(`${selector} {\n${decls}\n}`);
+      }
+      const block =
+        `${CSS_REF_BLOCK_START}\n` +
+        `/* ${t('cssRef.editHint')} */\n` +
+        `${ruleTexts.join('\n\n')}\n` +
+        `${CSS_REF_BLOCK_END}\n`;
+      el.cssEditor.value = before.replace(/\n*$/, before ? '\n\n' : '') + block + after;
+    }
+    applyLiveCss();
+    state.cssDirty = true;
+    el.cssStatus.textContent = t('css.unsavedChanges');
+  }
+
+  function setCssRefOverride(selector, prop, value) {
+    const overrides = getCssRefOverrides();
+    if (!overrides.has(selector)) overrides.set(selector, new Map());
+    overrides.get(selector).set(prop, value);
+    writeCssRefOverrides(overrides);
+  }
+
+  function clearCssRefOverride(selector, prop) {
+    const overrides = getCssRefOverrides();
+    const propMap = overrides.get(selector);
+    if (propMap) {
+      propMap.delete(prop);
+      if (propMap.size === 0) overrides.delete(selector);
+    }
+    writeCssRefOverrides(overrides);
+  }
+
+  function beginEditCssRefValue(valueSpan, selector, prop, currentValue) {
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.className = 'css-ref-value-input';
+    input.value = currentValue;
+    input.spellcheck = false;
+    valueSpan.replaceWith(input);
+    input.focus();
+    input.select();
+
+    let settled = false;
+    const commit = () => {
+      if (settled) return;
+      settled = true;
+      const newValue = input.value.trim();
+      if (newValue && newValue !== currentValue) setCssRefOverride(selector, prop, newValue);
+      else renderCssRefTree();
+    };
+    const cancel = () => {
+      if (settled) return;
+      settled = true;
+      renderCssRefTree();
+    };
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        commit();
+      } else if (e.key === 'Escape') {
+        e.preventDefault();
+        cancel();
+      }
+    });
+    input.addEventListener('blur', commit);
+  }
+
+  // Remembers which categories/rules are expanded across re-renders (every
+  // edit/reset rebuilds the whole tree from scratch) — otherwise committing
+  // an edit would collapse everything the user had just navigated into.
+  const cssRefExpandState = { categories: new Set(), rules: new Set() };
+  function ruleExpandKey(rule) {
+    return `${rule.selector}|${rule.media || ''}`;
+  }
+
+  function renderCssRefTree() {
+    if (!state.cssRefExpanded) return;
+    const baseRules = parseCssRules(state.baseCss);
+    const hljsRules = parseCssRules(state.hljsCss);
+    const overrides = getCssRefOverrides();
+
+    const categories = new Map();
+    for (const rule of [...baseRules, ...hljsRules]) {
+      const cat = deriveCssRefCategory(rule.selector);
+      if (!categories.has(cat)) categories.set(cat, []);
+      categories.get(cat).push(rule);
+    }
+
+    const filter = el.cssRefSearch.value.trim().toLowerCase();
+    el.cssRefTree.innerHTML = '';
+
+    const sortedCats = Array.from(categories.keys()).sort((a, b) => a.localeCompare(b));
+    for (const cat of sortedCats) {
+      const rules = categories.get(cat);
+      const matchingRules = filter
+        ? rules.filter(
+            (r) =>
+              r.selector.toLowerCase().includes(filter) ||
+              r.declarations.some((d) => d.prop.toLowerCase().includes(filter))
+          )
+        : rules;
+      if (filter && matchingRules.length === 0) continue;
+
+      const catNode = document.createElement('div');
+      const catRow = document.createElement('div');
+      catRow.className = 'css-ref-row css-ref-category';
+      const catCaret = document.createElement('span');
+      catCaret.className = 'css-ref-caret';
+      const catLabel = document.createElement('span');
+      catLabel.className = 'css-ref-label';
+      catLabel.textContent = `${cat} (${matchingRules.length})`;
+      catRow.append(catCaret, catLabel);
+      catNode.appendChild(catRow);
+
+      const catChildren = document.createElement('div');
+      catChildren.className = 'css-ref-children';
+      if (filter || cssRefExpandState.categories.has(cat)) {
+        catChildren.classList.add('expanded');
+        catCaret.classList.add('expanded');
+      }
+      catNode.appendChild(catChildren);
+      catRow.addEventListener('click', () => {
+        const expanded = catChildren.classList.toggle('expanded');
+        catCaret.classList.toggle('expanded', expanded);
+        if (expanded) cssRefExpandState.categories.add(cat);
+        else cssRefExpandState.categories.delete(cat);
+      });
+
+      for (const rule of matchingRules) {
+        const ruleNode = document.createElement('div');
+        const ruleRow = document.createElement('div');
+        ruleRow.className = 'css-ref-row css-ref-rule';
+        const ruleCaret = document.createElement('span');
+        ruleCaret.className = 'css-ref-caret';
+        const ruleLabel = document.createElement('span');
+        ruleLabel.className = 'css-ref-label css-ref-selector';
+        ruleLabel.textContent = rule.selector + (rule.media ? (rule.media.includes('light') ? ' ☀' : ' 🌙') : '');
+        ruleLabel.title = rule.selector + (rule.media ? ` — ${rule.media}` : '');
+        const copyBtn = document.createElement('button');
+        copyBtn.type = 'button';
+        copyBtn.className = 'css-ref-copy-btn';
+        copyBtn.textContent = '⧉';
+        copyBtn.title = t('cssRef.copySelector');
+        copyBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          window.mdviewer.clipboardWriteText(rule.selector);
+        });
+        ruleRow.append(ruleCaret, ruleLabel, copyBtn);
+        ruleNode.appendChild(ruleRow);
+
+        const ruleKey = ruleExpandKey(rule);
+        const ruleChildren = document.createElement('div');
+        ruleChildren.className = 'css-ref-children';
+        if (filter || cssRefExpandState.rules.has(ruleKey)) {
+          ruleChildren.classList.add('expanded');
+          ruleCaret.classList.add('expanded');
+        }
+        ruleNode.appendChild(ruleChildren);
+        ruleRow.addEventListener('click', () => {
+          const expanded = ruleChildren.classList.toggle('expanded');
+          ruleCaret.classList.toggle('expanded', expanded);
+          if (expanded) cssRefExpandState.rules.add(ruleKey);
+          else cssRefExpandState.rules.delete(ruleKey);
+        });
+
+        const overrideMap = overrides.get(rule.selector);
+        for (const decl of rule.declarations) {
+          const leafRow = document.createElement('div');
+          leafRow.className = 'css-ref-row css-ref-leaf';
+          const isOverridden = !!(overrideMap && overrideMap.has(decl.prop));
+          const effectiveValue = isOverridden ? overrideMap.get(decl.prop) : decl.value;
+
+          const propSpan = document.createElement('span');
+          propSpan.className = 'css-ref-prop';
+          propSpan.textContent = decl.prop + ':';
+
+          const valueSpan = document.createElement('span');
+          valueSpan.className = 'css-ref-value' + (isOverridden ? ' css-ref-value-overridden' : '');
+          valueSpan.textContent = effectiveValue;
+          valueSpan.title = t('cssRef.editHint');
+          valueSpan.addEventListener('dblclick', () => {
+            beginEditCssRefValue(valueSpan, rule.selector, decl.prop, effectiveValue);
+          });
+
+          leafRow.append(propSpan, valueSpan);
+
+          if (isOverridden) {
+            const resetBtn = document.createElement('button');
+            resetBtn.type = 'button';
+            resetBtn.className = 'css-ref-reset-btn';
+            resetBtn.textContent = '↺';
+            resetBtn.title = t('cssRef.resetToDefault');
+            resetBtn.addEventListener('click', (e) => {
+              e.stopPropagation();
+              clearCssRefOverride(rule.selector, decl.prop);
+            });
+            leafRow.appendChild(resetBtn);
+          }
+
+          ruleChildren.appendChild(leafRow);
+        }
+
+        catChildren.appendChild(ruleNode);
+      }
+
+      el.cssRefTree.appendChild(catNode);
+    }
+  }
+
+  el.cssRefHeader.addEventListener('click', () => {
+    state.cssRefExpanded = !state.cssRefExpanded;
+    el.cssRefBody.classList.toggle('hidden', !state.cssRefExpanded);
+    el.cssRefChevron.classList.toggle('expanded', state.cssRefExpanded);
+    if (state.cssRefExpanded) renderCssRefTree();
+  });
+  el.cssRefHeader.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      el.cssRefHeader.click();
+    }
+  });
+  el.cssRefSearch.addEventListener('input', renderCssRefTree);
 
   // ---------------------------------------------------------------------
   // CSS editor
@@ -2355,11 +2970,15 @@
     if (e.target.closest('.tree-row')) return;
     e.preventDefault();
     if (!state.rootPath) return;
-    window.mdviewer.showTreeContextMenu(state.rootPath);
+    window.mdviewer.showTreeContextMenu(state.rootPath, state.rootPath);
   });
 
   window.mdviewer.onTreeCreateNew(({ targetDir, kind }) => {
     beginCreateTreeEntry({ targetDir, kind });
+  });
+
+  window.mdviewer.onTreeRefreshDir(({ targetDir }) => {
+    refreshTreeDir(targetDir);
   });
 
   window.mdviewer.onMenuOpenFolder(async () => {

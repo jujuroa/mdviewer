@@ -661,6 +661,11 @@ function buildAppMenu() {
         },
         { type: 'separator' },
         {
+          label: t('menu.exportPdf'),
+          click: () => mainWindow.webContents.send('menu:export-pdf'),
+        },
+        { type: 'separator' },
+        {
           label: t('menu.recentProjects'),
           submenu: recentSubmenu,
         },
@@ -797,6 +802,18 @@ function createWindow() {
 
   mainWindow.loadFile(path.join(__dirname, 'src', 'index.html'));
   buildAppMenu();
+
+  // Mouse "back" button (Windows: XButton1) — the app has no real
+  // browser-style navigation for webContents.goBack() to operate on (every
+  // document switch is a same-page innerHTML swap, not a page load), so
+  // intercept the OS-level command here and hand it to the renderer's own
+  // navigation-history logic instead of leaving it unhandled.
+  mainWindow.on('app-command', (event, cmd) => {
+    if (cmd === 'browser-backward') {
+      event.preventDefault();
+      mainWindow.webContents.send('mdviewer:nav-back');
+    }
+  });
 
   const webContentsId = mainWindow.webContents.id;
   mainWindow.on('closed', () => {
@@ -1133,12 +1150,12 @@ ipcMain.handle('shell:show-in-folder', (event, itemPath) => {
   shell.showItemInFolder(itemPath);
 });
 
-ipcMain.handle('tree:show-context-menu', (event, itemPath) => {
+ipcMain.handle('tree:show-context-menu', (event, itemPath, rootPath) => {
   const win = BrowserWindow.fromWebContents(event.sender);
   const isDir = fs.statSync(itemPath).isDirectory();
-  // New File/Folder are created next to whatever was right-clicked: inside
-  // it for a folder (or empty tree space, whose itemPath is the project
-  // root), or as a sibling for a file — matching common editor convention.
+  // New File/Folder/Refresh act on whatever was right-clicked: inside it for
+  // a folder (or empty tree space, whose itemPath is the project root), or
+  // relative to its parent for a file — matching common editor convention.
   const targetDir = isDir ? itemPath : path.dirname(itemPath);
 
   const items = [
@@ -1152,6 +1169,10 @@ ipcMain.handle('tree:show-context-menu', (event, itemPath) => {
     },
     { type: 'separator' },
     {
+      label: t('context.refresh'),
+      click: () => win.webContents.send('tree:refresh-dir', { targetDir }),
+    },
+    {
       label: t('context.openInExplorer'),
       click: () => shell.showItemInFolder(itemPath),
     },
@@ -1160,11 +1181,20 @@ ipcMain.handle('tree:show-context-menu', (event, itemPath) => {
     items.push({ type: 'separator' });
     items.push({
       label: t('context.exportPdf'),
-      click: () => exportMarkdownToPdf(itemPath, win),
+      click: () => exportMarkdownToPdf(itemPath, win, rootPath),
     });
   }
   const menu = Menu.buildFromTemplate(items);
   menu.popup({ window: win });
+});
+
+// Backs both the tree's "Export to PDF..." context menu item and the new
+// File > Export to PDF... menu item (which targets whatever's currently
+// open in the renderer, so it needs its own IPC entry point rather than
+// reusing the context-menu one above).
+ipcMain.handle('export:pdf', (event, filePath, rootPath) => {
+  const win = BrowserWindow.fromWebContents(event.sender);
+  return exportMarkdownToPdf(filePath, win, rootPath);
 });
 
 // Renders the file the same way the preview does, then prints that HTML to
@@ -1176,7 +1206,7 @@ ipcMain.handle('tree:show-context-menu', (event, itemPath) => {
 // — this is process-wide, so it very briefly affects the main window's own
 // colors too, but the export completes in well under a second for a
 // typical document, same as e.g. a quick native print-preview flash.
-async function exportMarkdownToPdf(filePath, parentWindow) {
+async function exportMarkdownToPdf(filePath, parentWindow, rootPath) {
   const defaultName = `${path.basename(filePath, path.extname(filePath))}.pdf`;
   const saveResult = await dialog.showSaveDialog(parentWindow, {
     defaultPath: path.join(path.dirname(filePath), defaultName),
@@ -1189,9 +1219,18 @@ async function exportMarkdownToPdf(filePath, parentWindow) {
   try {
     const html = await renderMarkdownFile(filePath);
     const { defaultCss, hljsCss } = getBaseStyles();
+    // Match whatever the project's own preview currently shows: only pull
+    // in custom.css if the user has it toggled on (same default as the
+    // renderer's own cssEnabled flag — on unless explicitly turned off).
+    let userCss = '';
+    if (rootPath) {
+      const projectState = loadProjectState(rootPath);
+      const cssEnabled = projectState.cssEnabled !== undefined ? projectState.cssEnabled : true;
+      if (cssEnabled) userCss = loadProjectCss(rootPath);
+    }
     const fullHtml =
       '<!DOCTYPE html><html><head><meta charset="utf-8">' +
-      `<style>${defaultCss}</style><style>${hljsCss}</style>` +
+      `<style>${defaultCss}</style><style>${hljsCss}</style><style>${userCss}</style>` +
       '</head><body class="markdown-body">' + html + '</body></html>';
 
     nativeTheme.themeSource = 'light';

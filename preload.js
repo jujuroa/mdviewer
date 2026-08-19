@@ -22,9 +22,10 @@ contextBridge.exposeInMainWorld('mdviewer', {
   createFile: (dirPath, name) => ipcRenderer.invoke('fs:create-file', dirPath, name),
   createFolder: (dirPath, name) => ipcRenderer.invoke('fs:create-folder', dirPath, name),
   renderMarkdownText: (text, baseDir, requestId) => ipcRenderer.invoke('md:render-text', text, baseDir, requestId),
-  showTreeContextMenu: (itemPath) => ipcRenderer.invoke('tree:show-context-menu', itemPath),
+  showTreeContextMenu: (itemPath, rootPath) => ipcRenderer.invoke('tree:show-context-menu', itemPath, rootPath),
   showInFolder: (itemPath) => ipcRenderer.invoke('shell:show-in-folder', itemPath),
   openPath: (folderPath) => ipcRenderer.invoke('shell:open-path', folderPath),
+  exportPdf: (filePath, rootPath) => ipcRenderer.invoke('export:pdf', filePath, rootPath),
   loadProjectState: (rootPath) => ipcRenderer.invoke('fs:load-project-state', rootPath),
   saveProjectState: (rootPath, projectState) =>
     ipcRenderer.invoke('fs:save-project-state', rootPath, projectState),
@@ -69,16 +70,23 @@ contextBridge.exposeInMainWorld('mdviewer', {
     return () => ipcRenderer.removeListener('menu:open-recent', listener);
   },
   onMenuToggleFind: (callback) => ipcRenderer.on('menu:toggle-find', callback),
+  onMenuExportPdf: (callback) => ipcRenderer.on('menu:export-pdf', callback),
   onTreeCreateNew: (callback) => {
     const listener = (event, payload) => callback(payload);
     ipcRenderer.on('tree:create-new', listener);
     return () => ipcRenderer.removeListener('tree:create-new', listener);
+  },
+  onTreeRefreshDir: (callback) => {
+    const listener = (event, payload) => callback(payload);
+    ipcRenderer.on('tree:refresh-dir', listener);
+    return () => ipcRenderer.removeListener('tree:refresh-dir', listener);
   },
   onMenuToggleCssEditor: (callback) => ipcRenderer.on('menu:toggle-css-editor', callback),
   onMenuManageCustomExtensions: (callback) => ipcRenderer.on('menu:manage-custom-extensions', callback),
   onMenuToggleEditMode: (callback) => ipcRenderer.on('menu:toggle-edit-mode', callback),
   onMenuSaveFile: (callback) => ipcRenderer.on('menu:save-file', callback),
   onMenuToggleTerminal: (callback) => ipcRenderer.on('menu:toggle-terminal', callback),
+  onNavBack: (callback) => ipcRenderer.on('mdviewer:nav-back', callback),
 
   onTerminalData: (callback) => {
     const listener = (event, data) => callback(data);

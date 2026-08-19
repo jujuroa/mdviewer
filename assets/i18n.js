@@ -9,6 +9,7 @@ const STRINGS = {
     'menu.openFolder': 'Open Folder...',
     'menu.openFile': 'Open File...',
     'menu.save': 'Save',
+    'menu.exportPdf': 'Export to PDF...',
     'menu.recentProjects': 'Recent Projects',
     'menu.noRecentProjects': 'No recent projects',
     'menu.view': 'View',
@@ -37,6 +38,7 @@ const STRINGS = {
     'context.exportPdf': 'Export to PDF...',
     'context.newFile': 'New File...',
     'context.newFolder': 'New Folder...',
+    'context.refresh': 'Refresh',
     'export.pdfFailedTitle': 'PDF export failed',
     'export.pdfFailedMessage': 'Could not export {name} to PDF: {error}',
 
@@ -115,6 +117,14 @@ const STRINGS = {
     'css.noOtherProjects': 'No other projects to import from',
     'css.importedPending': 'Imported (not saved yet): {path}',
 
+    'css.refTitle': 'Available Classes (Reference)',
+    'css.refSearchPlaceholder': 'Search class/property...',
+    'cssRef.categoryHighlight': 'Code highlighting (highlight.js)',
+    'cssRef.categoryBase': 'Base',
+    'cssRef.copySelector': 'Copy selector',
+    'cssRef.resetToDefault': 'Reset to default',
+    'cssRef.editHint': 'Double-click to edit — writes an override into the CSS below',
+
     'terminal.title': 'Terminal',
     'terminal.clearBtn': 'Clear',
     'terminal.clearTitle': 'Clear output',
@@ -154,6 +164,7 @@ const STRINGS = {
     'menu.openFolder': '폴더 열기...',
     'menu.openFile': '파일 열기...',
     'menu.save': '저장',
+    'menu.exportPdf': 'PDF로 내보내기...',
     'menu.recentProjects': '최근 프로젝트',
     'menu.noRecentProjects': '최근 프로젝트 없음',
     'menu.view': '보기',
@@ -182,6 +193,7 @@ const STRINGS = {
     'context.exportPdf': 'PDF로 내보내기...',
     'context.newFile': '새 파일...',
     'context.newFolder': '새 폴더...',
+    'context.refresh': '새로고침',
     'export.pdfFailedTitle': 'PDF 내보내기 실패',
     'export.pdfFailedMessage': '{name} 파일을 PDF로 내보내지 못했습니다: {error}',
 
@@ -259,6 +271,14 @@ const STRINGS = {
     'css.importFailed': '가져오기 실패: {error}',
     'css.noOtherProjects': '가져올 다른 프로젝트가 없습니다',
     'css.importedPending': '가져옴 (저장 전): {path}',
+
+    'css.refTitle': '사용 가능한 클래스 (참조)',
+    'css.refSearchPlaceholder': '클래스/속성 검색...',
+    'cssRef.categoryHighlight': '코드 하이라이트 (highlight.js)',
+    'cssRef.categoryBase': '기본',
+    'cssRef.copySelector': '선택자 복사',
+    'cssRef.resetToDefault': '기본값으로 되돌리기',
+    'cssRef.editHint': '더블클릭하면 아래 CSS에 재정의(override)가 추가됩니다',
 
     'terminal.title': '터미널',
     'terminal.clearBtn': '지우기',

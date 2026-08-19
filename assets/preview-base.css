@@ -101,6 +101,14 @@ body.markdown-body.wide-view {
   margin-bottom: 16px;
 }
 
+.markdown-body p {
+  text-align: justify;
+  /* Korean word-spacing is far less elastic than English's, so justifying
+     by stretching spaces alone (the text-align: justify default) leaves
+     visibly uneven gaps — distribute the extra space per character instead. */
+  text-justify: inter-character;
+}
+
 .markdown-body a {
   color: #3794ff;
   text-decoration: none;
@@ -133,6 +141,17 @@ body.markdown-body.wide-view {
 }
 
 .markdown-body img { max-width: 100%; }
+
+/* Center an image/svg that's the only thing in its paragraph (the common
+   "standalone figure" case: `![alt](src)` alone on its own line) without
+   touching inline usage — icons/badges mixed with text, or several images
+   in a row — which should stay inline exactly as written. */
+.markdown-body p > img:only-child,
+.markdown-body p > svg:only-child {
+  display: block;
+  margin-left: auto;
+  margin-right: auto;
+}
 
 .markdown-body .plantuml-diagram,
 .markdown-body .mermaid-diagram {
