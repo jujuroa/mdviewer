@@ -1905,6 +1905,29 @@
     state.sourceDebounceTimer = setTimeout(renderSourcePreview, 200);
   });
 
+  // Pasting an image (screenshot, copied from an image viewer/browser, ...)
+  // saves it to disk instead of doing nothing/dumping binary data, and
+  // inserts a markdown link to it. Checked synchronously via
+  // clipboardData.items so plain text pastes are left completely alone —
+  // preventDefault only happens once we're sure there's an image to handle.
+  el.mdSourceEditor.addEventListener('paste', async (e) => {
+    const items = e.clipboardData && e.clipboardData.items;
+    if (!items || !state.currentFilePath) return;
+    const hasImage = Array.from(items).some((item) => item.type.startsWith('image/'));
+    if (!hasImage) return;
+    e.preventDefault();
+
+    const result = await window.mdviewer.savePastedImage(state.currentFilePath);
+    if (!result.ok) {
+      el.editStatus.textContent = t('edit.pasteImageFailed', { error: result.error });
+      return;
+    }
+
+    const ta = el.mdSourceEditor;
+    ta.setRangeText(`![](${result.relPath})`, ta.selectionStart, ta.selectionEnd, 'end');
+    ta.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+
   el.mdSourceEditor.addEventListener('keydown', (e) => {
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
       e.preventDefault();

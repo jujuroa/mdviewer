@@ -46,6 +46,7 @@ contextBridge.exposeInMainWorld('mdviewer', {
 
   clipboardWriteText: (text) => ipcRenderer.invoke('clipboard:write-text', text),
   clipboardReadText: () => ipcRenderer.invoke('clipboard:read-text'),
+  savePastedImage: (targetFilePath) => ipcRenderer.invoke('fs:save-pasted-image', targetFilePath),
 
   onFileChanged: (callback) => {
     const listener = (event, filePath) => callback(filePath);

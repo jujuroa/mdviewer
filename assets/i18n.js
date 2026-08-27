@@ -148,6 +148,7 @@ const STRINGS = {
     'edit.saved': 'Saved',
     'edit.saveFailed': 'Save failed: {error}',
     'edit.unsavedChanges': 'You have unsaved changes',
+    'edit.pasteImageFailed': 'Failed to paste image: {error}',
 
     'ext.title': 'Custom Text Extensions',
     'ext.desc': 'Files with these extensions open as plain text (viewable and editable), just like .txt/.log.',
@@ -303,6 +304,7 @@ const STRINGS = {
     'edit.saved': '저장됨',
     'edit.saveFailed': '저장 실패: {error}',
     'edit.unsavedChanges': '저장되지 않은 변경 사항이 있습니다',
+    'edit.pasteImageFailed': '이미지 붙여넣기 실패: {error}',
 
     'ext.title': '사용자 지정 텍스트 확장자',
     'ext.desc': '지정한 확장자의 파일은 .txt/.log와 동일하게 일반 텍스트로 보고 편집할 수 있습니다.',

@@ -1424,3 +1424,32 @@ ipcMain.handle('clipboard:write-text', (event, text) => {
 ipcMain.handle('clipboard:read-text', () => {
   return clipboard.readText();
 });
+
+// Saves whatever image is currently on the clipboard next to the given
+// markdown/text file, under a ".resources" subfolder, and returns the
+// relative path to use in a markdown image link. Used by the source
+// editor's paste handler (see the 'paste' listener on #md-source-editor in
+// renderer.js) so pasting a screenshot/copied image inserts a working link
+// instead of dumping raw image data into the text.
+ipcMain.handle('fs:save-pasted-image', (event, targetFilePath) => {
+  try {
+    const image = clipboard.readImage();
+    if (image.isEmpty()) return { ok: false, error: 'Clipboard has no image' };
+
+    const resourcesDir = path.join(path.dirname(targetFilePath), '.resources');
+    fs.mkdirSync(resourcesDir, { recursive: true });
+
+    let filename = `pasted-image-${Date.now()}.png`;
+    let fullPath = path.join(resourcesDir, filename);
+    let n = 2;
+    while (fs.existsSync(fullPath)) {
+      filename = `pasted-image-${Date.now()}-${n++}.png`;
+      fullPath = path.join(resourcesDir, filename);
+    }
+
+    fs.writeFileSync(fullPath, image.toPNG());
+    return { ok: true, relPath: `.resources/${filename}` };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
