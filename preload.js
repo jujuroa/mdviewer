@@ -34,6 +34,7 @@ contextBridge.exposeInMainWorld('mdviewer', {
 
   listRecentProjects: () => ipcRenderer.invoke('recent:list'),
   addRecentProject: (rootPath) => ipcRenderer.invoke('recent:add', rootPath),
+  setActiveProject: (rootPath) => ipcRenderer.invoke('project:set-active', rootPath),
   removeRecentProject: (rootPath) => ipcRenderer.invoke('recent:remove', rootPath),
 
   getI18n: () => ipcRenderer.invoke('i18n:get'),

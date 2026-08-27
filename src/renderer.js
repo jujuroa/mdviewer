@@ -617,6 +617,9 @@
     el.tocPanel.classList.toggle('collapsed', !!savedState.tocCollapsed);
 
     await window.mdviewer.addRecentProject(folderPath);
+    // Lets the main process reopen this project after a reload it has to
+    // do itself (a language change), so the user keeps their place.
+    await window.mdviewer.setActiveProject(folderPath);
     showProjectView();
     refreshToc();
 

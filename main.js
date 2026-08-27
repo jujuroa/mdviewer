@@ -122,6 +122,13 @@ function mermaidImageSrc(source) {
 }
 
 let mainWindow;
+
+// The project folder the renderer currently has open. A settings change
+// that has to reload the window (see setLanguage) uses this to put the
+// user back where they were instead of dropping them on the welcome
+// screen; the per-project .mdviewer/state.json takes it from there and
+// restores the open file, scroll offset and panel layout.
+let activeProjectRoot = null;
 const fileWatchers = new Map(); // webContents.id -> fs.FSWatcher
 const terminals = new Map(); // webContents.id -> { proc: ChildProcess }
 
@@ -215,12 +222,28 @@ function plainTextExtensionPattern() {
   return new RegExp('\\.(' + all.join('|') + ')$', 'i');
 }
 
+function reloadWindowRestoringProject() {
+  if (!mainWindow) return;
+  // Registered before reload() so the listener is in place by the time
+  // the fresh page finishes loading. The renderer's 'folder:open-path'
+  // handler is the same one the OS/CLI "open this folder" path uses.
+  if (activeProjectRoot) {
+    const root = activeProjectRoot;
+    mainWindow.webContents.once('did-finish-load', () => {
+      mainWindow.webContents.send('folder:open-path', root);
+    });
+  }
+  mainWindow.reload();
+}
+
 function setLanguage(lang) {
   if (!SUPPORTED_LANGUAGES.includes(lang) || lang === currentLanguage) return;
   currentLanguage = lang;
   saveSettings({ ...loadSettings(), language: lang });
   buildAppMenu();
-  if (mainWindow) mainWindow.reload();
+  // The renderer applies its string table once at startup, so a reload is
+  // still the way to re-translate everything already on screen.
+  reloadWindowRestoringProject();
 }
 
 const THEME_SOURCES = ['system', 'light', 'dark'];
@@ -230,11 +253,11 @@ function setThemeSource(source) {
   nativeTheme.themeSource = source;
   saveSettings({ ...loadSettings(), themeSource: source });
   buildAppMenu();
-  // nativeTheme.themeSource updates prefers-color-scheme for *new* pages
-  // reliably, but doesn't consistently repaint an already-loaded one in
-  // practice — reload to guarantee the change actually shows up, same as
-  // setLanguage does for the same class of "settings changed" update.
-  if (mainWindow) mainWindow.reload();
+  // No reload here: every themed rule in the shell and in the preview
+  // iframe is a prefers-color-scheme media query, and setting
+  // nativeTheme.themeSource propagates to the live window (iframe
+  // included), so both repaint in place. Reloading instead would throw
+  // away the open project, the current document and any unsaved edits.
 }
 
 function recentProjectsFilePath() {
@@ -1602,6 +1625,11 @@ ipcMain.handle('recent:list', () => {
     name: path.basename(p),
     exists: fs.existsSync(p),
   }));
+});
+
+ipcMain.handle('project:set-active', (event, rootPath) => {
+  activeProjectRoot = rootPath || null;
+  return { ok: true };
 });
 
 ipcMain.handle('recent:add', (event, rootPath) => {
