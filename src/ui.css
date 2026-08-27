@@ -200,6 +200,213 @@ html, body {
 }
 .tree-children.expanded { display: block; }
 
+/* ---- Project-wide search ---- */
+
+/* The two "open..." buttons share the row equally (flex: 1); the search
+   toggle is an icon, so it keeps its own narrow width instead. */
+.sidebar-header button.sidebar-icon-btn {
+  flex: 0 0 auto;
+  width: 30px;
+  padding: 6px 0;
+  font-size: 13px;
+  line-height: 1;
+}
+.sidebar-header button.sidebar-icon-btn.active {
+  background: var(--selected);
+  border-color: var(--accent);
+}
+
+/* Search takes over the sidebar body while it's open (the tree is hidden),
+   the same way VS Code swaps the explorer for the search view. */
+.search-panel {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  border-bottom: 1px solid var(--border);
+}
+.search-panel.hidden { display: none; }
+.tree.hidden { display: none; }
+
+.search-input-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 8px 4px;
+}
+
+#search-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  border: 1px solid var(--border);
+  background: var(--bg-app);
+  color: var(--text);
+  border-radius: 4px;
+  padding: 5px 8px;
+  font-size: 12px;
+  font-family: inherit;
+}
+#search-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.search-close {
+  flex: 0 0 auto;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  font-size: 11px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-dim);
+  border-radius: 4px;
+  cursor: pointer;
+}
+.search-close:hover { background: var(--hover); color: var(--text); }
+
+.search-options {
+  display: flex;
+  gap: 4px;
+  padding: 0 8px 6px;
+}
+
+.search-opt {
+  width: 24px;
+  height: 22px;
+  padding: 0;
+  font-size: 11px;
+  font-family: Consolas, "Courier New", monospace;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-dim);
+  border-radius: 4px;
+  cursor: pointer;
+}
+.search-opt:hover { background: var(--hover); color: var(--text); }
+.search-opt.active {
+  background: var(--selected);
+  border-color: var(--accent);
+  color: var(--text);
+}
+.search-opt-word { text-decoration: underline; }
+
+.search-status {
+  padding: 0 10px 6px;
+  font-size: 11px;
+  color: var(--text-dim);
+  word-break: break-word;
+}
+.search-status.error { color: #e06c75; }
+
+.search-results {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  font-size: 12px;
+  user-select: none;
+  padding-bottom: 4px;
+}
+
+.search-file-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.search-file-row:hover { background: var(--hover); }
+
+.search-file-caret {
+  width: 12px;
+  flex-shrink: 0;
+  text-align: center;
+  font-size: 10px;
+  color: var(--text-dim);
+  transition: transform 0.1s ease;
+}
+.search-file-caret.collapsed { transform: rotate(-90deg); }
+
+.search-file-name {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-weight: 500;
+}
+
+.search-file-dir {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.search-file-count {
+  flex: 0 0 auto;
+  min-width: 16px;
+  text-align: center;
+  font-size: 10px;
+  color: var(--text-dim);
+  background: var(--hover);
+  border-radius: 9px;
+  padding: 0 5px;
+}
+
+.search-file-matches.collapsed { display: none; }
+
+.search-match {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 2px 8px 2px 24px;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+}
+.search-match:hover { background: var(--hover); }
+.search-match.selected { background: var(--selected); }
+
+.search-match-line {
+  flex: 0 0 auto;
+  min-width: 26px;
+  text-align: right;
+  font-size: 10px;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+}
+
+.search-match-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-family: Consolas, "Courier New", monospace;
+  font-size: 11px;
+}
+.search-match-text mark {
+  background: rgba(255, 197, 61, 0.45);
+  color: inherit;
+  border-radius: 2px;
+  padding: 0 1px;
+}
+
+.search-file-truncated {
+  padding: 2px 8px 4px 24px;
+  font-size: 10px;
+  color: var(--text-dim);
+  font-style: italic;
+}
+
+.search-empty {
+  padding: 8px 10px;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
 /* ---- Resizers ---- */
 
 .resizer {

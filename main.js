@@ -586,6 +586,216 @@ function listDir(dirPath) {
   return items;
 }
 
+// ---------------------------------------------------------------------
+// Project-wide document search
+// ---------------------------------------------------------------------
+
+// Only the text-ish documents the app can actually open are searched — a
+// project folder can also hold images and other binaries, and reading those
+// just to throw the bytes away would dominate the cost of a search.
+const SEARCH_SKIP_DIRS = new Set(['node_modules']);
+const SEARCH_MAX_FILE_BYTES = 2 * 1024 * 1024;
+const SEARCH_MAX_MATCHES_PER_FILE = 200;
+const SEARCH_MAX_TOTAL_MATCHES = 2000;
+const SEARCH_MAX_LINE_CHARS = 400;
+// How much of the line to keep in front of the first match when a very long
+// line has to be windowed down to SEARCH_MAX_LINE_CHARS.
+const SEARCH_LINE_LEAD_CHARS = 40;
+
+// Searches the renderer has given up on (the user typed another character,
+// or closed the panel) land here; the walk below checks the set between
+// files so a stale search stops reading the disk instead of running to
+// completion for a result nobody will look at.
+const canceledSearches = new Set();
+
+function escapeRegExpText(str) {
+  return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+// Whole-word guards are written as lookarounds over Unicode letter/number
+// classes rather than \b, so they behave sensibly for non-ASCII (e.g.
+// Korean) queries. \p{...} needs the 'u' flag, which in turn rejects some
+// otherwise-valid patterns the user may type in regex mode — hence the
+// plain-ASCII fallbacks.
+function buildSearchRegex(query, { caseSensitive = false, wholeWord = false, useRegex = false } = {}) {
+  const source = useRegex ? query : escapeRegExpText(query);
+  const flags = caseSensitive ? '' : 'i';
+  if (wholeWord) {
+    try {
+      return new RegExp(`(?<![\\p{L}\\p{N}_])(?:${source})(?![\\p{L}\\p{N}_])`, 'gu' + flags);
+    } catch (err) {
+      return new RegExp(`\\b(?:${source})\\b`, 'g' + flags);
+    }
+  }
+  try {
+    return new RegExp(source, 'gu' + flags);
+  } catch (err) {
+    return new RegExp(source, 'g' + flags);
+  }
+}
+
+// Collects every match on one line as [start, end] index pairs. A
+// zero-length match (from a user regex like "a*") would spin forever on its
+// own, so lastIndex is nudged past those by hand.
+function matchRangesInLine(regex, line, limit) {
+  const ranges = [];
+  regex.lastIndex = 0;
+  let m;
+  while ((m = regex.exec(line)) !== null) {
+    if (m[0].length === 0) {
+      regex.lastIndex += 1;
+      continue;
+    }
+    ranges.push([m.index, m.index + m[0].length]);
+    if (ranges.length >= limit) break;
+  }
+  return ranges;
+}
+
+// Trims the indentation off a matched line and, if it's still enormous,
+// keeps only a window around the first match — shifting the match ranges to
+// stay aligned with the text actually sent to the renderer.
+function trimMatchedLine(line, ranges) {
+  const leading = line.length - line.trimStart().length;
+  let text = line.slice(leading).trimEnd();
+  let shift = leading;
+
+  if (text.length > SEARCH_MAX_LINE_CHARS) {
+    const firstStart = Math.max(0, ranges[0][0] - leading);
+    const from = Math.max(0, firstStart - SEARCH_LINE_LEAD_CHARS);
+    const to = from + SEARCH_MAX_LINE_CHARS;
+    const prefix = from > 0 ? '…' : '';
+    const suffix = to < text.length ? '…' : '';
+    text = prefix + text.slice(from, to) + suffix;
+    shift += from - prefix.length;
+  }
+
+  const shifted = [];
+  for (const [start, end] of ranges) {
+    const s = start - shift;
+    const e = end - shift;
+    if (s >= 0 && e <= text.length) shifted.push([s, e]);
+  }
+  return { text, ranges: shifted };
+}
+
+function searchMatchesInContent(content, regex, remainingTotal) {
+  const lines = content.split(/\r\n|\r|\n/);
+  const matches = [];
+  let matchCount = 0;
+  let truncated = false;
+
+  for (let i = 0; i < lines.length; i++) {
+    const budget = Math.min(SEARCH_MAX_MATCHES_PER_FILE, remainingTotal) - matchCount;
+    if (budget <= 0) {
+      truncated = true;
+      break;
+    }
+    const ranges = matchRangesInLine(regex, lines[i], budget);
+    if (!ranges.length) continue;
+    const trimmed = trimMatchedLine(lines[i], ranges);
+    if (!trimmed.ranges.length) continue;
+    // `ordinal` is the match's position among all matches in the file, in
+    // document order — the renderer uses it to jump to the right occurrence
+    // for file kinds (JSON, plain text) whose rendered output carries no
+    // source-line markers.
+    matches.push({ line: i, text: trimmed.text, ranges: trimmed.ranges, ordinal: matchCount });
+    matchCount += ranges.length;
+  }
+
+  return { matches, matchCount, truncated };
+}
+
+async function searchProjectDocuments(rootPath, query, options = {}) {
+  const searchId = options.searchId || null;
+  let regex;
+  try {
+    regex = buildSearchRegex(query, options);
+  } catch (err) {
+    return { ok: false, invalidPattern: true, error: err.message };
+  }
+
+  const plainTextPattern = plainTextExtensionPattern();
+  const isSearchableFile = (name) =>
+    /\.(md|markdown|puml|json)$/i.test(name) || plainTextPattern.test(name);
+  const isCanceled = () => !!searchId && canceledSearches.has(searchId);
+
+  const files = [];
+  let totalMatches = 0;
+  let truncated = false;
+
+  async function walk(dir) {
+    if (truncated || isCanceled()) return;
+    let entries;
+    try {
+      entries = await fs.promises.readdir(dir, { withFileTypes: true });
+    } catch (err) {
+      return;
+    }
+    entries.sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
+
+    // Files in this folder first, then its subfolders, so results come back
+    // grouped the same way the tree shows them.
+    const subDirs = [];
+    for (const entry of entries) {
+      if (isHidden(entry.name)) continue;
+      if (entry.isDirectory()) {
+        if (!SEARCH_SKIP_DIRS.has(entry.name.toLowerCase())) subDirs.push(path.join(dir, entry.name));
+        continue;
+      }
+      if (!entry.isFile() || !isSearchableFile(entry.name)) continue;
+      if (truncated || isCanceled()) return;
+
+      const full = path.join(dir, entry.name);
+      let content;
+      try {
+        const stat = await fs.promises.stat(full);
+        if (stat.size > SEARCH_MAX_FILE_BYTES) continue;
+        content = await fs.promises.readFile(full, 'utf-8');
+      } catch (err) {
+        continue;
+      }
+      // A NUL byte up front means this isn't really text, whatever the
+      // extension claims (e.g. a binary blob saved as .log).
+      if (content.slice(0, 8192).includes('\u0000')) continue;
+
+      const result = searchMatchesInContent(content, regex, SEARCH_MAX_TOTAL_MATCHES - totalMatches);
+      if (!result.matches.length) continue;
+
+      files.push({
+        path: full,
+        name: entry.name,
+        relDir: path.relative(rootPath, dir),
+        matches: result.matches,
+        matchCount: result.matchCount,
+        truncated: result.truncated,
+      });
+      totalMatches += result.matchCount;
+      if (totalMatches >= SEARCH_MAX_TOTAL_MATCHES) {
+        truncated = true;
+        return;
+      }
+    }
+
+    for (const subDir of subDirs) {
+      if (truncated || isCanceled()) return;
+      await walk(subDir);
+    }
+  }
+
+  const canceledMidway = await (async () => {
+    try {
+      await walk(rootPath);
+      return isCanceled();
+    } finally {
+      if (searchId) canceledSearches.delete(searchId);
+    }
+  })();
+
+  if (canceledMidway) return { ok: true, canceled: true, files: [], totalMatches: 0, truncated: false };
+  return { ok: true, canceled: false, files, totalMatches, truncated };
+}
+
 function projectCssPath(rootPath) {
   return path.join(rootPath, CONFIG_DIR_NAME, CSS_FILE_NAME);
 }
@@ -680,6 +890,11 @@ function buildAppMenu() {
           label: t('menu.find'),
           accelerator: 'CmdOrCtrl+F',
           click: () => mainWindow.webContents.send('menu:toggle-find'),
+        },
+        {
+          label: t('menu.searchProject'),
+          accelerator: 'CmdOrCtrl+Shift+F',
+          click: () => mainWindow.webContents.send('menu:search-project'),
         },
         { type: 'separator' },
         {
@@ -952,6 +1167,25 @@ ipcMain.handle('fs:list-dir', (event, dirPath) => {
   } catch (err) {
     return { ok: false, error: err.message };
   }
+});
+
+ipcMain.handle('search:project', async (event, rootPath, query, options) => {
+  try {
+    return await searchProjectDocuments(rootPath, query, options || {});
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
+ipcMain.handle('search:cancel', (event, searchId) => {
+  if (searchId) {
+    // A cancel that lands after its search already finished leaves the id
+    // behind (nothing is left to delete it); keep the set from growing
+    // without bound, since only one search is ever in flight.
+    if (canceledSearches.size > 64) canceledSearches.clear();
+    canceledSearches.add(searchId);
+  }
+  return { ok: true };
 });
 
 ipcMain.handle('fs:render-markdown', async (event, filePath, requestId) => {

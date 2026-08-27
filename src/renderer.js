@@ -79,6 +79,15 @@
     findPrev: document.getElementById('find-prev'),
     findNext: document.getElementById('find-next'),
     findClose: document.getElementById('find-close'),
+    btnToggleSearch: document.getElementById('btn-toggle-search'),
+    searchPanel: document.getElementById('search-panel'),
+    searchInput: document.getElementById('search-input'),
+    searchClose: document.getElementById('search-close'),
+    searchOptCase: document.getElementById('search-opt-case'),
+    searchOptWord: document.getElementById('search-opt-word'),
+    searchOptRegex: document.getElementById('search-opt-regex'),
+    searchStatus: document.getElementById('search-status'),
+    searchResults: document.getElementById('search-results'),
     tocPanel: document.getElementById('toc-panel'),
     tocPanelHeader: document.getElementById('toc-panel-header'),
     tocCollapseBtn: document.getElementById('toc-collapse-btn'),
@@ -589,6 +598,7 @@
     el.fileName.title = '';
     el.frame.contentDocument.body.innerHTML =
       `<div class="mdviewer-empty-state">${escapeHtml(t('toolbar.selectDocument'))}</div>`;
+    resetProjectSearch();
     el.tree.innerHTML = '';
     buildTreeNodes(el.tree, check.items, 0);
 
@@ -2172,6 +2182,358 @@
   el.findClose.addEventListener('click', closeFindBar);
 
   window.mdviewer.onMenuToggleFind(openFindBar);
+
+  // ---------------------------------------------------------------------
+  // Project-wide document search (sidebar)
+  //
+  // The find bar above searches the *rendered* document; this searches the
+  // raw text of every document in the open project (main process, see
+  // searchProjectDocuments in main.js) and lists the hits grouped by file.
+  // Activating a hit opens the document and then hands off to the find bar
+  // to highlight and scroll to the matched occurrence.
+  // ---------------------------------------------------------------------
+
+  const SEARCH_DEBOUNCE_MS = 300;
+  // Below this, typing doesn't auto-search — a one-character query matches
+  // most of the project and the result is mostly noise. Enter still forces
+  // it, for the cases where it isn't.
+  const SEARCH_MIN_AUTO_CHARS = 2;
+
+  let searchSeq = 0;
+  let activeSearchId = null;
+  let searchDebounceTimer = null;
+  let selectedSearchRow = null;
+
+  function searchPanelOpen() {
+    return !el.searchPanel.classList.contains('hidden');
+  }
+
+  function searchOptionsFromUI() {
+    return {
+      caseSensitive: el.searchOptCase.classList.contains('active'),
+      wholeWord: el.searchOptWord.classList.contains('active'),
+      useRegex: el.searchOptRegex.classList.contains('active'),
+    };
+  }
+
+  function setSearchStatus(text, isError = false) {
+    el.searchStatus.textContent = text;
+    el.searchStatus.classList.toggle('error', isError && !!text);
+  }
+
+  function clearSearchResults() {
+    el.searchResults.innerHTML = '';
+    selectedSearchRow = null;
+  }
+
+  // Tells the main process to stop walking for the in-flight search. Its
+  // IPC promise still resolves, but runProjectSearch ignores any result
+  // that isn't from the newest search it issued.
+  function cancelActiveSearch() {
+    if (!activeSearchId) return;
+    window.mdviewer.cancelSearch(activeSearchId);
+    activeSearchId = null;
+  }
+
+  function resetProjectSearch() {
+    cancelActiveSearch();
+    clearTimeout(searchDebounceTimer);
+    clearSearchResults();
+    setSearchStatus('');
+  }
+
+  function scheduleProjectSearch({ immediate = false } = {}) {
+    clearTimeout(searchDebounceTimer);
+    const query = el.searchInput.value;
+    if (!query || (!immediate && query.length < SEARCH_MIN_AUTO_CHARS)) {
+      cancelActiveSearch();
+      clearSearchResults();
+      setSearchStatus('');
+      return;
+    }
+    if (immediate) {
+      runProjectSearch();
+    } else {
+      searchDebounceTimer = setTimeout(runProjectSearch, SEARCH_DEBOUNCE_MS);
+    }
+  }
+
+  async function runProjectSearch() {
+    const query = el.searchInput.value;
+    if (!query) return;
+    if (!state.rootPath) {
+      clearSearchResults();
+      setSearchStatus(t('search.openFolderFirst'), true);
+      return;
+    }
+
+    cancelActiveSearch();
+    const searchId = 'search-' + ++searchSeq;
+    activeSearchId = searchId;
+    setSearchStatus(t('search.searching'));
+
+    const result = await window.mdviewer.searchProject(state.rootPath, query, {
+      ...searchOptionsFromUI(),
+      searchId,
+    });
+
+    // Superseded by a newer search while this one was running.
+    if (activeSearchId !== searchId) return;
+    activeSearchId = null;
+
+    if (!result.ok) {
+      clearSearchResults();
+      setSearchStatus(
+        result.invalidPattern ? t('search.invalidPattern') : t('search.failed', { error: result.error }),
+        true
+      );
+      return;
+    }
+    if (result.canceled) return;
+    renderSearchResults(result);
+  }
+
+  // Rebuilds `container`'s children as text with the matched spans wrapped
+  // in <mark>. `ranges` are index pairs into `text`, already sorted and
+  // non-overlapping (see searchMatchesInContent in main.js).
+  function appendHighlightedText(container, text, ranges) {
+    let cursor = 0;
+    for (const [start, end] of ranges) {
+      if (start > cursor) container.appendChild(document.createTextNode(text.slice(cursor, start)));
+      const mark = document.createElement('mark');
+      mark.textContent = text.slice(start, end);
+      container.appendChild(mark);
+      cursor = end;
+    }
+    if (cursor < text.length) container.appendChild(document.createTextNode(text.slice(cursor)));
+  }
+
+  function buildSearchFileGroup(file) {
+    const group = document.createElement('div');
+    group.className = 'search-file';
+
+    const row = document.createElement('div');
+    row.className = 'search-file-row';
+    row.title = file.path;
+
+    const caret = document.createElement('span');
+    caret.className = 'search-file-caret';
+    caret.textContent = '▾';
+    const name = document.createElement('span');
+    name.className = 'search-file-name';
+    name.textContent = file.name;
+    const dir = document.createElement('span');
+    dir.className = 'search-file-dir';
+    dir.textContent = file.relDir ? file.relDir.replace(/\\/g, '/') : '';
+    const count = document.createElement('span');
+    count.className = 'search-file-count';
+    count.textContent = String(file.matchCount);
+    row.append(caret, name, dir, count);
+
+    const matchesEl = document.createElement('div');
+    matchesEl.className = 'search-file-matches';
+
+    row.addEventListener('click', () => {
+      const collapsed = matchesEl.classList.toggle('collapsed');
+      caret.classList.toggle('collapsed', collapsed);
+    });
+
+    for (const match of file.matches) {
+      const matchRow = document.createElement('div');
+      matchRow.className = 'search-match';
+      matchRow.title = file.name + ':' + (match.line + 1);
+
+      const lineNo = document.createElement('span');
+      lineNo.className = 'search-match-line';
+      lineNo.textContent = String(match.line + 1);
+      const text = document.createElement('span');
+      text.className = 'search-match-text';
+      appendHighlightedText(text, match.text, match.ranges);
+      matchRow.append(lineNo, text);
+
+      matchRow.addEventListener('click', () => openSearchMatch(file, match, matchRow));
+      matchesEl.appendChild(matchRow);
+    }
+
+    if (file.truncated) {
+      const more = document.createElement('div');
+      more.className = 'search-file-truncated';
+      more.textContent = t('search.fileTruncated', { count: file.matchCount });
+      matchesEl.appendChild(more);
+    }
+
+    group.append(row, matchesEl);
+    return group;
+  }
+
+  function renderSearchResults(result) {
+    clearSearchResults();
+
+    if (!result.files.length) {
+      setSearchStatus(t('search.noResults'));
+      return;
+    }
+    setSearchStatus(
+      t(result.truncated ? 'search.summaryTruncated' : 'search.summary', {
+        matches: result.totalMatches,
+        files: result.files.length,
+      })
+    );
+
+    const frag = document.createDocumentFragment();
+    for (const file of result.files) frag.appendChild(buildSearchFileGroup(file));
+    el.searchResults.appendChild(frag);
+  }
+
+  function visibleSearchMatchRows() {
+    // Rows inside a collapsed file group stay in the DOM but have no
+    // offsetParent, the same trick getVisibleTreeRows uses.
+    return Array.from(el.searchResults.querySelectorAll('.search-match')).filter(
+      (row) => row.offsetParent !== null
+    );
+  }
+
+  function selectSearchRow(row) {
+    if (selectedSearchRow) selectedSearchRow.classList.remove('selected');
+    selectedSearchRow = row || null;
+    if (row) {
+      row.classList.add('selected');
+      row.scrollIntoView({ block: 'nearest' });
+    }
+  }
+
+  function stepSearchSelection(delta) {
+    const rows = visibleSearchMatchRows();
+    if (!rows.length) return;
+    const current = selectedSearchRow ? rows.indexOf(selectedSearchRow) : -1;
+    if (current === -1) {
+      selectSearchRow(delta > 0 ? rows[0] : rows[rows.length - 1]);
+      return;
+    }
+    selectSearchRow(rows[Math.min(Math.max(current + delta, 0), rows.length - 1)]);
+  }
+
+  // Which of the find bar's in-document hits corresponds to the result row
+  // the user activated. Markdown/PlantUML renders carry data-source-line
+  // markers, so the hit can be matched up by source line; JSON and plain
+  // text don't, so those fall back to the match's ordinal position within
+  // the file (exact for plain text, approximate for JSON).
+  function docFindIndexForSearchMatch(match) {
+    if (!docFindMatches.length) return -1;
+    let bestIndex = -1;
+    let bestDistance = Infinity;
+    docFindMatches.forEach((mark, i) => {
+      const block = mark.closest('[data-source-line]');
+      if (!block) return;
+      const start = parseInt(block.getAttribute('data-source-line'), 10);
+      if (Number.isNaN(start)) return;
+      const distance = Math.abs(start - match.line);
+      if (distance < bestDistance) {
+        bestDistance = distance;
+        bestIndex = i;
+      }
+    });
+    if (bestIndex !== -1) return bestIndex;
+    return Math.min(match.ordinal, docFindMatches.length - 1);
+  }
+
+  // Highlights the matched text throughout the now-open document via the
+  // find bar and scrolls to the specific occurrence that was clicked. The
+  // literal comes from the match itself rather than the query box so that
+  // regex searches land on real text too.
+  function jumpToSearchMatchInDocument(match) {
+    const literal = match.text.slice(match.ranges[0][0], match.ranges[0][1]);
+    if (!literal) return;
+
+    el.findBar.classList.remove('hidden');
+    el.findInput.value = literal;
+    runDocFind();
+
+    const index = docFindIndexForSearchMatch(match);
+    if (index !== -1) {
+      gotoDocFindMatch(index);
+      return;
+    }
+    // Nothing matched in the rendered output — the hit is in source-only
+    // text (a link URL, a fence marker, front matter). Scroll to the block
+    // that line belongs to so the user still lands in the right place.
+    const block = findViewerElementForLine(match.line);
+    if (block) block.scrollIntoView({ block: 'center' });
+  }
+
+  async function openSearchMatch(file, match, rowEl) {
+    const alreadyOpen =
+      state.currentFilePath && normalizePath(state.currentFilePath) === normalizePath(file.path);
+
+    if (!alreadyOpen) {
+      if (!(await guardNavigation())) return;
+      await loadAndRenderByPath(file.path);
+      await revealPathInTree(file.path, { select: true });
+      // revealPathInTree focuses the tree when it selects a row; the search
+      // box needs to keep the caret so the user can keep typing/arrowing.
+      if (searchPanelOpen()) el.searchInput.focus({ preventScroll: true });
+    }
+
+    selectSearchRow(rowEl);
+    jumpToSearchMatchInDocument(match);
+  }
+
+  function openSearchPanel() {
+    el.searchPanel.classList.remove('hidden');
+    el.tree.classList.add('hidden');
+    el.btnToggleSearch.classList.add('active');
+    el.searchInput.focus();
+    el.searchInput.select();
+    if (!state.rootPath) setSearchStatus(t('search.openFolderFirst'), true);
+  }
+
+  function closeSearchPanel() {
+    cancelActiveSearch();
+    clearTimeout(searchDebounceTimer);
+    el.searchPanel.classList.add('hidden');
+    el.tree.classList.remove('hidden');
+    el.btnToggleSearch.classList.remove('active');
+    el.tree.focus({ preventScroll: true });
+  }
+
+  function toggleSearchPanel() {
+    if (searchPanelOpen()) closeSearchPanel();
+    else openSearchPanel();
+  }
+
+  function toggleSearchOption(button) {
+    button.classList.toggle('active');
+    scheduleProjectSearch({ immediate: true });
+  }
+
+  el.btnToggleSearch.addEventListener('click', toggleSearchPanel);
+  el.searchClose.addEventListener('click', closeSearchPanel);
+  el.searchOptCase.addEventListener('click', () => toggleSearchOption(el.searchOptCase));
+  el.searchOptWord.addEventListener('click', () => toggleSearchOption(el.searchOptWord));
+  el.searchOptRegex.addEventListener('click', () => toggleSearchOption(el.searchOptRegex));
+
+  el.searchInput.addEventListener('input', () => {
+    selectSearchRow(null);
+    scheduleProjectSearch();
+  });
+
+  el.searchInput.addEventListener('keydown', (e) => {
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      stepSearchSelection(e.key === 'ArrowDown' ? 1 : -1);
+    } else if (e.key === 'Enter') {
+      e.preventDefault();
+      // Once a result is picked, Enter opens it; before that it's the
+      // "search now" key (which also covers queries too short to auto-run).
+      if (selectedSearchRow) selectedSearchRow.click();
+      else scheduleProjectSearch({ immediate: true });
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      closeSearchPanel();
+    }
+  });
+
+  window.mdviewer.onMenuSearchProject(openSearchPanel);
 
   // ---------------------------------------------------------------------
   // Floating table of contents / sibling pages

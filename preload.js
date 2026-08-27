@@ -12,6 +12,8 @@ contextBridge.exposeInMainWorld('mdviewer', {
   renderJsonText: (text) => ipcRenderer.invoke('json:render-text', text),
   renderPlainTextFile: (filePath) => ipcRenderer.invoke('fs:render-plaintext', filePath),
   renderPlainTextText: (text) => ipcRenderer.invoke('plaintext:render-text', text),
+  searchProject: (rootPath, query, options) => ipcRenderer.invoke('search:project', rootPath, query, options),
+  cancelSearch: (searchId) => ipcRenderer.invoke('search:cancel', searchId),
   loadProjectCss: (rootPath) => ipcRenderer.invoke('fs:load-project-css', rootPath),
   saveProjectCss: (rootPath, css) => ipcRenderer.invoke('fs:save-project-css', rootPath, css),
   getBaseStyles: () => ipcRenderer.invoke('fs:get-base-styles'),
@@ -71,6 +73,7 @@ contextBridge.exposeInMainWorld('mdviewer', {
     return () => ipcRenderer.removeListener('menu:open-recent', listener);
   },
   onMenuToggleFind: (callback) => ipcRenderer.on('menu:toggle-find', callback),
+  onMenuSearchProject: (callback) => ipcRenderer.on('menu:search-project', callback),
   onMenuExportPdf: (callback) => ipcRenderer.on('menu:export-pdf', callback),
   onTreeCreateNew: (callback) => {
     const listener = (event, payload) => callback(payload);
