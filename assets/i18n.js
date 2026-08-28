@@ -36,6 +36,8 @@ const STRINGS = {
     'about.detail': 'Version {version}\n\nElectron {electron}\nChromium {chrome}\nNode.js {node}\n\nCopyright © {year} MD Viewer',
 
     'context.openInExplorer': 'Show in Explorer',
+    'context.copyAbsolutePath': 'Copy Absolute Path',
+    'context.copyRelativePath': 'Copy Relative Path',
     'context.exportPdf': 'Export to PDF...',
     'context.newFile': 'New File...',
     'context.newFolder': 'New Folder...',
@@ -208,6 +210,8 @@ const STRINGS = {
     'about.detail': '버전 {version}\n\nElectron {electron}\nChromium {chrome}\nNode.js {node}\n\nCopyright © {year} MD Viewer',
 
     'context.openInExplorer': '탐색기에서 상위 폴더 열기',
+    'context.copyAbsolutePath': '절대경로 복사',
+    'context.copyRelativePath': '상대경로 복사',
     'context.exportPdf': 'PDF로 내보내기...',
     'context.newFile': '새 파일...',
     'context.newFolder': '새 폴더...',

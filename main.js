@@ -1407,6 +1407,21 @@ ipcMain.handle('shell:show-in-folder', (event, itemPath) => {
   shell.showItemInFolder(itemPath);
 });
 
+// An item's path relative to the open project, with forward slashes so it
+// drops straight into a markdown link and matches how the breadcrumb and
+// search results already render paths. Falls back to the absolute path
+// when there is no project root, or the item sits outside it (another
+// drive, say), where a relative path would be useless or misleading.
+function projectRelativePath(itemPath, rootPath) {
+  if (!rootPath) return itemPath;
+  // Right-clicking empty tree space targets the root itself, whose
+  // relative path is the empty string — its name is the useful answer.
+  if (path.resolve(itemPath) === path.resolve(rootPath)) return path.basename(rootPath);
+  const rel = path.relative(rootPath, itemPath);
+  if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) return itemPath;
+  return rel.replace(/\\/g, '/');
+}
+
 ipcMain.handle('tree:show-context-menu', (event, itemPath, rootPath) => {
   const win = BrowserWindow.fromWebContents(event.sender);
   const isDir = fs.statSync(itemPath).isDirectory();
@@ -1432,6 +1447,15 @@ ipcMain.handle('tree:show-context-menu', (event, itemPath, rootPath) => {
     {
       label: t('context.openInExplorer'),
       click: () => shell.showItemInFolder(itemPath),
+    },
+    { type: 'separator' },
+    {
+      label: t('context.copyAbsolutePath'),
+      click: () => clipboard.writeText(itemPath),
+    },
+    {
+      label: t('context.copyRelativePath'),
+      click: () => clipboard.writeText(projectRelativePath(itemPath, rootPath)),
     },
   ];
   if (!isDir && /\.(md|markdown)$/i.test(itemPath)) {
