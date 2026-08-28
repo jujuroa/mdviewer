@@ -29,6 +29,7 @@
     baseCss: '',
     hljsCss: '',
     cssRefExpanded: false,
+    previewZoom: 100,
   };
 
   const SCROLL_POSITION_MAX_AGE_MS = 24 * 60 * 60 * 1000;
@@ -94,6 +95,7 @@
     tocList: document.getElementById('toc-list'),
     tocLinksList: document.getElementById('toc-links-list'),
     tocSiblingsList: document.getElementById('toc-siblings-list'),
+    zoomIndicator: document.getElementById('zoom-indicator'),
     editStatus: document.getElementById('edit-status'),
     btnToggleTerminal: document.getElementById('btn-toggle-terminal'),
     terminalPanel: document.getElementById('terminal-panel'),
@@ -300,6 +302,10 @@
     // PlantUML diagram zoom (+/-/reset buttons, Ctrl+wheel) and click-drag pan.
     doc.addEventListener('click', onPumlZoomControlClick);
     doc.addEventListener('wheel', onPumlWheel, { passive: false });
+    // Ctrl+wheel zooms the whole preview. Registered after onPumlWheel so a
+    // diagram under the cursor gets first refusal on the event.
+    doc.addEventListener('wheel', onPreviewWheel, { passive: false });
+    doc.addEventListener('keydown', onPreviewZoomKey);
     doc.addEventListener('mousedown', onPumlPanStart);
     doc.addEventListener('mousemove', onPumlPanMove);
     doc.addEventListener('mouseup', onPumlPanEnd);
@@ -422,6 +428,114 @@
     pumlPanState.scrollEl.classList.remove('puml-panning');
     pumlPanState = null;
   }
+
+
+  // ---------------------------------------------------------------------
+  // Preview zoom (Ctrl+wheel over the viewer, Ctrl+0 to reset)
+  //
+  // Scales the whole preview document via CSS zoom on its root element, so
+  // text, images, tables, JSON trees and diagrams all grow together — the
+  // same thing browser zoom does, but confined to the viewer so the sidebar
+  // and toolbar keep their size.
+  // ---------------------------------------------------------------------
+
+  // A ladder rather than a fixed percentage step, so each notch is a similar
+  // *proportional* jump at both ends of the range.
+  const PREVIEW_ZOOM_STEPS = [50, 67, 75, 80, 90, 100, 110, 125, 150, 175, 200, 250, 300];
+  const PREVIEW_ZOOM_MIN = PREVIEW_ZOOM_STEPS[0];
+  const PREVIEW_ZOOM_MAX = PREVIEW_ZOOM_STEPS[PREVIEW_ZOOM_STEPS.length - 1];
+
+  function normalizePreviewZoom(percent) {
+    const n = Number(percent);
+    if (!Number.isFinite(n)) return 100;
+    return Math.max(PREVIEW_ZOOM_MIN, Math.min(PREVIEW_ZOOM_MAX, Math.round(n)));
+  }
+
+  // The next rung up or down. A current value that isn't on the ladder (an
+  // older state file, say) moves to the nearest rung in that direction.
+  function steppedPreviewZoom(current, direction) {
+    const idx = PREVIEW_ZOOM_STEPS.indexOf(current);
+    if (idx !== -1) {
+      return PREVIEW_ZOOM_STEPS[Math.min(Math.max(idx + direction, 0), PREVIEW_ZOOM_STEPS.length - 1)];
+    }
+    if (direction > 0) {
+      return PREVIEW_ZOOM_STEPS.find((z) => z > current) || PREVIEW_ZOOM_MAX;
+    }
+    return PREVIEW_ZOOM_STEPS.slice().reverse().find((z) => z < current) || PREVIEW_ZOOM_MIN;
+  }
+
+  function applyPreviewZoomStyle(percent) {
+    const doc = el.frame.contentDocument;
+    if (!doc || !doc.documentElement) return;
+    // Left unset at 100% so the default path stays byte-identical to what it
+    // was before zoom existed (CSS zoom creates a containing block, which can
+    // subtly affect fixed/absolute positioning inside the document).
+    doc.documentElement.style.zoom = percent === 100 ? '' : String(percent / 100);
+  }
+
+  function updateZoomIndicator() {
+    const atDefault = state.previewZoom === 100;
+    el.zoomIndicator.classList.toggle('hidden', atDefault);
+    el.zoomIndicator.textContent = state.previewZoom + '%';
+  }
+
+  // Applies a zoom level without touching scroll or persisting — for
+  // restoring the saved level when a project is opened.
+  function restorePreviewZoom(percent) {
+    state.previewZoom = normalizePreviewZoom(percent === undefined ? 100 : percent);
+    applyPreviewZoomStyle(state.previewZoom);
+    updateZoomIndicator();
+  }
+
+  // `anchor` is a point in the viewer's client coordinates to hold still
+  // across the change — the mouse position, for a wheel zoom.
+  function setPreviewZoom(percent, anchor) {
+    const doc = el.frame.contentDocument;
+    const win = el.frame.contentWindow;
+    const next = normalizePreviewZoom(percent);
+    if (!doc || !win || next === state.previewZoom) return;
+
+    // Anchored by measurement rather than arithmetic: CSS zoom on the root
+    // element also rescales the scroll offset behind our back, so predicting
+    // the new offset from the old one gets it wrong. Noting where the element
+    // under the cursor sits, applying the zoom, then scrolling by however far
+    // it actually moved holds it still regardless.
+    const anchorEl = anchor ? doc.elementFromPoint(anchor.x, anchor.y) : null;
+    const beforeRect = anchorEl ? anchorEl.getBoundingClientRect() : null;
+
+    state.previewZoom = next;
+    applyPreviewZoomStyle(next);
+
+    if (beforeRect) {
+      const afterRect = anchorEl.getBoundingClientRect();
+      win.scrollBy(afterRect.left - beforeRect.left, afterRect.top - beforeRect.top);
+    }
+
+    updateZoomIndicator();
+    persistProjectState();
+  }
+
+  function onPreviewWheel(e) {
+    if (!e.ctrlKey) return;
+    // A PlantUML diagram under the cursor has its own Ctrl+wheel zoom
+    // (onPumlWheel, registered first); if it took the event, leave the
+    // document's own zoom alone.
+    if (e.defaultPrevented) return;
+    e.preventDefault();
+    const direction = e.deltaY < 0 ? 1 : -1;
+    setPreviewZoom(steppedPreviewZoom(state.previewZoom, direction), { x: e.clientX, y: e.clientY });
+  }
+
+  // Bound in both documents: the viewer is a separate browsing context, so
+  // whichever of the two has focus needs its own listener for this to work.
+  function onPreviewZoomKey(e) {
+    if (!(e.ctrlKey || e.metaKey) || e.key !== '0') return;
+    e.preventDefault();
+    setPreviewZoom(100);
+  }
+
+  document.addEventListener('keydown', onPreviewZoomKey);
+  el.zoomIndicator.addEventListener('click', () => setPreviewZoom(100));
 
   function onPreviewClick(e) {
     const anchor = e.target.closest('a');
@@ -608,6 +722,7 @@
     state.cssEnabled = savedState.cssEnabled !== undefined ? savedState.cssEnabled : true;
     el.cssEnabledToggle.checked = state.cssEnabled;
     state.scrollPositions = savedState.scrollPositions || {};
+    restorePreviewZoom(savedState.previewZoom);
     await loadProjectCss({ silent: true });
 
     const cssEditorOpen = !!savedState.cssEditorOpen;
@@ -1039,6 +1154,7 @@
       cssEditorOpen: !el.cssPane.classList.contains('hidden'),
       tocCollapsed: el.tocPanel.classList.contains('collapsed'),
       scrollPositions: state.scrollPositions,
+      previewZoom: state.previewZoom,
     };
   }
 

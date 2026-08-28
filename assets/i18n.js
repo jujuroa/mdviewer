@@ -76,6 +76,7 @@ const STRINGS = {
     'toolbar.cssEditTitle': 'Open/close CSS editor (Ctrl+E)',
     'toolbar.terminalBtn': 'Terminal',
     'toolbar.terminalTitle': 'Open/close terminal (Ctrl+`)',
+    'toolbar.zoomResetTitle': 'Reset viewer zoom to 100% (Ctrl+0)',
 
     'find.placeholder': 'Find in document',
     'find.noResults': 'No results',
@@ -250,6 +251,7 @@ const STRINGS = {
     'toolbar.cssEditTitle': 'CSS 편집기 열기/닫기 (Ctrl+E)',
     'toolbar.terminalBtn': '터미널',
     'toolbar.terminalTitle': '터미널 열기/닫기 (Ctrl+`)',
+    'toolbar.zoomResetTitle': '뷰어 확대/축소를 100%로 되돌리기 (Ctrl+0)',
 
     'find.placeholder': '문서 내 찾기',
     'find.noResults': '검색 결과 없음',

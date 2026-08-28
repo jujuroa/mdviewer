@@ -493,6 +493,16 @@ html, body {
 }
 .preview-toolbar button:hover { background: var(--hover); }
 
+/* Only shown while the viewer is zoomed away from 100%; clicking it (or
+   Ctrl+0) puts it back. */
+.zoom-indicator {
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  padding: 3px 7px !important;
+  color: var(--text-dim) !important;
+}
+.zoom-indicator.hidden { display: none; }
+
 .toolbar-right {
   display: flex;
   align-items: center;
