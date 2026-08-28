@@ -151,3 +151,10 @@ vite.config.ts.timestamp-*
 # Local PlantUML runtime (jar + jlink'd JRE), fetched/built by
 # scripts/prepare-plantuml.js — not committed, regenerated on demand.
 /thirdparty/
+
+# Local scratch and build output, not shared: a throwaway project folder used
+# to try the viewer against, the packaged installer, and npm start's captured
+# console output (not matched by *.log above).
+/.testbed/
+/deploy/
+/start-log.txt
