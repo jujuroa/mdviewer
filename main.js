@@ -1722,22 +1722,29 @@ ipcMain.handle('tree:show-context-menu', (event, itemPath, rootPath) => {
 // File > Export to PDF... menu item (which targets whatever's currently
 // open in the renderer, so it needs its own IPC entry point rather than
 // reusing the context-menu one above).
-// Writes the diagram out as a standalone .svg next to the source (or wherever
-// the save dialog points), using the same bundled plantuml.jar the preview
-// renders with — no plantuml.com round trip, so it works offline and isn't
-// bounded by that server's request-size limit.
+// Writes the diagram out as a standalone .svg beside its source, using the
+// same bundled plantuml.jar the preview renders with — no plantuml.com round
+// trip, so it works offline and isn't bounded by that server's request-size
+// limit.
+//
+// No save dialog and no "overwrite?" prompt: the answer is always the same
+// file name in the same folder, and the .svg is a derived artifact of the
+// .puml sitting next to it, so re-converting after an edit should just
+// replace it. Since nothing pops up to confirm it either, the window is told
+// to refresh that folder in the tree (so the new file appears where the user
+// is already looking) and to show what was written in the toolbar status.
 async function convertPumlToSvg(filePath, parentWindow) {
-  const defaultName = `${path.basename(filePath, path.extname(filePath))}.svg`;
-  const saveResult = await dialog.showSaveDialog(parentWindow, {
-    defaultPath: path.join(path.dirname(filePath), defaultName),
-    filters: [{ name: 'SVG', extensions: ['svg'] }],
-  });
-  if (saveResult.canceled || !saveResult.filePath) return;
-
+  const outPath = path.join(
+    path.dirname(filePath),
+    `${path.basename(filePath, path.extname(filePath))}.svg`
+  );
   try {
     const svg = await renderPlantUmlSvg(fs.readFileSync(filePath, 'utf-8'));
-    fs.writeFileSync(saveResult.filePath, svg, 'utf-8');
-    shell.showItemInFolder(saveResult.filePath);
+    fs.writeFileSync(outPath, svg, 'utf-8');
+    if (parentWindow && !parentWindow.isDestroyed()) {
+      parentWindow.webContents.send('tree:refresh-dir', { targetDir: path.dirname(filePath) });
+      parentWindow.webContents.send('puml:svg-converted', { outPath });
+    }
   } catch (err) {
     dialog.showErrorBox(
       t('export.svgFailedTitle'),

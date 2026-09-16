@@ -3747,6 +3747,13 @@
     refreshTreeDir(targetDir);
   });
 
+  // "Convert to SVG" writes the file with no dialog of any kind, so this
+  // line is what tells the user it happened (see convertPumlToSvg in
+  // main.js; the tree refresh above shows the file itself).
+  window.mdviewer.onPumlSvgConverted(({ outPath }) => {
+    setToolbarStatus(t('export.svgSaved', { name: pathBasename(outPath) }));
+  });
+
   window.mdviewer.onMenuOpenFolder(async () => {
     const folder = await window.mdviewer.openFolderDialog();
     if (folder) openFolder(folder);
@@ -3814,9 +3821,10 @@
     return target === root || target.startsWith(root + '/');
   }
 
-  // Drop feedback reuses the toolbar status slot, the same place save and
-  // paste results are reported.
-  function setDropStatus(message) {
+  // The toolbar's one-line status slot, the same place save and paste
+  // results are reported, shared by everything that finishes without a
+  // dialog of its own: drop results, SVG conversion.
+  function setToolbarStatus(message) {
     el.editStatus.textContent = message;
   }
 
@@ -3895,14 +3903,14 @@
     setDropAffordance(false);
 
     if (!state.rootPath) {
-      setDropStatus(t('drop.noProject'));
+      setToolbarStatus(t('drop.noProject'));
       return;
     }
     if (!paths.length || !targetDir) return;
 
     const result = await window.mdviewer.copyEntries(targetDir, paths);
     if (!result.ok) {
-      setDropStatus(t('drop.copyFailed', { error: result.error }));
+      setToolbarStatus(t('drop.copyFailed', { error: result.error }));
       return;
     }
 
@@ -3921,7 +3929,7 @@
     if (result.skipped.length) {
       message += ' · ' + t('drop.copySkipped', { count: result.skipped.length });
     }
-    setDropStatus(message);
+    setToolbarStatus(message);
 
     if (result.copied.length) await revealPathInTree(result.copied[0].path, { select: true });
   });
@@ -3951,7 +3959,7 @@
 
     const stat = await window.mdviewer.statPath(filePath);
     if (!stat.ok) {
-      setDropStatus(t('drop.openFailed', { name: pathBasename(filePath), error: stat.error }));
+      setToolbarStatus(t('drop.openFailed', { name: pathBasename(filePath), error: stat.error }));
       return;
     }
 
@@ -3964,7 +3972,7 @@
     }
 
     if (!isViewablePath(filePath)) {
-      setDropStatus(t('drop.unsupported', { name: pathBasename(filePath) }));
+      setToolbarStatus(t('drop.unsupported', { name: pathBasename(filePath) }));
       return;
     }
     if (!(await guardNavigation())) return;
@@ -3984,7 +3992,7 @@
     if (inProject) await revealPathInTree(filePath, { select: true });
     else selectTreeRow(null);
 
-    setDropStatus('');
+    setToolbarStatus('');
   }
 
   // ---------------------------------------------------------------------

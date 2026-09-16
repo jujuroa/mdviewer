@@ -98,6 +98,11 @@ contextBridge.exposeInMainWorld('mdviewer', {
     ipcRenderer.on('tree:refresh-dir', listener);
     return () => ipcRenderer.removeListener('tree:refresh-dir', listener);
   },
+  onPumlSvgConverted: (callback) => {
+    const listener = (event, payload) => callback(payload);
+    ipcRenderer.on('puml:svg-converted', listener);
+    return () => ipcRenderer.removeListener('puml:svg-converted', listener);
+  },
   onMenuToggleCssEditor: (callback) => ipcRenderer.on('menu:toggle-css-editor', callback),
   onMenuManageCustomExtensions: (callback) => ipcRenderer.on('menu:manage-custom-extensions', callback),
   onMenuToggleEditMode: (callback) => ipcRenderer.on('menu:toggle-edit-mode', callback),
