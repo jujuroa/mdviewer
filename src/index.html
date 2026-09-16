@@ -51,6 +51,8 @@
           <span id="edit-status" class="edit-status"></span>
           <button id="zoom-indicator" class="zoom-indicator hidden"
             data-i18n-title="toolbar.zoomResetTitle" title="확대/축소를 100%로 되돌리기 (Ctrl+0)">100%</button>
+          <button id="btn-fullscreen" class="toolbar-icon-btn hidden"
+            data-i18n-title="toolbar.fullscreenTitle" title="현재 문서 전체화면으로 보기 (F11)">⛶</button>
           <button id="btn-save-source" class="btn-primary hidden" data-i18n="toolbar.saveBtn" data-i18n-title="toolbar.saveTitle" title="저장 (Ctrl+S)">저장</button>
           <button id="btn-refresh-puml" class="hidden" data-i18n="toolbar.refreshBtn" data-i18n-title="toolbar.refreshTitle" title="디스크에서 파일 다시 불러오기">새로고침</button>
           <button id="btn-toggle-edit" data-i18n="toolbar.editBtn" data-i18n-title="toolbar.editTitle" title="본문 편집 모드 전환 (Ctrl+Shift+E)">편집</button>
@@ -127,6 +129,10 @@
           <div class="drop-overlay-sub" data-i18n="drop.viewerHintSub">프로젝트에 복사하지 않습니다</div>
         </div>
       </div>
+
+      <button id="btn-exit-fullscreen" class="fullscreen-exit hidden"
+        data-i18n-title="fullscreen.exitTitle" title="전체화면 종료 (Esc)">✕</button>
+      <div id="fullscreen-hint" class="fullscreen-hint" data-i18n="fullscreen.hint">Esc 또는 F11을 누르면 전체화면이 종료됩니다</div>
     </main>
 
     <div id="resizer-right" class="resizer hidden"></div>

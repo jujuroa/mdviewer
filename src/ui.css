@@ -503,6 +503,15 @@ html, body {
 }
 .zoom-indicator.hidden { display: none; }
 
+.preview-toolbar button.toolbar-icon-btn {
+  padding: 4px 8px !important;
+  font-size: 13px;
+  line-height: 1;
+  color: var(--text-dim);
+}
+.preview-toolbar button.toolbar-icon-btn:hover { color: var(--text); }
+#btn-fullscreen.hidden { display: none; }
+
 .toolbar-right {
   display: flex;
   align-items: center;
@@ -1522,3 +1531,73 @@ html, body {
   text-align: center;
 }
 .terminal-xterm .xterm { height: 100%; }
+
+/* ---- Fullscreen document view (F11) ----
+
+   Hiding every pane around the viewer from a single class on #app-shell,
+   rather than by toggling each pane's own `hidden` class, is what makes
+   leaving the mode put the layout back exactly as it was — including for
+   currentProjectStateSnapshot, which reads those classes to remember which
+   panes the user had open. */
+
+#app-shell.doc-fullscreen #sidebar,
+#app-shell.doc-fullscreen #resizer-left,
+#app-shell.doc-fullscreen #css-editor-pane,
+#app-shell.doc-fullscreen #resizer-right,
+#app-shell.doc-fullscreen #terminal-panel,
+#app-shell.doc-fullscreen #resizer-terminal,
+#app-shell.doc-fullscreen .preview-toolbar,
+#app-shell.doc-fullscreen #md-source-editor,
+#app-shell.doc-fullscreen #editor-resizer {
+  display: none;
+}
+
+/* Top-left, where the (now hidden) toolbar used to be: the right-hand side
+   belongs to the TOC panel, which stays. Faint until pointed at, so it
+   doesn't compete with the document. */
+.fullscreen-exit {
+  position: absolute;
+  top: 10px;
+  left: 12px;
+  z-index: 6;
+  width: 26px;
+  height: 26px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg-sidebar);
+  color: var(--text-dim);
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0.25;
+  transition: opacity 0.15s ease;
+}
+.fullscreen-exit:hover {
+  opacity: 1;
+  background: var(--hover);
+  color: var(--text);
+}
+.fullscreen-exit.hidden { display: none; }
+
+/* Shown for a couple of seconds on entry, since the mode hides the chrome
+   that would otherwise say how to get out of it. */
+.fullscreen-hint {
+  position: absolute;
+  top: 14px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 6;
+  padding: 6px 14px;
+  border-radius: 14px;
+  background: rgba(0, 0, 0, 0.72);
+  color: #ffffff;
+  font-size: 12px;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.4s ease;
+}
+.fullscreen-hint.visible { opacity: 1; }

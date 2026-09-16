@@ -38,6 +38,7 @@ contextBridge.exposeInMainWorld('mdviewer', {
   showTreeContextMenu: (itemPath, rootPath) => ipcRenderer.invoke('tree:show-context-menu', itemPath, rootPath),
   showInFolder: (itemPath) => ipcRenderer.invoke('shell:show-in-folder', itemPath),
   openPath: (folderPath) => ipcRenderer.invoke('shell:open-path', folderPath),
+  setWindowFullscreen: (enabled) => ipcRenderer.invoke('window:set-fullscreen', enabled),
   exportPdf: (filePath, rootPath) => ipcRenderer.invoke('export:pdf', filePath, rootPath),
   loadProjectState: (rootPath) => ipcRenderer.invoke('fs:load-project-state', rootPath),
   saveProjectState: (rootPath, projectState) =>
@@ -102,6 +103,13 @@ contextBridge.exposeInMainWorld('mdviewer', {
   onMenuToggleEditMode: (callback) => ipcRenderer.on('menu:toggle-edit-mode', callback),
   onMenuSaveFile: (callback) => ipcRenderer.on('menu:save-file', callback),
   onMenuToggleTerminal: (callback) => ipcRenderer.on('menu:toggle-terminal', callback),
+  onMenuToggleDocumentFullscreen: (callback) =>
+    ipcRenderer.on('menu:toggle-document-fullscreen', callback),
+  onWindowFullscreenChanged: (callback) => {
+    const listener = (event, isFullscreen) => callback(isFullscreen);
+    ipcRenderer.on('window:fullscreen-changed', listener);
+    return () => ipcRenderer.removeListener('window:fullscreen-changed', listener);
+  },
   onNavBack: (callback) => ipcRenderer.on('mdviewer:nav-back', callback),
 
   onTerminalData: (callback) => {

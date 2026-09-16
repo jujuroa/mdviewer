@@ -30,6 +30,10 @@
     hljsCss: '',
     cssRefExpanded: false,
     previewZoom: 100,
+    // Fullscreen document view (see enterDocFullscreen) — deliberately not
+    // part of the saved project state: it's a way to read right now, not a
+    // layout the project should reopen in.
+    docFullscreen: false,
     // Set while the viewer is showing a file that was dropped on it rather
     // than opened from the project tree — see instantViewDropped().
     instantViewPath: null,
@@ -109,6 +113,10 @@
     tocLinksList: document.getElementById('toc-links-list'),
     tocSiblingsList: document.getElementById('toc-siblings-list'),
     zoomIndicator: document.getElementById('zoom-indicator'),
+    appShell: document.getElementById('app-shell'),
+    btnFullscreen: document.getElementById('btn-fullscreen'),
+    btnExitFullscreen: document.getElementById('btn-exit-fullscreen'),
+    fullscreenHint: document.getElementById('fullscreen-hint'),
     editStatus: document.getElementById('edit-status'),
     btnToggleTerminal: document.getElementById('btn-toggle-terminal'),
     terminalPanel: document.getElementById('terminal-panel'),
@@ -342,6 +350,7 @@
     // diagram under the cursor gets first refusal on the event.
     doc.addEventListener('wheel', onPreviewWheel, { passive: false });
     doc.addEventListener('keydown', onPreviewZoomKey);
+    doc.addEventListener('keydown', onFullscreenEscape);
     doc.addEventListener('mousedown', onPumlPanStart);
     doc.addEventListener('mousemove', onPumlPanMove);
     doc.addEventListener('mouseup', onPumlPanEnd);
@@ -573,6 +582,94 @@
   document.addEventListener('keydown', onPreviewZoomKey);
   el.zoomIndicator.addEventListener('click', () => setPreviewZoom(100));
 
+  // ---------------------------------------------------------------------
+  // Fullscreen document view (F11)
+  //
+  // A reading mode for the document that is already open: the window goes
+  // into real OS fullscreen (menu bar included — see window:set-fullscreen
+  // in main.js) and everything around the viewer is hidden for the
+  // duration: tree, toolbar, CSS editor, terminal, source editor. The table
+  // of contents stays, since it is the one piece of chrome that helps with
+  // reading rather than competing with it.
+  //
+  // All of that hiding is one class on #app-shell rather than each pane's
+  // own `hidden` class, so leaving the mode restores the layout exactly as
+  // the user had it — and currentProjectStateSnapshot, which reads those
+  // classes, keeps recording the real layout throughout.
+  //
+  // Anything that opens one of the panes the mode hides (edit mode, the CSS
+  // editor, the terminal, project search) calls exitDocFullscreen() first —
+  // a command whose whole visible effect is hidden would otherwise look like
+  // it did nothing at all.
+  // ---------------------------------------------------------------------
+
+  const FULLSCREEN_HINT_MS = 2600;
+  let fullscreenHintTimer = null;
+
+  function enterDocFullscreen() {
+    if (state.docFullscreen) return;
+    // Nothing to show without an open document — and no tree to pick one
+    // from once the chrome is gone.
+    if (!state.currentFilePath) {
+      el.editStatus.textContent = t('edit.selectFirst');
+      return;
+    }
+    state.docFullscreen = true;
+    el.appShell.classList.add('doc-fullscreen');
+    el.btnExitFullscreen.classList.remove('hidden');
+    el.fullscreenHint.classList.add('visible');
+    clearTimeout(fullscreenHintTimer);
+    fullscreenHintTimer = setTimeout(() => {
+      el.fullscreenHint.classList.remove('visible');
+    }, FULLSCREEN_HINT_MS);
+    window.mdviewer.setWindowFullscreen(true);
+  }
+
+  function exitDocFullscreen() {
+    if (!state.docFullscreen) return;
+    state.docFullscreen = false;
+    el.appShell.classList.remove('doc-fullscreen');
+    el.btnExitFullscreen.classList.add('hidden');
+    el.fullscreenHint.classList.remove('visible');
+    clearTimeout(fullscreenHintTimer);
+    window.mdviewer.setWindowFullscreen(false);
+    // xterm sizes itself from the panel's pixel box, which stayed frozen at
+    // display:none for as long as the mode was on.
+    if (state.terminalOpen && fitAddon) fitAddon.fit();
+  }
+
+  function toggleDocFullscreen() {
+    if (state.docFullscreen) exitDocFullscreen();
+    else enterDocFullscreen();
+  }
+
+  // Bound in both documents (like onPreviewZoomKey) so Esc works whether
+  // the focus is in the shell or inside the preview iframe. An Escape some
+  // other handler already claimed — the find bar's input, say — is left to
+  // it: the mode only ends once nothing else wants the key.
+  function onFullscreenEscape(e) {
+    if (e.key !== 'Escape' || e.defaultPrevented || !state.docFullscreen) return;
+    e.preventDefault();
+    // Find stays reachable in this mode, so Esc closes it first, the same
+    // order it would take with the rest of the chrome on screen.
+    if (!el.findBar.classList.contains('hidden')) {
+      closeFindBar();
+      return;
+    }
+    exitDocFullscreen();
+  }
+
+  document.addEventListener('keydown', onFullscreenEscape);
+  el.btnFullscreen.addEventListener('click', toggleDocFullscreen);
+  el.btnExitFullscreen.addEventListener('click', exitDocFullscreen);
+  window.mdviewer.onMenuToggleDocumentFullscreen(toggleDocFullscreen);
+  // The window can also leave fullscreen without going through
+  // exitDocFullscreen (the OS window controls, a main-process reload), which
+  // would otherwise strand the mode with its chrome still hidden.
+  window.mdviewer.onWindowFullscreenChanged((isFullscreen) => {
+    if (!isFullscreen) exitDocFullscreen();
+  });
+
   function onPreviewClick(e) {
     const anchor = e.target.closest('a');
     if (!anchor) return;
@@ -709,6 +806,9 @@
   async function openFolder(folderPath) {
     if (!(await guardNavigation())) return false;
     if (state.editMode) forceExitEditMode();
+    // The new project's tree is the whole point of opening it; don't land
+    // in a chrome-less fullscreen view of the document being left behind.
+    exitDocFullscreen();
 
     const check = await window.mdviewer.listDir(folderPath);
     if (!check.ok) {
@@ -1247,6 +1347,7 @@
   function updateFileKindUI() {
     el.instantViewBadge.classList.toggle('hidden', !state.instantViewPath);
     el.btnRefreshPuml.classList.toggle('hidden', !state.currentFilePath);
+    el.btnFullscreen.classList.toggle('hidden', !state.currentFilePath);
     const isWideView = state.currentFileKind === 'json' || state.currentFileKind === 'text';
     el.frame.contentDocument.body.classList.toggle('wide-view', isWideView);
     // Reserve the path bar's space for the whole time a JSON file is open
@@ -1988,6 +2089,7 @@
       el.editStatus.textContent = t('edit.readFailed', { error: result.error });
       return;
     }
+    exitDocFullscreen();
     el.mdSourceEditor.value = result.content;
     state.editMode = true;
     state.sourceDirty = false;
@@ -2644,6 +2746,7 @@
   }
 
   function openSearchPanel() {
+    exitDocFullscreen();
     el.searchPanel.classList.remove('hidden');
     el.tree.classList.add('hidden');
     el.btnToggleSearch.classList.add('active');
@@ -3584,6 +3687,7 @@
   function toggleCssEditor() {
     const hidden = el.cssPane.classList.toggle('hidden');
     el.resizerRight.classList.toggle('hidden', hidden);
+    if (!hidden) exitDocFullscreen();
     persistProjectState();
   }
 
@@ -3929,6 +4033,7 @@
   }
 
   async function openTerminalPanel() {
+    exitDocFullscreen();
     el.terminalPanel.classList.remove('hidden');
     el.resizerTerminal.classList.remove('hidden');
     el.btnToggleTerminal.classList.add('active');
@@ -3980,7 +4085,9 @@
   });
 
   window.addEventListener('resize', () => {
-    if (state.terminalOpen && fitAddon) fitAddon.fit();
+    // Fullscreen hides the terminal panel; fitting it at zero size there
+    // would only have to be undone on the way out (exitDocFullscreen refits).
+    if (state.terminalOpen && !state.docFullscreen && fitAddon) fitAddon.fit();
   });
 
   // ---------------------------------------------------------------------

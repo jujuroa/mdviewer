@@ -18,6 +18,7 @@ const STRINGS = {
     'menu.toggleCssEditor': 'Toggle CSS Editor',
     'menu.toggleEditMode': 'Toggle Edit Mode',
     'menu.toggleTerminal': 'Toggle Terminal',
+    'menu.fullscreenDocument': 'View Document Fullscreen',
     'menu.reload': 'Reload',
     'menu.toggleDevTools': 'Toggle Developer Tools',
     'menu.settings': 'Settings',
@@ -77,6 +78,10 @@ const STRINGS = {
     'toolbar.terminalBtn': 'Terminal',
     'toolbar.terminalTitle': 'Open/close terminal (Ctrl+`)',
     'toolbar.zoomResetTitle': 'Reset viewer zoom to 100% (Ctrl+0)',
+    'toolbar.fullscreenTitle': 'View this document fullscreen (F11)',
+
+    'fullscreen.exitTitle': 'Exit fullscreen (Esc)',
+    'fullscreen.hint': 'Press Esc or F11 to exit fullscreen',
 
     'find.placeholder': 'Find in document',
     'find.noResults': 'No results',
@@ -208,6 +213,7 @@ const STRINGS = {
     'menu.toggleCssEditor': 'CSS 편집기 전환',
     'menu.toggleEditMode': '편집 모드 전환',
     'menu.toggleTerminal': '터미널 전환',
+    'menu.fullscreenDocument': '현재 문서 전체화면으로 보기',
     'menu.reload': '새로고침',
     'menu.toggleDevTools': '개발자 도구 전환',
     'menu.settings': '설정',
@@ -267,6 +273,10 @@ const STRINGS = {
     'toolbar.terminalBtn': '터미널',
     'toolbar.terminalTitle': '터미널 열기/닫기 (Ctrl+`)',
     'toolbar.zoomResetTitle': '뷰어 확대/축소를 100%로 되돌리기 (Ctrl+0)',
+    'toolbar.fullscreenTitle': '현재 문서 전체화면으로 보기 (F11)',
+
+    'fullscreen.exitTitle': '전체화면 종료 (Esc)',
+    'fullscreen.hint': 'Esc 또는 F11을 누르면 전체화면이 종료됩니다',
 
     'find.placeholder': '문서 내 찾기',
     'find.noResults': '검색 결과 없음',

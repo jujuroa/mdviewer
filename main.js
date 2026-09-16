@@ -224,6 +224,13 @@ function plainTextExtensionPattern() {
 
 function reloadWindowRestoringProject() {
   if (!mainWindow) return;
+  // The fresh page comes up with all its chrome visible and no memory of
+  // the fullscreen document view, so leave fullscreen here rather than
+  // leaving the window stuck in it with nothing left to exit.
+  if (mainWindow.isFullScreen()) {
+    mainWindow.setFullScreen(false);
+    mainWindow.setMenuBarVisibility(true);
+  }
   // Registered before reload() so the listener is in place by the time
   // the fresh page finishes loading. The renderer's 'folder:open-path'
   // handler is the same one the OS/CLI "open this folder" path uses.
@@ -936,6 +943,12 @@ function buildAppMenu() {
           click: () => mainWindow.webContents.send('menu:toggle-terminal'),
         },
         { type: 'separator' },
+        {
+          label: t('menu.fullscreenDocument'),
+          accelerator: 'F11',
+          click: () => mainWindow.webContents.send('menu:toggle-document-fullscreen'),
+        },
+        { type: 'separator' },
         { label: t('menu.reload'), role: 'reload' },
         { label: t('menu.toggleDevTools'), role: 'toggledevtools' },
       ],
@@ -1051,6 +1064,14 @@ function createWindow() {
       event.preventDefault();
       mainWindow.webContents.send('mdviewer:nav-back');
     }
+  });
+
+  // The window can also leave fullscreen without the renderer asking (the
+  // OS window controls, a shortcut the platform handles itself), which
+  // would strand the fullscreen document view with its chrome still hidden.
+  mainWindow.on('leave-full-screen', () => {
+    mainWindow.setMenuBarVisibility(true);
+    mainWindow.webContents.send('window:fullscreen-changed', false);
   });
 
   const webContentsId = mainWindow.webContents.id;
@@ -1498,6 +1519,18 @@ ipcMain.handle('shell:open-path', async (event, folderPath) => {
 
 ipcMain.handle('shell:show-in-folder', (event, itemPath) => {
   shell.showItemInFolder(itemPath);
+});
+
+// Real OS fullscreen for the renderer's fullscreen document view. The menu
+// bar goes with it: on Windows it would otherwise keep sitting above a view
+// whose whole point is that nothing surrounds the document. Its
+// accelerators (F11 included) keep working while it is hidden.
+ipcMain.handle('window:set-fullscreen', (event, enabled) => {
+  const win = BrowserWindow.fromWebContents(event.sender);
+  if (!win) return { ok: false, error: 'no window' };
+  win.setFullScreen(!!enabled);
+  win.setMenuBarVisibility(!enabled);
+  return { ok: true };
 });
 
 // An item's path relative to the open project, with forward slashes so it
