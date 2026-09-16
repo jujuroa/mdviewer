@@ -33,6 +33,10 @@
         <div id="search-results" class="search-results"></div>
       </div>
       <div id="tree" class="tree" tabindex="0"></div>
+      <div id="tree-drop-hint" class="tree-drop-hint hidden">
+        <span data-i18n="drop.treeHint">놓으면 프로젝트로 복사</span>
+        <span id="tree-drop-target" class="tree-drop-target"></span>
+      </div>
       <div class="sidebar-footer">
         <button id="btn-open-project-folder" disabled data-i18n="sidebar.openProjectFolderBtn" data-i18n-title="sidebar.openProjectFolderTitle" title="탐색기에서 프로젝트 폴더 열기">프로젝트 폴더 열기</button>
       </div>
@@ -50,6 +54,9 @@
           <button id="btn-save-source" class="btn-primary hidden" data-i18n="toolbar.saveBtn" data-i18n-title="toolbar.saveTitle" title="저장 (Ctrl+S)">저장</button>
           <button id="btn-refresh-puml" class="hidden" data-i18n="toolbar.refreshBtn" data-i18n-title="toolbar.refreshTitle" title="디스크에서 파일 다시 불러오기">새로고침</button>
           <button id="btn-toggle-edit" data-i18n="toolbar.editBtn" data-i18n-title="toolbar.editTitle" title="본문 편집 모드 전환 (Ctrl+Shift+E)">편집</button>
+          <span id="instant-view-badge" class="instant-view-badge hidden" data-i18n-title="drop.instantViewTitle" title="프로젝트 밖 파일을 임시로 보는 중입니다">
+            <span class="instant-view-dot"></span><span data-i18n="drop.instantViewBadge">임시 보기</span>
+          </span>
           <span id="css-applied-badge" class="css-applied-badge" data-i18n-title="toolbar.cssAppliedTitle" title="커스텀 CSS 적용됨">
             <span class="css-applied-dot"></span><span data-i18n="toolbar.cssAppliedBadge">커스텀 CSS</span>
           </span>
@@ -110,6 +117,14 @@
             <h2 data-i18n="welcome.recentProjects">최근 프로젝트</h2>
             <ul id="recent-list" class="recent-list"></ul>
           </div>
+        </div>
+      </div>
+
+      <div id="viewer-drop-overlay" class="drop-overlay hidden">
+        <div class="drop-overlay-inner">
+          <div class="drop-overlay-icon">👁</div>
+          <div class="drop-overlay-text" data-i18n="drop.viewerHint">놓으면 바로 보기</div>
+          <div class="drop-overlay-sub" data-i18n="drop.viewerHintSub">프로젝트에 복사하지 않습니다</div>
         </div>
       </div>
     </main>

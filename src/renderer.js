@@ -30,7 +30,16 @@
     hljsCss: '',
     cssRefExpanded: false,
     previewZoom: 100,
+    // Set while the viewer is showing a file that was dropped on it rather
+    // than opened from the project tree — see instantViewDropped().
+    instantViewPath: null,
   };
+
+  // Set just before a loadAndRender* call to mark the document it is about
+  // to open as an instant view; beginDocumentNavigation consumes it. Lives
+  // here, next to `state`, because that consumer is defined well above the
+  // drag-and-drop block that sets it.
+  let pendingInstantViewPath = null;
 
   const SCROLL_POSITION_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
@@ -68,6 +77,10 @@
     cssEnabledToggle: document.getElementById('css-enabled-toggle'),
     cssAppliedBadge: document.getElementById('css-applied-badge'),
     previewBody: document.getElementById('preview-body'),
+    viewerDropOverlay: document.getElementById('viewer-drop-overlay'),
+    treeDropHint: document.getElementById('tree-drop-hint'),
+    treeDropTarget: document.getElementById('tree-drop-target'),
+    instantViewBadge: document.getElementById('instant-view-badge'),
     mdSourceEditor: document.getElementById('md-source-editor'),
     editorResizer: document.getElementById('editor-resizer'),
     btnToggleEdit: document.getElementById('btn-toggle-edit'),
@@ -282,6 +295,29 @@
 
     // Event delegation for link clicks inside the rendered document.
     doc.addEventListener('click', onPreviewClick, true);
+
+    // A drag that enters the window directly over the preview lands on the
+    // iframe's own document, and those events don't bubble out to this one —
+    // so without this the drop overlay would never come up for the most
+    // natural approach angle. Once it's up it covers the frame and the rest
+    // of the drag is handled out there; the enter/leave pair is counted in
+    // the same dragDepth so the two documents can hand off mid-drag.
+    doc.addEventListener('dragenter', (e) => {
+      if (!dragHasFiles(e)) return;
+      dragDepth++;
+      setDropAffordance(true);
+    });
+    doc.addEventListener('dragleave', (e) => {
+      if (!dragHasFiles(e)) return;
+      dragDepth = Math.max(0, dragDepth - 1);
+      if (dragDepth === 0) setDropAffordance(false);
+    });
+    doc.addEventListener('dragover', (e) => e.preventDefault());
+    doc.addEventListener('drop', (e) => {
+      e.preventDefault();
+      dragDepth = 0;
+      setDropAffordance(false);
+    });
 
     // Event delegation for JSON tree expand/collapse toggles. Delegated on
     // `doc` (rather than re-attached per render) since the tree is rebuilt
@@ -1160,6 +1196,9 @@
 
   async function persistProjectState() {
     if (!state.rootPath) return;
+    // An instant-viewed file isn't part of the project; recording it as
+    // lastOpenFile would reopen an unrelated document on the next launch.
+    if (state.instantViewPath) return;
     await window.mdviewer.saveProjectState(state.rootPath, currentProjectStateSnapshot());
   }
 
@@ -1187,6 +1226,12 @@
   // return to it. Any pending same-document anchor-jump history belongs to
   // the document being left, so it's cleared here rather than carried over.
   function beginDocumentNavigation(nextFilePath) {
+    // Every loadAndRender* entry point comes through here, so consuming the
+    // marker in one place means a document opened any other way (tree click,
+    // link, back button) clears the instant-view flag on its own.
+    state.instantViewPath = pendingInstantViewPath === nextFilePath ? nextFilePath : null;
+    pendingInstantViewPath = null;
+
     captureScrollPosition();
     if (!state.navigatingBack && state.currentFilePath && state.currentFilePath !== nextFilePath) {
       state.docHistoryStack.push(state.currentFilePath);
@@ -1200,6 +1245,7 @@
   // room instead of being squeezed). The refresh button applies to any open
   // file, so it only depends on whether one is open at all.
   function updateFileKindUI() {
+    el.instantViewBadge.classList.toggle('hidden', !state.instantViewPath);
     el.btnRefreshPuml.classList.toggle('hidden', !state.currentFilePath);
     const isWideView = state.currentFileKind === 'json' || state.currentFileKind === 'text';
     el.frame.contentDocument.body.classList.toggle('wide-view', isWideView);
@@ -2698,8 +2744,95 @@
     ta.scrollTop = Math.max(0, lineNumber * lineHeight - ta.clientHeight / 2);
   }
 
+  // Headings nest by level, so folding one hides every deeper heading that
+  // follows it until the next heading at the same or a shallower level.
+  // Folds are kept per document path, so a re-render (file watch, edit-mode
+  // toggle) or a trip to another document and back doesn't reset them.
+  const tocCollapsedByPath = new Map();
+  // Structure of the TOC currently on screen, so toggling a caret can redraw
+  // the list without re-walking the rendered document.
+  let tocEntries = [];
+
+  function tocCollapsedSet() {
+    const key = state.currentFilePath ? normalizePath(state.currentFilePath) : '';
+    let set = tocCollapsedByPath.get(key);
+    if (!set) {
+      set = new Set();
+      tocCollapsedByPath.set(key, set);
+    }
+    return set;
+  }
+
+  // Hidden when ANY enclosing heading is folded, not just the immediate
+  // parent — otherwise a deep item would reappear under a collapsed ancestor
+  // whose own child happened to be left expanded.
+  function tocEntryHidden(entry, collapsed) {
+    for (let p = entry.parent; p !== -1; p = tocEntries[p].parent) {
+      if (collapsed.has(tocEntries[p].id)) return true;
+    }
+    return false;
+  }
+
+  // Folding only changes which rows are showing, so the rows themselves are
+  // reused rather than rebuilt — that keeps the caret's rotate transition
+  // alive and holds the list's scroll position steady.
+  function applyTocVisibility() {
+    const collapsed = tocCollapsedSet();
+    tocEntries.forEach((entry) => {
+      if (entry.li) entry.li.classList.toggle('hidden', tocEntryHidden(entry, collapsed));
+    });
+  }
+
+  function renderTocList() {
+    el.tocList.innerHTML = '';
+    const collapsed = tocCollapsedSet();
+
+    tocEntries.forEach((entry) => {
+      const li = document.createElement('li');
+      entry.li = li;
+      li.className = 'toc-item toc-item-node';
+      li.style.paddingLeft = 6 + (entry.level - 1) * 12 + 'px';
+
+      const caret = document.createElement('span');
+      caret.className = 'toc-caret';
+      if (entry.hasChildren) {
+        caret.textContent = '▶';
+        caret.classList.toggle('expanded', !collapsed.has(entry.id));
+        caret.title = t('toc.itemToggleTitle');
+        caret.addEventListener('click', (e) => {
+          // The caret folds; the rest of the row still jumps to the heading.
+          e.stopPropagation();
+          const nowCollapsed = !collapsed.has(entry.id);
+          if (nowCollapsed) collapsed.add(entry.id);
+          else collapsed.delete(entry.id);
+          caret.classList.toggle('expanded', !nowCollapsed);
+          applyTocVisibility();
+        });
+      } else {
+        caret.classList.add('toc-caret-leaf');
+      }
+      li.appendChild(caret);
+
+      const label = document.createElement('span');
+      label.className = 'toc-label';
+      label.textContent = entry.text;
+      li.appendChild(label);
+
+      li.title = entry.text;
+      li.addEventListener('click', () => {
+        pushScrollJumpHistory();
+        entry.heading.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        if (entry.sourceLine !== undefined) scrollSourceToLine(entry.sourceLine);
+      });
+      el.tocList.appendChild(li);
+    });
+
+    applyTocVisibility();
+  }
+
   function populateToc() {
     el.tocList.innerHTML = '';
+    tocEntries = [];
     const headings = Array.from(
       el.frame.contentDocument.querySelectorAll('h1, h2, h3, h4, h5, h6')
     );
@@ -2723,22 +2856,41 @@
       }
       usedIds.add(heading.id);
 
-      const level = Number(heading.tagName[1]);
-      const li = document.createElement('li');
-      li.className = 'toc-item';
-      li.style.paddingLeft = 6 + (level - 1) * 12 + 'px';
-      li.textContent = heading.textContent;
-      li.title = heading.textContent;
-      li.addEventListener('click', () => {
-        pushScrollJumpHistory();
-        heading.scrollIntoView({ behavior: 'smooth', block: 'start' });
-        if (sourceLines && sourceLines[index] !== undefined) {
-          scrollSourceToLine(sourceLines[index]);
-        }
+      tocEntries.push({
+        heading,
+        id: heading.id,
+        text: heading.textContent,
+        level: Number(heading.tagName[1]),
+        sourceLine: sourceLines ? sourceLines[index] : undefined,
+        parent: -1,
+        hasChildren: false,
       });
-      el.tocList.appendChild(li);
     });
 
+    // Levels can skip (an h1 followed by an h3), so the enclosing heading is
+    // whatever is still open at a shallower level rather than exactly
+    // level - 1.
+    const openStack = [];
+    tocEntries.forEach((entry, i) => {
+      while (openStack.length && tocEntries[openStack[openStack.length - 1]].level >= entry.level) {
+        openStack.pop();
+      }
+      if (openStack.length) {
+        entry.parent = openStack[openStack.length - 1];
+        tocEntries[entry.parent].hasChildren = true;
+      }
+      openStack.push(i);
+    });
+
+    // A heading that's gone from the document shouldn't keep its fold alive:
+    // a later edit could hand the same id to an unrelated section.
+    const collapsed = tocCollapsedSet();
+    const liveIds = new Set(tocEntries.map((entry) => entry.id));
+    for (const id of collapsed) {
+      if (!liveIds.has(id)) collapsed.delete(id);
+    }
+
+    renderTocList();
     linkifySectionRefs(headings);
   }
 
@@ -3506,6 +3658,224 @@
   window.mdviewer.onOpenFolderFromOS((folderPath) => {
     openFolder(folderPath);
   });
+
+  // ---------------------------------------------------------------------
+  // Drag and drop
+  // ---------------------------------------------------------------------
+  //
+  // Two drop zones with deliberately different meanings:
+  //   the tree   -> copy the dropped files/folders into the project
+  //   the viewer -> show the dropped document right now, without copying
+  //
+  // The tree is ordinary DOM in this document, so it takes drop events
+  // directly and can report which folder row the pointer is over. The
+  // preview is an <iframe>, which swallows drag events before they reach
+  // this document, so a drop target is laid over it for the duration of the
+  // drag instead.
+
+  let dragDepth = 0;
+  let treeDropRow = null;
+
+  function dragHasFiles(e) {
+    const types = e.dataTransfer && e.dataTransfer.types;
+    return !!types && Array.prototype.includes.call(types, 'Files');
+  }
+
+  // Must run synchronously inside the drop handler — dataTransfer is emptied
+  // once the event returns, so the paths cannot be read after an await.
+  function droppedPaths(e) {
+    const files = (e.dataTransfer && e.dataTransfer.files) || [];
+    const paths = [];
+    for (const file of files) {
+      const filePath = window.mdviewer.getPathForFile(file);
+      if (filePath) paths.push(filePath);
+    }
+    return paths;
+  }
+
+  function isViewablePath(filePath) {
+    return /\.(md|markdown|puml|json)$/i.test(filePath) || isPlainTextPath(filePath);
+  }
+
+  function isInsideProject(filePath) {
+    if (!state.rootPath) return false;
+    const root = normalizePath(state.rootPath);
+    const target = normalizePath(filePath);
+    return target === root || target.startsWith(root + '/');
+  }
+
+  // Drop feedback reuses the toolbar status slot, the same place save and
+  // paste results are reported.
+  function setDropStatus(message) {
+    el.editStatus.textContent = message;
+  }
+
+  function setTreeDropRow(row) {
+    if (treeDropRow === row) return;
+    if (treeDropRow) treeDropRow.classList.remove('drop-target');
+    treeDropRow = row;
+    if (treeDropRow) treeDropRow.classList.add('drop-target');
+  }
+
+  function setDropAffordance(active) {
+    const canCopy = active && !!state.rootPath;
+    el.viewerDropOverlay.classList.toggle('hidden', !active);
+    el.tree.classList.toggle('drop-active', canCopy);
+    el.treeDropHint.classList.toggle('hidden', !canCopy);
+    if (!active) setTreeDropRow(null);
+  }
+
+  // Which folder a drop on the tree copies into: the folder row under the
+  // pointer, the containing folder for a file row, and the project root for
+  // empty space below the rows.
+  function treeDropTargetDir(e) {
+    const row = e.target.closest && e.target.closest('.tree-row');
+    if (!row || !row.dataset.path) return state.rootPath;
+    if (row.classList.contains('dir')) return row.dataset.path;
+    return dirnameOf(row.dataset.path);
+  }
+
+  // dragenter/dragleave fire per element as the pointer crosses children, so
+  // the pair is counted rather than trusted individually — otherwise moving
+  // over a nested row would read as having left the window.
+  window.addEventListener('dragenter', (e) => {
+    if (!dragHasFiles(e)) return;
+    dragDepth++;
+    setDropAffordance(true);
+  });
+
+  window.addEventListener('dragleave', (e) => {
+    if (!dragHasFiles(e)) return;
+    dragDepth = Math.max(0, dragDepth - 1);
+    if (dragDepth === 0) setDropAffordance(false);
+  });
+
+  window.addEventListener('dragend', () => {
+    dragDepth = 0;
+    setDropAffordance(false);
+  });
+
+  // Without these the window would navigate away to the dropped file, which
+  // replaces the whole app UI with it.
+  window.addEventListener('dragover', (e) => e.preventDefault());
+  window.addEventListener('drop', (e) => {
+    e.preventDefault();
+    dragDepth = 0;
+    setDropAffordance(false);
+  });
+
+  el.tree.addEventListener('dragover', (e) => {
+    if (!dragHasFiles(e)) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = state.rootPath ? 'copy' : 'none';
+    if (!state.rootPath) return;
+    const row = e.target.closest('.tree-row');
+    setTreeDropRow(row && row.classList.contains('dir') ? row : null);
+    const targetDir = treeDropTargetDir(e);
+    el.treeDropTarget.textContent = targetDir ? pathBasename(targetDir) || targetDir : '';
+  });
+
+  el.tree.addEventListener('drop', async (e) => {
+    if (!dragHasFiles(e)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const targetDir = treeDropTargetDir(e);
+    const paths = droppedPaths(e);
+    dragDepth = 0;
+    setDropAffordance(false);
+
+    if (!state.rootPath) {
+      setDropStatus(t('drop.noProject'));
+      return;
+    }
+    if (!paths.length || !targetDir) return;
+
+    const result = await window.mdviewer.copyEntries(targetDir, paths);
+    if (!result.ok) {
+      setDropStatus(t('drop.copyFailed', { error: result.error }));
+      return;
+    }
+
+    await refreshTreeDir(targetDir);
+
+    const dirLabel = pathBasename(targetDir) || targetDir;
+    const renamed = result.copied.filter((entry) => entry.renamed).length;
+    let message;
+    if (!result.copied.length) {
+      message = t('drop.nothingCopied');
+    } else if (renamed) {
+      message = t('drop.copiedRenamed', { count: result.copied.length, dir: dirLabel, renamed });
+    } else {
+      message = t('drop.copied', { count: result.copied.length, dir: dirLabel });
+    }
+    if (result.skipped.length) {
+      message += ' · ' + t('drop.copySkipped', { count: result.skipped.length });
+    }
+    setDropStatus(message);
+
+    if (result.copied.length) await revealPathInTree(result.copied[0].path, { select: true });
+  });
+
+  el.viewerDropOverlay.addEventListener('dragover', (e) => {
+    if (!dragHasFiles(e)) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'copy';
+  });
+
+  el.viewerDropOverlay.addEventListener('drop', async (e) => {
+    if (!dragHasFiles(e)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const paths = droppedPaths(e);
+    dragDepth = 0;
+    setDropAffordance(false);
+    await instantViewDropped(paths);
+  });
+
+  // Renders a dropped document in place, leaving the project untouched: no
+  // copy, no project switch, and the tree selection is cleared rather than
+  // left pointing at a different file than the one on screen.
+  async function instantViewDropped(paths) {
+    if (!paths.length) return;
+    const filePath = paths[0];
+
+    const stat = await window.mdviewer.statPath(filePath);
+    if (!stat.ok) {
+      setDropStatus(t('drop.openFailed', { name: pathBasename(filePath), error: stat.error }));
+      return;
+    }
+
+    // A folder has nothing to instant-view, so it opens as a project — the
+    // same thing dragging one onto the app would mean anywhere else.
+    if (stat.isDir) {
+      if (!(await guardNavigation())) return;
+      await openFolder(filePath);
+      return;
+    }
+
+    if (!isViewablePath(filePath)) {
+      setDropStatus(t('drop.unsupported', { name: pathBasename(filePath) }));
+      return;
+    }
+    if (!(await guardNavigation())) return;
+
+    // With no project open the preview pane is not even on screen (the
+    // welcome screen is), so there is nothing to instant-view into: fall
+    // back to opening the file's folder, the way "Open File" does.
+    if (!state.rootPath) {
+      await openSingleFile(filePath);
+      return;
+    }
+
+    const inProject = isInsideProject(filePath);
+    if (!inProject) pendingInstantViewPath = filePath;
+    await loadAndRenderByPath(filePath);
+
+    if (inProject) await revealPathInTree(filePath, { select: true });
+    else selectTreeRow(null);
+
+    setDropStatus('');
+  }
 
   // ---------------------------------------------------------------------
   // Bottom terminal panel

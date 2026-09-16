@@ -1,4 +1,4 @@
-const { contextBridge, ipcRenderer } = require('electron');
+const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
 contextBridge.exposeInMainWorld('mdviewer', {
   openFolderDialog: () => ipcRenderer.invoke('dialog:open-folder'),
@@ -22,6 +22,17 @@ contextBridge.exposeInMainWorld('mdviewer', {
   readFile: (filePath) => ipcRenderer.invoke('fs:read-file', filePath),
   writeFile: (filePath, content) => ipcRenderer.invoke('fs:write-file', filePath, content),
   createFile: (dirPath, name) => ipcRenderer.invoke('fs:create-file', dirPath, name),
+  copyEntries: (targetDir, sourcePaths) => ipcRenderer.invoke('fs:copy-entries', targetDir, sourcePaths),
+  statPath: (targetPath) => ipcRenderer.invoke('fs:stat-path', targetPath),
+  // Electron 32 dropped File.path; this is the supported way to turn a
+  // dropped/selected File back into a path on disk.
+  getPathForFile: (file) => {
+    try {
+      return webUtils.getPathForFile(file);
+    } catch (err) {
+      return '';
+    }
+  },
   createFolder: (dirPath, name) => ipcRenderer.invoke('fs:create-folder', dirPath, name),
   renderMarkdownText: (text, baseDir, requestId) => ipcRenderer.invoke('md:render-text', text, baseDir, requestId),
   showTreeContextMenu: (itemPath, rootPath) => ipcRenderer.invoke('tree:show-context-menu', itemPath, rootPath),

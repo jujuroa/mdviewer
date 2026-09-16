@@ -1293,6 +1293,99 @@ function createTreeEntry(dirPath, name, kind) {
 ipcMain.handle('fs:create-file', (event, dirPath, name) => createTreeEntry(dirPath, name, 'file'));
 ipcMain.handle('fs:create-folder', (event, dirPath, name) => createTreeEntry(dirPath, name, 'folder'));
 
+// ---------------------------------------------------------------------
+// Drag-and-drop copy into the project
+// ---------------------------------------------------------------------
+
+// Path identity for the comparisons below. Windows paths are compared
+// case-insensitively because the filesystem is, so C:\Docs and c:\docs are
+// the same folder for "is this being copied into itself?" purposes.
+function samePathKey(p) {
+  const resolved = path.resolve(p);
+  return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
+}
+
+// True when `child` IS `parent` or sits underneath it. Copying a folder into
+// itself or into one of its own descendants would otherwise recurse until
+// the disk filled up.
+function isSameOrInside(parent, child) {
+  const rel = path.relative(samePathKey(parent), samePathKey(child));
+  return rel === '' || (!rel.startsWith('..' + path.sep) && rel !== '..' && !path.isAbsolute(rel));
+}
+
+// A dropped name that already exists is never overwritten — the copy gets a
+// numbered suffix instead, the way pasted images do. Dropping is an easy
+// gesture to make by accident, so it must not be able to destroy work.
+function uniqueDestPath(dir, name) {
+  let candidate = path.join(dir, name);
+  if (!fs.existsSync(candidate)) return candidate;
+  const ext = path.extname(name);
+  const stem = path.basename(name, ext);
+  let n = 2;
+  do {
+    candidate = path.join(dir, `${stem} (${n++})${ext}`);
+  } while (fs.existsSync(candidate));
+  return candidate;
+}
+
+async function copyEntriesInto(targetDir, sourcePaths) {
+  let targetStat;
+  try {
+    targetStat = await fs.promises.stat(targetDir);
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+  if (!targetStat.isDirectory()) return { ok: false, error: 'Drop target is not a folder' };
+
+  const copied = [];
+  const skipped = [];
+
+  for (const source of sourcePaths) {
+    const name = path.basename(source);
+    let sourceStat;
+    try {
+      sourceStat = await fs.promises.stat(source);
+    } catch (err) {
+      skipped.push({ name, reason: 'missing' });
+      continue;
+    }
+    if (sourceStat.isDirectory() && isSameOrInside(source, targetDir)) {
+      skipped.push({ name, reason: 'intoItself' });
+      continue;
+    }
+
+    const dest = uniqueDestPath(targetDir, name);
+    try {
+      // errorOnExist guards the (impossible by construction) race where
+      // something else creates the name between the check and the copy —
+      // better to report a skip than to clobber it.
+      await fs.promises.cp(source, dest, { recursive: true, errorOnExist: true, force: false });
+      copied.push({ path: dest, name: path.basename(dest), renamed: path.basename(dest) !== name });
+    } catch (err) {
+      skipped.push({ name, reason: 'error', error: err.message });
+    }
+  }
+
+  return { ok: true, copied, skipped };
+}
+
+ipcMain.handle('fs:copy-entries', async (event, targetDir, sourcePaths) => {
+  try {
+    return await copyEntriesInto(targetDir, Array.isArray(sourcePaths) ? sourcePaths : []);
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
+ipcMain.handle('fs:stat-path', async (event, targetPath) => {
+  try {
+    const stat = await fs.promises.stat(targetPath);
+    return { ok: true, isDir: stat.isDirectory(), isFile: stat.isFile() };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
 ipcMain.handle('md:render-text', async (event, text, baseDir, requestId) => {
   try {
     return { ok: true, html: await renderMarkdownText(text, baseDir, requestId) };

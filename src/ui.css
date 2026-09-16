@@ -532,6 +532,92 @@ html, body {
   box-shadow: 0 0 4px rgba(63, 185, 80, 0.6);
 }
 
+/* ---- Drag and drop ---- */
+
+/* The tree is ordinary DOM in this document, so it takes drop events
+   directly and can tell us which folder row the pointer is over. */
+.tree.drop-active {
+  outline: 2px dashed var(--accent);
+  outline-offset: -3px;
+  border-radius: 4px;
+}
+.tree-row.drop-target {
+  background: var(--accent);
+  color: #ffffff;
+}
+.tree-row.drop-target .tree-label,
+.tree-row.drop-target .tree-caret,
+.tree-row.drop-target .tree-icon {
+  color: #ffffff;
+}
+
+.tree-drop-hint {
+  flex-shrink: 0;
+  padding: 6px 10px;
+  border-top: 1px solid var(--border);
+  background: var(--hover);
+  font-size: 11px;
+  color: var(--text-dim);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  pointer-events: none;
+}
+.tree-drop-hint.hidden { display: none; }
+.tree-drop-target {
+  color: var(--accent);
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* The preview is an <iframe>, which swallows drag events before they can
+   reach this document — so a drop target is laid over it for the duration
+   of the drag instead of listening on the frame. */
+.drop-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: color-mix(in srgb, var(--bg-app) 82%, transparent);
+  backdrop-filter: blur(1px);
+}
+.drop-overlay.hidden { display: none; }
+
+.drop-overlay-inner {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 28px 40px;
+  border: 2px dashed var(--accent);
+  border-radius: 10px;
+  background: var(--bg-sidebar);
+  pointer-events: none;
+}
+.drop-overlay-icon { font-size: 28px; line-height: 1; }
+.drop-overlay-text { font-size: 14px; font-weight: 600; color: var(--text); }
+.drop-overlay-sub { font-size: 11px; color: var(--text-dim); }
+
+.instant-view-badge {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  color: #d29922;
+}
+.instant-view-badge.hidden { display: none; }
+.instant-view-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #d29922;
+  box-shadow: 0 0 4px rgba(210, 153, 34, 0.6);
+}
+
 .css-applied-badge.disabled {
   color: var(--text-dim);
   opacity: 0.6;
@@ -1219,6 +1305,32 @@ html, body {
 }
 .toc-item:hover { background: var(--hover); }
 .toc-item.current { color: var(--accent); font-weight: 600; }
+
+/* Heading rows carry a fold caret, so they lay out as caret + label; the
+   links and sub-page lists stay plain .toc-item rows. */
+.toc-item-node {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+.toc-item-node.hidden { display: none; }
+.toc-item-node .toc-label {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.toc-caret {
+  width: 12px;
+  flex-shrink: 0;
+  text-align: center;
+  font-size: 10px;
+  color: var(--text-dim);
+  transition: transform 0.1s ease;
+}
+.toc-caret.expanded { transform: rotate(90deg); }
+.toc-caret:not(.toc-caret-leaf):hover { color: var(--text); }
 
 .toc-empty {
   padding: 4px 6px;
