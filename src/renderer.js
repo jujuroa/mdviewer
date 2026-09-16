@@ -4008,6 +4008,28 @@
     term.onResize(({ cols, rows }) => {
       window.mdviewer.resizeTerminal(cols, rows);
     });
+    // Right-click is this app's copy/paste gesture in the terminal (the
+    // contextmenu handler below), so the right button must never reach
+    // xterm's mouse reporting. Once a full-screen program turns mouse
+    // tracking on -- Claude Code, vim, htop -- xterm forwards both the press
+    // and the release to the program as escape sequences
+    // ([<2;col;rowM / ...m), and a program that reads a right-button
+    // report as "paste" pastes on each of them, on top of the paste this
+    // panel already did: one right-click, up to three pastes. Swallowing the
+    // event in the capture phase, before it reaches the xterm element
+    // underneath, keeps right-click meaning exactly one thing no matter what
+    // is running in the shell.
+    for (const type of ['mousedown', 'mouseup', 'auxclick']) {
+      el.terminalXterm.addEventListener(
+        type,
+        (e) => {
+          if (e.button !== 2) return;
+          e.stopPropagation();
+        },
+        true
+      );
+    }
+
     el.terminalXterm.addEventListener('contextmenu', async (e) => {
       e.preventDefault();
       if (term.hasSelection()) {
