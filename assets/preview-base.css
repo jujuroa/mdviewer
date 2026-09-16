@@ -164,13 +164,22 @@ body.markdown-body.wide-view {
 
 .markdown-body .mermaid-diagram {
   padding: 16px;
-  overflow: auto;
   text-align: center;
 }
 
-.markdown-body .plantuml-diagram img,
-.markdown-body .mermaid-diagram img {
+/* A PlantUML diagram keeps its natural size and scrolls inside its own
+   zoom/pan area (.plantuml-scroll), where scrolling is the point. */
+.markdown-body .plantuml-diagram img {
   max-width: none;
+}
+
+/* A mermaid diagram has no such area, so a wide one would just put a
+   scrollbar under the document. Scale it down to the available width
+   instead — never up, so small diagrams keep their size — and use Ctrl+wheel
+   to read the details of a large one. */
+.markdown-body .mermaid-diagram img {
+  max-width: 100%;
+  height: auto;
 }
 
 @media (prefers-color-scheme: light) {
