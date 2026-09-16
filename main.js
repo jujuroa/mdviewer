@@ -1591,6 +1591,13 @@ ipcMain.handle('tree:show-context-menu', (event, itemPath, rootPath) => {
       click: () => exportMarkdownToPdf(itemPath, win, rootPath),
     });
   }
+  if (!isDir && /\.puml$/i.test(itemPath)) {
+    items.push({ type: 'separator' });
+    items.push({
+      label: t('context.convertSvg'),
+      click: () => convertPumlToSvg(itemPath, win),
+    });
+  }
   const menu = Menu.buildFromTemplate(items);
   menu.popup({ window: win });
 });
@@ -1599,6 +1606,30 @@ ipcMain.handle('tree:show-context-menu', (event, itemPath, rootPath) => {
 // File > Export to PDF... menu item (which targets whatever's currently
 // open in the renderer, so it needs its own IPC entry point rather than
 // reusing the context-menu one above).
+// Writes the diagram out as a standalone .svg next to the source (or wherever
+// the save dialog points), using the same bundled plantuml.jar the preview
+// renders with — no plantuml.com round trip, so it works offline and isn't
+// bounded by that server's request-size limit.
+async function convertPumlToSvg(filePath, parentWindow) {
+  const defaultName = `${path.basename(filePath, path.extname(filePath))}.svg`;
+  const saveResult = await dialog.showSaveDialog(parentWindow, {
+    defaultPath: path.join(path.dirname(filePath), defaultName),
+    filters: [{ name: 'SVG', extensions: ['svg'] }],
+  });
+  if (saveResult.canceled || !saveResult.filePath) return;
+
+  try {
+    const svg = await renderPlantUmlSvg(fs.readFileSync(filePath, 'utf-8'));
+    fs.writeFileSync(saveResult.filePath, svg, 'utf-8');
+    shell.showItemInFolder(saveResult.filePath);
+  } catch (err) {
+    dialog.showErrorBox(
+      t('export.svgFailedTitle'),
+      t('export.svgFailedMessage', { name: path.basename(filePath), error: err.message })
+    );
+  }
+}
+
 ipcMain.handle('export:pdf', (event, filePath, rootPath) => {
   const win = BrowserWindow.fromWebContents(event.sender);
   return exportMarkdownToPdf(filePath, win, rootPath);
