@@ -188,7 +188,8 @@ body.markdown-body.wide-view {
   outline: 2px solid #ff9800;
 }
 
-.markdown-body .plantuml-diagram.plantuml-error {
+.markdown-body .plantuml-diagram.plantuml-error,
+.markdown-body .mermaid-diagram.mermaid-error {
   padding: 16px;
   text-align: left;
   white-space: pre-wrap;

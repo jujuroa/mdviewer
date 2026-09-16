@@ -14,7 +14,6 @@ const CSS_FILE_NAME = 'custom.css';
 const MAX_RECENT_PROJECTS = 8;
 const PLANTUML_FENCE_LANGS = new Set(['plantuml', 'puml']);
 const MERMAID_FENCE_LANGS = new Set(['mermaid']);
-const MERMAID_SERVER = 'https://mermaid.ink';
 
 // PlantUML is rendered locally via a bundled plantuml.jar + minimal jlink'd JRE
 // (see scripts/prepare-plantuml.js), rather than the public plantuml.com server:
@@ -112,13 +111,108 @@ function plantumlDiagramHtml(imgSrc) {
   );
 }
 
-function mermaidImageSrc(source) {
-  const encoded = Buffer.from(source.trim(), 'utf-8')
-    .toString('base64')
-    .replace(/\+/g, '-')
-    .replace(/\//g, '_')
-    .replace(/=+$/, '');
-  return `${MERMAID_SERVER}/svg/${encoded}`;
+// Mermaid renders locally, in a hidden BrowserWindow, rather than through
+// the public mermaid.ink server: diagrams no longer leave the machine (they
+// are someone's notes, not public content), the app works offline, and
+// nothing depends on a third-party service staying up or on the source
+// fitting into a URL. mermaid itself is a browser library — it lays
+// diagrams out by measuring rendered text — so it needs a DOM that neither
+// the main process nor the script-free preview iframe can give it; see
+// assets/mermaid-render.js for the page that hosts it.
+//
+// The window is created on the first diagram and then kept for reuse (its
+// 5MB bundle is not worth parsing twice), and torn down with the main
+// window so a window nobody can see never keeps the app alive.
+const MERMAID_RENDER_TIMEOUT_MS = 20000;
+let mermaidWindowPromise = null;
+
+function mermaidBundlePath() {
+  const base = app.isPackaged
+    ? path.join(process.resourcesPath, 'thirdparty', 'mermaid')
+    : path.join(__dirname, 'thirdparty', 'mermaid');
+  return path.join(base, 'mermaid.min.js');
+}
+
+async function createMermaidWindow() {
+  const bundle = mermaidBundlePath();
+  if (!fs.existsSync(bundle)) {
+    throw new Error(
+      'Mermaid runtime not found. Run "npm run prepare:mermaid" (or npm start / npm run dist, which do this automatically).'
+    );
+  }
+  const win = new BrowserWindow({
+    show: false,
+    width: 1400,
+    height: 1000,
+    webPreferences: {
+      sandbox: true,
+      contextIsolation: true,
+      nodeIntegration: false,
+      // A window that is never shown is otherwise throttled, which would
+      // stretch out every render for no reason.
+      backgroundThrottling: false,
+    },
+  });
+  win.on('closed', () => {
+    mermaidWindowPromise = null;
+  });
+  await win.loadFile(path.join(__dirname, 'assets', 'mermaid-render.html'));
+  // Injected rather than pulled in by a <script> tag: the bundle sits
+  // outside the asar in thirdparty/, out of reach of the page's own
+  // relative paths. The trailing `void 0` matters — executeJavaScript sends
+  // the last expression's value back over IPC, and the bundle ends by
+  // assigning the mermaid module object, which cannot be cloned: without it
+  // the call never settles.
+  await win.webContents.executeJavaScript(`${fs.readFileSync(bundle, 'utf-8')}
+;void 0;`);
+  return win;
+}
+
+function ensureMermaidWindow() {
+  if (!mermaidWindowPromise) {
+    mermaidWindowPromise = createMermaidWindow().catch((err) => {
+      // Don't cache the failure: a later diagram should get a fresh attempt.
+      mermaidWindowPromise = null;
+      throw err;
+    });
+  }
+  return mermaidWindowPromise;
+}
+
+function closeMermaidWindow() {
+  const pending = mermaidWindowPromise;
+  mermaidWindowPromise = null;
+  if (!pending) return;
+  pending
+    .then((win) => {
+      if (!win.isDestroyed()) win.destroy();
+    })
+    .catch(() => {
+      /* the window never came up; nothing to close */
+    });
+}
+
+async function renderMermaidSvg(source) {
+  const win = await ensureMermaidWindow();
+  let timer;
+  try {
+    return await Promise.race([
+      win.webContents.executeJavaScript(`window.__renderMermaid(${JSON.stringify(source)})`),
+      new Promise((resolve, reject) => {
+        timer = setTimeout(
+          () => reject(new Error('Mermaid rendering timed out')),
+          MERMAID_RENDER_TIMEOUT_MS
+        );
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function mermaidDiagramHtml(svg) {
+  const src = `data:image/svg+xml;base64,${Buffer.from(svg, 'utf-8').toString('base64')}`;
+  return `<div class="mermaid-diagram"><img src="${src}" alt="Mermaid diagram"></div>`;
 }
 
 let mainWindow;
@@ -368,8 +462,9 @@ function createMarkdownRenderer(baseDir) {
       return (env.pumlResults && env.pumlResults.get(token)) || '';
     }
     if (MERMAID_FENCE_LANGS.has(lang)) {
-      const src = mermaidImageSrc(token.content);
-      return `<div class="mermaid-diagram"><img src="${src}" alt="Mermaid diagram"></div>\n`;
+      // Pre-rendered up front by renderMarkdownText, for the same reason as
+      // puml fences: rendering is async, this rule is not.
+      return (env.mermaidResults && env.mermaidResults.get(token)) || '';
     }
     return defaultFenceRule(tokens, idx, options, env, self);
   };
@@ -445,8 +540,9 @@ async function renderMarkdownText(text, baseDir, requestId) {
   const env = {};
   const tokens = md.parse(text, env);
 
+  const fenceLang = (token) => token.info.trim().split(/\s+/)[0].toLowerCase();
   const pumlTokens = tokens.filter(
-    (token) => token.type === 'fence' && PLANTUML_FENCE_LANGS.has(token.info.trim().split(/\s+/)[0].toLowerCase())
+    (token) => token.type === 'fence' && PLANTUML_FENCE_LANGS.has(fenceLang(token))
   );
   const pumlResults = new Map();
   await Promise.all(
@@ -464,6 +560,23 @@ async function renderMarkdownText(text, baseDir, requestId) {
     })
   );
   env.pumlResults = pumlResults;
+
+  // Mermaid diagrams render one at a time rather than in parallel like the
+  // puml ones: they all go through the single hidden render window, whose
+  // page lays every diagram out in the same host element.
+  const mermaidResults = new Map();
+  for (const token of tokens) {
+    if (token.type !== 'fence' || !MERMAID_FENCE_LANGS.has(fenceLang(token))) continue;
+    try {
+      mermaidResults.set(token, mermaidDiagramHtml(await renderMermaidSvg(token.content)) + '\n');
+    } catch (err) {
+      mermaidResults.set(
+        token,
+        `<div class="mermaid-diagram mermaid-error">${md.utils.escapeHtml(err.message)}</div>\n`
+      );
+    }
+  }
+  env.mermaidResults = mermaidResults;
 
   const html = md.renderer.render(tokens, md.options, env);
   return sanitizeMarkdownHtml(html);
@@ -1078,6 +1191,9 @@ function createWindow() {
   mainWindow.on('closed', () => {
     stopWatching(webContentsId);
     killTerminal(webContentsId);
+    // 'window-all-closed' — and with it quitting the app — waits for every
+    // window, including ones the user cannot see.
+    closeMermaidWindow();
     mainWindow = null;
   });
 }
@@ -1655,6 +1771,9 @@ async function exportMarkdownToPdf(filePath, parentWindow, rootPath) {
   let exportWin;
   const previousThemeSource = nativeTheme.themeSource;
   try {
+    // Switched before rendering, not just before printing: the PDF is always
+    // light, so anything rendered into it should be rendered for a light page.
+    nativeTheme.themeSource = 'light';
     const html = await renderMarkdownFile(filePath);
     const { defaultCss, hljsCss } = getBaseStyles();
     // Match whatever the project's own preview currently shows: only pull
@@ -1671,7 +1790,6 @@ async function exportMarkdownToPdf(filePath, parentWindow, rootPath) {
       `<style>${defaultCss}</style><style>${hljsCss}</style><style>${userCss}</style>` +
       '</head><body class="markdown-body">' + html + '</body></html>';
 
-    nativeTheme.themeSource = 'light';
     exportWin = new BrowserWindow({ show: false, webPreferences: { sandbox: true } });
     await exportWin.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(fullHtml)}`);
     const pdfData = await exportWin.webContents.printToPDF({
