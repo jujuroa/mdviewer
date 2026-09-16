@@ -3,7 +3,7 @@
 이 프로젝트의 주요 변경 사항을 버전별로 기록합니다.
 형식은 [Keep a Changelog](https://keepachangelog.com/ko/1.0.0/)를 참고합니다.
 
-## [Unreleased]
+## [1.2.1] - 2026-09-16
 
 ### 수정됨
 
