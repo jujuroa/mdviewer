@@ -34,14 +34,25 @@
     initialized = true;
   }
 
-  // mermaid sizes its <svg> with width:100% plus a max-width style, which
-  // has no intrinsic size to fall back on once the SVG is shown as an <img>
-  // (browsers then draw it at the default 300x150). Pin width/height from
-  // the viewBox so the diagram keeps the size mermaid laid it out at.
-  function pinSvgSize(svgText) {
-    const parsed = new DOMParser().parseFromString(svgText, 'image/svg+xml');
-    const svg = parsed.documentElement;
-    if (!svg || svg.nodeName !== 'svg') return svgText;
+  // Two things have to be fixed up before the diagram can be handed to the
+  // preview as <img src="data:image/svg+xml;...">:
+  //
+  //  * Well-formedness. mermaid draws its labels as HTML inside
+  //    <foreignObject>, so a label written with <br/> comes back as an
+  //    unclosed <br> — valid HTML, invalid XML. An SVG data URI is parsed
+  //    by the *XML* parser, where a single unclosed tag fails the whole
+  //    document and the image silently doesn't load. Parsing the string as
+  //    HTML (which accepts it) and serializing it back as XML (which always
+  //    closes tags) makes the markup safe to embed, labels intact.
+  //
+  //  * Intrinsic size. mermaid sizes the <svg> with width:100% and a
+  //    max-width style, which an <img> has nothing to resolve against — it
+  //    would draw the default 300x150 box. Pinning width/height from the
+  //    viewBox keeps the size mermaid laid the diagram out at.
+  function normalizeSvg(svgText) {
+    const parsed = new DOMParser().parseFromString(svgText, 'text/html');
+    const svg = parsed.body.querySelector('svg');
+    if (!svg) return svgText;
     const viewBox = (svg.getAttribute('viewBox') || '').split(/[\s,]+/).map(Number);
     if (viewBox.length === 4 && viewBox[2] > 0 && viewBox[3] > 0) {
       svg.setAttribute('width', String(Math.ceil(viewBox[2])));
@@ -63,7 +74,7 @@
       const id = `mdviewer-mermaid-${counter++}`;
       try {
         const { svg } = await window.mermaid.render(id, source, host);
-        return pinSvgSize(svg);
+        return normalizeSvg(svg);
       } finally {
         host.innerHTML = '';
       }
