@@ -1340,15 +1340,21 @@
   }
 
   // Toggles toolbar/preview affordances that only make sense for one file
-  // kind (e.g. JSON/plain-text views need the preview body's prose
-  // max-width lifted so wide content (JSON columns, long log lines) has
+  // kind (e.g. non-prose views need the preview body's prose max-width
+  // lifted so wide content — JSON columns, long log lines, a diagram — has
   // room instead of being squeezed). The refresh button applies to any open
   // file, so it only depends on whether one is open at all.
   function updateFileKindUI() {
     el.instantViewBadge.classList.toggle('hidden', !state.instantViewPath);
     el.btnRefreshPuml.classList.toggle('hidden', !state.currentFilePath);
     el.btnFullscreen.classList.toggle('hidden', !state.currentFilePath);
-    const isWideView = state.currentFileKind === 'json' || state.currentFileKind === 'text';
+    // A .puml document is one diagram and nothing else: the prose reading
+    // width would only make it scroll inside a narrow column while the
+    // window sits half empty next to it.
+    const isWideView =
+      state.currentFileKind === 'json' ||
+      state.currentFileKind === 'text' ||
+      state.currentFileKind === 'puml';
     el.frame.contentDocument.body.classList.toggle('wide-view', isWideView);
     // Reserve the path bar's space for the whole time a JSON file is open
     // (even before any node has been clicked), so clicking the first node

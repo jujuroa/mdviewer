@@ -28,9 +28,9 @@ body.markdown-body {
   word-wrap: break-word;
 }
 
-/* Non-prose views (JSON tree, plain text) need real horizontal room — long
-   log lines, wide JSON key/value columns — rather than being squeezed into
-   the 900px prose reading width. */
+/* Non-prose views (JSON tree, plain text, a .puml document's diagram) need
+   real horizontal room — long log lines, wide JSON key/value columns, a wide
+   diagram — rather than being squeezed into the 900px prose reading width. */
 body.markdown-body.wide-view {
   max-width: none;
   padding: 16px 24px 60px;
