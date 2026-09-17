@@ -363,6 +363,7 @@
     // editor (see updateEditorMirror). 'selectionchange' covers dragging,
     // double-click-to-select and keyboard selection alike.
     doc.addEventListener('selectionchange', updateEditorMirror);
+    doc.addEventListener('contextmenu', onPreviewContextMenu);
     doc.addEventListener('mousedown', onPumlPanStart);
     doc.addEventListener('mousemove', onPumlPanMove);
     doc.addEventListener('mouseup', onPumlPanEnd);
@@ -2447,6 +2448,120 @@
     else navigateForward();
   }
   window.addEventListener('mouseup', onMouseNavButton);
+
+
+  // ---------------------------------------------------------------------
+  // Viewer context menu (copy text / copy an image)
+  //
+  // Right-clicking the preview offers "copy" for the selected text and
+  // "copy as image" for any image under the pointer — a rendered PlantUML
+  // or mermaid diagram, or a picture the document pulled in with
+  // `![](...)`, including an .svg file. What was right-clicked is
+  // remembered here because the menu is native: the click on an item comes
+  // back as an IPC message long after the contextmenu event is over (see
+  // viewer:show-context-menu in main.js).
+  // ---------------------------------------------------------------------
+
+  // Vector images are rasterised at twice their laid-out size so a pasted
+  // diagram still looks sharp in a document or a chat window, up to a sane
+  // pixel budget (a full-page PlantUML diagram can be thousands of pixels
+  // wide). Photos and screenshots are never scaled — see copyImageSource in
+  // main.js, which copies their own pixels instead.
+  const IMAGE_COPY_SCALE = 2;
+  const IMAGE_COPY_MAX_PIXELS = 16e6;
+
+  let contextMenuSelection = '';
+  let contextMenuImageSrc = '';
+
+  function onPreviewContextMenu(e) {
+    const doc = el.frame.contentDocument;
+    const selection = doc ? doc.getSelection() : null;
+    const selectedText = selection && !selection.isCollapsed ? selection.toString() : '';
+    // Any image counts, and a click anywhere on a diagram's card (its
+    // padding, its zoom controls' row) counts as a click on the diagram.
+    const target = e.target.closest ? e.target : null;
+    const diagram = target ? target.closest('.plantuml-diagram, .mermaid-diagram') : null;
+    const image =
+      (target && target.closest('img')) || (diagram ? diagram.querySelector('img') : null);
+
+    contextMenuSelection = selectedText.trim() ? selectedText : '';
+    contextMenuImageSrc = image ? image.src : '';
+    if (!contextMenuSelection && !contextMenuImageSrc) return;
+
+    e.preventDefault();
+    window.mdviewer.showViewerContextMenu({
+      hasSelection: !!contextMenuSelection,
+      hasImage: !!contextMenuImageSrc,
+    });
+  }
+
+  // Draws an SVG into a canvas and puts the resulting PNG on the clipboard:
+  // an SVG on the clipboard is useless to most applications, and
+  // nativeImage can't read one anyway. The image is re-created in this
+  // document rather than reusing the iframe's element so the drawing doesn't
+  // depend on the other document's decode state.
+  async function copyImageAsBitmap(src) {
+    const image = new Image();
+    image.src = src;
+    await image.decode();
+    const width = image.naturalWidth;
+    const height = image.naturalHeight;
+    if (!width || !height) throw new Error('image has no size');
+
+    const budgeted = Math.sqrt(IMAGE_COPY_MAX_PIXELS / (width * height));
+    const scale = Math.max(1, Math.min(IMAGE_COPY_SCALE, budgeted));
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.round(width * scale);
+    canvas.height = Math.round(height * scale);
+    const ctx = canvas.getContext('2d');
+    // Diagrams are drawn for the preview's white card and have no
+    // background of their own; on the clipboard there is no page behind
+    // them, so paint one in.
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
+
+    const result = await window.mdviewer.clipboardWriteImage(canvas.toDataURL('image/png'));
+    if (!result || !result.ok) throw new Error((result && result.error) || 'clipboard write failed');
+  }
+
+  // Diagrams arrive as an SVG data URL, which this document can rasterise
+  // itself. Anything the document imported (file:// or http(s)) has to go
+  // through the main process: a canvas that has drawn such an image cannot
+  // be read back, and a photo belongs on the clipboard as its own pixels
+  // rather than re-encoded. An imported .svg comes back as a data URL to be
+  // rasterised here after all.
+  async function copyImageUnderPointer(src) {
+    if (src.startsWith('data:')) {
+      if (/^data:image\/svg\+xml/i.test(src)) {
+        await copyImageAsBitmap(src);
+        return;
+      }
+      const result = await window.mdviewer.clipboardWriteImage(src);
+      if (!result || !result.ok) throw new Error((result && result.error) || 'clipboard write failed');
+      return;
+    }
+    const result = await window.mdviewer.copyImageSource(src);
+    if (result && result.svgDataUrl) {
+      await copyImageAsBitmap(result.svgDataUrl);
+      return;
+    }
+    if (!result || !result.ok) throw new Error((result && result.error) || 'copy failed');
+  }
+
+  window.mdviewer.onViewerCopySelection(() => {
+    if (contextMenuSelection) window.mdviewer.clipboardWriteText(contextMenuSelection);
+  });
+
+  window.mdviewer.onViewerCopyImage(async () => {
+    if (!contextMenuImageSrc) return;
+    try {
+      await copyImageUnderPointer(contextMenuImageSrc);
+      setToolbarStatus(t('context.imageCopied'));
+    } catch (err) {
+      setToolbarStatus(t('context.imageCopyFailed', { error: err.message }));
+    }
+  });
 
   // ---------------------------------------------------------------------
   // Find in document (Ctrl+F)

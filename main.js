@@ -1,4 +1,6 @@
-const { app, BrowserWindow, ipcMain, dialog, shell, Menu, clipboard, nativeTheme } = require('electron');
+const {
+  app, BrowserWindow, ipcMain, dialog, shell, Menu, clipboard, nativeImage, nativeTheme, net,
+} = require('electron');
 const path = require('path');
 const fs = require('fs');
 const { spawn } = require('child_process');
@@ -1986,6 +1988,88 @@ ipcMain.handle('term:resize', (event, cols, rows) => {
 ipcMain.handle('term:stop', (event) => {
   killTerminal(event.sender.id);
   return { ok: true };
+});
+
+// The viewer's own context menu: copy the selected text, or copy a diagram
+// as an image. Only the items that apply to what was right-clicked are
+// built, and each one hands the work back to the renderer, which is where
+// the selection and the diagram's <img> actually are.
+ipcMain.handle('viewer:show-context-menu', (event, payload) => {
+  const win = BrowserWindow.fromWebContents(event.sender);
+  if (!win) return { ok: false };
+  const items = [];
+  if (payload && payload.hasSelection) {
+    items.push({
+      label: t('context.copy'),
+      click: () => win.webContents.send('viewer:copy-selection'),
+    });
+  }
+  if (payload && payload.hasImage) {
+    items.push({
+      label: t('context.copyImage'),
+      click: () => win.webContents.send('viewer:copy-image'),
+    });
+  }
+  if (items.length === 0) return { ok: false };
+  Menu.buildFromTemplate(items).popup({ window: win });
+  return { ok: true };
+});
+
+// Diagrams are SVG, which nativeImage cannot read — the renderer rasterises
+// them to a PNG data URL first (see copyImageAsBitmap in renderer.js).
+ipcMain.handle('clipboard:write-image', (event, pngDataUrl) => {
+  try {
+    const image = nativeImage.createFromDataURL(pngDataUrl);
+    if (image.isEmpty()) return { ok: false, error: 'image could not be read' };
+    clipboard.writeImage(image);
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
+function filePathFromUrl(fileUrl) {
+  const withoutScheme = fileUrl.replace(/^file:\/\//, '');
+  const decoded = decodeURI(withoutScheme);
+  // A Windows path comes back as /D:/docs/a.png; a UNC one as //host/share.
+  return /^\/[a-zA-Z]:/.test(decoded) ? decoded.slice(1) : decoded;
+}
+
+async function readImageSource(src) {
+  if (src.startsWith('file://')) {
+    const filePath = filePathFromUrl(src);
+    return { bytes: await fs.promises.readFile(filePath), name: path.basename(filePath) };
+  }
+  if (/^https?:\/\//i.test(src)) {
+    const response = await net.fetch(src);
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    return { bytes: Buffer.from(await response.arrayBuffer()), name: src };
+  }
+  throw new Error('unsupported image source');
+}
+
+// Copies an image the document pulled in from somewhere else — a file on
+// disk, or an http(s) URL. It is read here rather than in the renderer
+// because a canvas that has drawn a file:// or cross-origin image cannot be
+// read back (it is tainted), and because a photo or screenshot should land
+// on the clipboard as its own pixels rather than being re-encoded.
+//
+// An SVG is the exception: nothing can put one on the clipboard usefully, so
+// it goes back to the renderer as a data URL to be rasterised like a diagram.
+ipcMain.handle('image:copy-source', async (event, src) => {
+  try {
+    const { bytes, name } = await readImageSource(src);
+    const looksLikeSvg = /\.svg($|[?#])/i.test(name) || /^\s*(<\?xml|<svg)/i.test(bytes.slice(0, 200).toString('utf-8'));
+    if (looksLikeSvg) {
+      return { ok: true, svgDataUrl: `data:image/svg+xml;base64,${bytes.toString('base64')}` };
+    }
+    const image = nativeImage.createFromBuffer(bytes);
+    if (image.isEmpty()) return { ok: false, error: 'unsupported image format' };
+    clipboard.writeImage(image);
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
 });
 
 ipcMain.handle('clipboard:write-text', (event, text) => {
