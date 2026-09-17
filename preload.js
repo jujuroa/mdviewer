@@ -116,6 +116,7 @@ contextBridge.exposeInMainWorld('mdviewer', {
     return () => ipcRenderer.removeListener('window:fullscreen-changed', listener);
   },
   onNavBack: (callback) => ipcRenderer.on('mdviewer:nav-back', callback),
+  onNavForward: (callback) => ipcRenderer.on('mdviewer:nav-forward', callback),
 
   onTerminalData: (callback) => {
     const listener = (event, data) => callback(data);

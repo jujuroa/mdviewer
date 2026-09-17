@@ -1167,15 +1167,18 @@ function createWindow() {
   mainWindow.loadFile(path.join(__dirname, 'src', 'index.html'));
   buildAppMenu();
 
-  // Mouse "back" button (Windows: XButton1) — the app has no real
-  // browser-style navigation for webContents.goBack() to operate on (every
-  // document switch is a same-page innerHTML swap, not a page load), so
-  // intercept the OS-level command here and hand it to the renderer's own
-  // navigation-history logic instead of leaving it unhandled.
+  // Mouse "back"/"forward" buttons (Windows: XButton1/XButton2) — the app
+  // has no real browser-style navigation for webContents.goBack() to operate
+  // on (every document switch is a same-page innerHTML swap, not a page
+  // load), so intercept the OS-level commands here and hand them to the
+  // renderer's own navigation history instead of leaving them unhandled.
   mainWindow.on('app-command', (event, cmd) => {
     if (cmd === 'browser-backward') {
       event.preventDefault();
       mainWindow.webContents.send('mdviewer:nav-back');
+    } else if (cmd === 'browser-forward') {
+      event.preventDefault();
+      mainWindow.webContents.send('mdviewer:nav-forward');
     }
   });
 

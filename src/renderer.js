@@ -15,15 +15,21 @@
     scrollPositions: {},
     scrollDebounceTimer: null,
     suppressScrollSync: false,
-    // Custom back-navigation (see navigateBack): docHistoryStack holds the
-    // documents visited before the current one; scrollJumpStack holds
-    // pre-jump scroll offsets for same-document anchor jumps (TOC/§-ref/
-    // in-page links) made within the *current* document. Back pops the
-    // scroll stack first, and only falls back to switching documents once
-    // it's empty.
+    // Custom back/forward navigation (see navigateBack and
+    // navigateForward): docHistoryStack holds the documents visited before
+    // the current one and docForwardStack the ones stepped back out of;
+    // scrollJumpStack holds pre-jump scroll offsets for same-document anchor
+    // jumps (TOC/§-ref/in-page links) made within the *current* document,
+    // and scrollForwardStack the jump targets stepped back out of. Back pops
+    // the scroll stack first and only falls back to switching documents once
+    // it's empty; forward mirrors that. As in a browser, any navigation that
+    // isn't itself a back/forward step drops the forward trail.
     docHistoryStack: [],
+    docForwardStack: [],
     scrollJumpStack: [],
+    scrollForwardStack: [],
     navigatingBack: false,
+    navigatingForward: false,
     customTextExtensions: [],
     activeRequestId: null,
     baseCss: '',
@@ -356,12 +362,12 @@
     doc.addEventListener('mouseup', onPumlPanEnd);
     doc.addEventListener('mouseleave', onPumlPanEnd);
 
-    // Mouse "back" button — see the window-level listener further down for
+    // Mouse "back"/"forward" buttons — see the window-level listener
     // why this is also bound here: the iframe is a separate browsing
     // context, so a plain `window.addEventListener` on the outer document
     // never sees mouse events that occur while the cursor is over the
     // preview.
-    doc.addEventListener('mouseup', onMouseBackButton);
+    doc.addEventListener('mouseup', onMouseNavButton);
 
     // Debounced scroll-position tracking, so re-opening a file later can
     // restore where the reader left off (see loadAndRenderFile).
@@ -825,7 +831,9 @@
     state.currentFilePath = null;
     state.currentFileKind = 'markdown';
     state.docHistoryStack = [];
+    state.docForwardStack = [];
     state.scrollJumpStack = [];
+    state.scrollForwardStack = [];
     updateFileKindUI();
 
     // Restart the shell in the newly opened project's folder so its cwd
@@ -1323,7 +1331,9 @@
   // outgoing document's scroll offset (as captureScrollPosition always
   // did), and — unless this switch is itself a navigateBack() call — records
   // the outgoing document on the back-navigation stack so mouse-back can
-  // return to it. Any pending same-document anchor-jump history belongs to
+  // return to it. A switch that is neither a back nor a forward step is a
+  // new move, so it drops whatever was ahead, exactly as opening a page in a
+  // browser does. Any pending same-document anchor-jump history belongs to
   // the document being left, so it's cleared here rather than carried over.
   function beginDocumentNavigation(nextFilePath) {
     // Every loadAndRender* entry point comes through here, so consuming the
@@ -1336,7 +1346,11 @@
     if (!state.navigatingBack && state.currentFilePath && state.currentFilePath !== nextFilePath) {
       state.docHistoryStack.push(state.currentFilePath);
     }
+    if (!state.navigatingBack && !state.navigatingForward) {
+      state.docForwardStack = [];
+    }
     state.scrollJumpStack = [];
+    state.scrollForwardStack = [];
   }
 
   // Toggles toolbar/preview affordances that only make sense for one file
@@ -1486,16 +1500,20 @@
   // the mouseup listeners below, for the Windows XButton1 "back" button).
   // Undoes same-document anchor jumps (TOC/§-ref/in-page links) one at a
   // time — see pushScrollJumpHistory — before falling back to switching to
-  // whichever document was open right before the current one.
+  // whichever document was open right before the current one. Every step it
+  // takes is recorded so navigateForward can retrace it.
   async function navigateBack() {
+    const win = el.frame.contentWindow;
     if (state.scrollJumpStack.length > 0) {
       const y = state.scrollJumpStack.pop();
+      if (win) state.scrollForwardStack.push(win.scrollY);
       el.frame.contentWindow.scrollTo(0, y);
       return;
     }
     if (state.docHistoryStack.length === 0) return;
     if (!(await guardNavigation())) return;
     const prevPath = state.docHistoryStack.pop();
+    if (state.currentFilePath) state.docForwardStack.push(state.currentFilePath);
     state.navigatingBack = true;
     try {
       await loadAndRenderByPath(prevPath);
@@ -1505,12 +1523,40 @@
     }
   }
 
+  // The other direction (XButton2 / 'browser-forward'), retracing what
+  // navigateBack stepped out of, most recent step first. The flag is what
+  // keeps beginDocumentNavigation from treating this as a new move and
+  // throwing away the rest of the forward trail — while still letting it
+  // record the document being left, so back keeps working from here.
+  async function navigateForward() {
+    const win = el.frame.contentWindow;
+    if (state.scrollForwardStack.length > 0) {
+      const y = state.scrollForwardStack.pop();
+      if (win) state.scrollJumpStack.push(win.scrollY);
+      el.frame.contentWindow.scrollTo(0, y);
+      return;
+    }
+    if (state.docForwardStack.length === 0) return;
+    if (!(await guardNavigation())) return;
+    const nextPath = state.docForwardStack.pop();
+    state.navigatingForward = true;
+    try {
+      await loadAndRenderByPath(nextPath);
+      await revealPathInTree(nextPath, { select: true });
+    } finally {
+      state.navigatingForward = false;
+    }
+  }
+
   // Records where the viewer was scrolled to before an in-document anchor
   // jump (TOC click, §-ref link, in-content "#hash" link), so navigateBack
-  // can undo it. Call this immediately before performing the jump.
+  // can undo it. Call this immediately before performing the jump — which is
+  // a new move, so anything the forward trail was still holding goes.
   function pushScrollJumpHistory() {
     const win = el.frame.contentWindow;
     if (win) state.scrollJumpStack.push(win.scrollY);
+    state.scrollForwardStack = [];
+    state.docForwardStack = [];
   }
 
   // Re-renders the current PlantUML diagram from the given source text
@@ -2239,19 +2285,20 @@
     }
   });
 
-  // Mouse "back" button. main.js's 'app-command' listener catches the
-  // Windows-level XButton1 command; the mouseup listeners here are a
-  // fallback for whenever that command doesn't fire (e.g. some non-Windows
-  // mouse/OS combinations still deliver a plain DOM button-3 mouseup). Both
-  // routes converge on the same navigateBack().
+  // Mouse "back"/"forward" buttons. main.js's 'app-command' listener
+  // catches the Windows-level XButton1/XButton2 commands; the mouseup
+  // listeners here are a fallback for whenever those don't fire (e.g. some
+  // non-Windows mouse/OS combinations still deliver a plain DOM button-3 /
+  // button-4 mouseup). Both routes converge on the same navigate* calls.
   window.mdviewer.onNavBack(() => navigateBack());
-  function onMouseBackButton(e) {
-    if (e.button === 3) {
-      e.preventDefault();
-      navigateBack();
-    }
+  window.mdviewer.onNavForward(() => navigateForward());
+  function onMouseNavButton(e) {
+    if (e.button !== 3 && e.button !== 4) return;
+    e.preventDefault();
+    if (e.button === 3) navigateBack();
+    else navigateForward();
   }
-  window.addEventListener('mouseup', onMouseBackButton);
+  window.addEventListener('mouseup', onMouseNavButton);
 
   // ---------------------------------------------------------------------
   // Find in document (Ctrl+F)
