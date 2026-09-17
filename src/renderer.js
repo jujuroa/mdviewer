@@ -2189,25 +2189,34 @@
     return [spanStart, spanEnd];
   }
 
-  // The layer holds the editor's exact text, with the marked slice wrapped
-  // so only its background shows (the text itself is transparent — the real
-  // glyphs come from the textarea sitting on top).
-  function renderEditorMirror(range) {
+  // The layer holds the editor's exact text with the given slices wrapped,
+  // so only their background shows (the text itself is transparent — the
+  // real glyphs come from the textarea sitting on top). `mode` picks the
+  // colour: the viewer-selection mirror and find hits look different (see
+  // ui.css), and `current` is the find hit the user is standing on.
+  function renderEditorMarks(mode, ranges, currentIndex) {
     const layer = el.editorHighlight;
-    if (!range) {
-      layer.textContent = '';
-      return;
-    }
-    const value = el.mdSourceEditor.value;
-    const start = Math.max(0, Math.min(range[0], value.length));
-    const end = Math.max(start, Math.min(range[1], value.length));
+    layer.dataset.mode = mode;
     layer.textContent = '';
-    layer.appendChild(document.createTextNode(value.slice(0, start)));
-    const mark = document.createElement('mark');
-    mark.textContent = value.slice(start, end);
-    layer.appendChild(mark);
-    layer.appendChild(document.createTextNode(value.slice(end)));
+    if (!ranges.length) return;
+    const value = el.mdSourceEditor.value;
+    let cursor = 0;
+    ranges.forEach(([rawStart, rawEnd], i) => {
+      const start = Math.max(cursor, Math.min(rawStart, value.length));
+      const end = Math.max(start, Math.min(rawEnd, value.length));
+      if (start > cursor) layer.appendChild(document.createTextNode(value.slice(cursor, start)));
+      const mark = document.createElement('mark');
+      if (i === currentIndex) mark.className = 'current';
+      mark.textContent = value.slice(start, end);
+      layer.appendChild(mark);
+      cursor = end;
+    });
+    if (cursor < value.length) layer.appendChild(document.createTextNode(value.slice(cursor)));
     syncEditorMirrorScroll();
+  }
+
+  function renderEditorMirror(range) {
+    renderEditorMarks('mirror', range ? [range] : [], -1);
   }
 
   function syncEditorMirrorScroll() {
@@ -2223,10 +2232,9 @@
     editorMirrorQueued = true;
     requestAnimationFrame(() => {
       editorMirrorQueued = false;
-      if (!splitViewActive()) {
-        renderEditorMirror(null);
-        return;
-      }
+      // Find-in-source owns the layer while it is open; a stray selection
+      // in the viewer must not wipe its hits.
+      if (!splitViewActive() || editorFindActive()) return;
       renderEditorMirror(sourceRangeForViewerSelection());
     });
   }
@@ -2254,7 +2262,11 @@
   function setEditModeUI(enabled) {
     el.editorPane.classList.toggle('hidden', !enabled);
     el.editorResizer.classList.toggle('hidden', !enabled);
-    if (!enabled) renderEditorMirror(null);
+    if (!enabled) {
+      // There is no source pane left to search or to mark.
+      if (editorFindActive()) closeFindBar();
+      renderEditorMirror(null);
+    }
     el.btnToggleEdit.classList.toggle('active', enabled);
     el.btnSaveSource.classList.toggle('hidden', !enabled);
   }
@@ -2385,7 +2397,13 @@
     ta.dispatchEvent(new Event('input', { bubbles: true }));
   });
 
-  el.mdSourceEditor.addEventListener('input', () => renderEditorMirror(null));
+  el.mdSourceEditor.addEventListener('input', () => {
+    // Editing moves every offset after the caret, so a stale mark would
+    // point at the wrong text: re-scan while find-in-source is open, and
+    // otherwise just drop the selection mirror.
+    if (editorFindActive()) runEditorFind();
+    else renderEditorMirror(null);
+  });
 
   el.mdSourceEditor.addEventListener('keydown', (e) => {
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
@@ -2446,6 +2464,9 @@
 
   let docFindMatches = [];
   let docFindIndex = -1;
+  // Which text the find bar is acting on: 'viewer' (the rendered document)
+  // or 'editor' (the markdown source). See openFindBar.
+  let findTarget = 'viewer';
 
   function clearDocFindHighlights() {
     const doc = el.frame.contentDocument;
@@ -2554,17 +2575,17 @@
   }
 
   function updateFindCountUI() {
-    if (!docFindMatches.length) {
+    const editorMode = findTarget === 'editor';
+    const total = editorMode ? editorFindMatches.length : docFindMatches.length;
+    const index = editorMode ? editorFindIndex : docFindIndex;
+    if (!total) {
       const hasQuery = !!el.findInput.value;
       el.findCount.classList.toggle('no-results', hasQuery);
       el.findCount.textContent = hasQuery ? t('find.noResults') : '';
       return;
     }
     el.findCount.classList.remove('no-results');
-    el.findCount.textContent = t('find.matchCount', {
-      current: docFindIndex + 1,
-      total: docFindMatches.length,
-    });
+    el.findCount.textContent = t('find.matchCount', { current: index + 1, total });
   }
 
   function gotoDocFindMatch(index) {
@@ -2602,33 +2623,179 @@
     gotoDocFindMatch((docFindIndex + delta + docFindMatches.length) % docFindMatches.length);
   }
 
+
+  // ---------------------------------------------------------------------
+  // Find in the source editor (Ctrl+F with the caret in the editor)
+  //
+  // Ctrl+F searches whatever the user is looking at: the rendered document
+  // normally, and the markdown source when the caret is in the editor —
+  // where searching the rendering would be the wrong text (you cannot find
+  // `**bold**` or a link's URL in it). Both modes share the one find bar;
+  // findTarget says which text the bar's input, Enter and next/prev act on.
+  //
+  // Hits are painted on the editor's highlight layer (the same one the
+  // viewer-selection mirror uses) rather than through the textarea's own
+  // selection, which isn't drawn at all while the focus sits in the find
+  // input. The layer also gives exact match positions — offsetTop accounts
+  // for wrapped lines, which a line-height estimate cannot.
+  // ---------------------------------------------------------------------
+
+  let editorFindMatches = [];
+  let editorFindIndex = -1;
+  // Where the caret was when the bar opened, so the first hit shown is the
+  // next one from there rather than always the top of the file.
+  let editorFindOrigin = 0;
+
+  function editorFindActive() {
+    return findTarget === 'editor' && !el.findBar.classList.contains('hidden');
+  }
+
+  function clearEditorFind() {
+    editorFindMatches = [];
+    editorFindIndex = -1;
+    renderEditorMarks('mirror', [], -1);
+  }
+
+  function scrollEditorToCurrentFind() {
+    const markEl = el.editorHighlight.querySelector('mark.current');
+    if (!markEl) return;
+    const ta = el.mdSourceEditor;
+    const top = markEl.offsetTop;
+    const bottom = top + markEl.offsetHeight;
+    const margin = getEditorLineHeight() * 2;
+    if (top < ta.scrollTop + margin || bottom > ta.scrollTop + ta.clientHeight - margin) {
+      ta.scrollTop = Math.max(0, top - ta.clientHeight / 2);
+    }
+    syncEditorMirrorScroll();
+  }
+
+  function gotoEditorFindMatch(index) {
+    editorFindIndex = index;
+    renderEditorMarks('find', editorFindMatches, editorFindIndex);
+    const match = editorFindMatches[editorFindIndex];
+    if (match) {
+      // Left on the textarea as well: it is invisible while the find input
+      // has the focus, but it means closing the bar leaves the caret on the
+      // hit the user stopped at.
+      el.mdSourceEditor.setSelectionRange(match[0], match[1]);
+      scrollEditorToCurrentFind();
+    }
+    updateFindCountUI();
+  }
+
+  function runEditorFind() {
+    editorFindMatches = [];
+    editorFindIndex = -1;
+    const query = el.findInput.value;
+    if (!query) {
+      clearEditorFind();
+      updateFindCountUI();
+      return;
+    }
+    const value = el.mdSourceEditor.value;
+    const haystack = value.toLowerCase();
+    const needle = query.toLowerCase();
+    let at = haystack.indexOf(needle);
+    while (at !== -1) {
+      editorFindMatches.push([at, at + query.length]);
+      at = haystack.indexOf(needle, at + query.length);
+    }
+    if (!editorFindMatches.length) {
+      clearEditorFind();
+      updateFindCountUI();
+      return;
+    }
+    const fromCaret = editorFindMatches.findIndex(([start]) => start >= editorFindOrigin);
+    gotoEditorFindMatch(fromCaret === -1 ? 0 : fromCaret);
+  }
+
+  function stepEditorFind(delta) {
+    if (!editorFindMatches.length) {
+      runEditorFind();
+      return;
+    }
+    gotoEditorFindMatch(
+      (editorFindIndex + delta + editorFindMatches.length) % editorFindMatches.length
+    );
+  }
+
+  function runFind() {
+    if (findTarget === 'editor') runEditorFind();
+    else runDocFind();
+  }
+
+  function stepFind(delta) {
+    if (findTarget === 'editor') stepEditorFind(delta);
+    else stepDocFind(delta);
+  }
+
+  function setFindTarget(target) {
+    if (findTarget === target) return;
+    // Leave nothing of the old mode behind: its highlights live in a
+    // different place (the viewer's DOM vs. the editor's layer).
+    if (findTarget === 'editor') clearEditorFind();
+    else {
+      clearDocFindHighlights();
+      docFindMatches = [];
+      docFindIndex = -1;
+    }
+    findTarget = target;
+    el.findInput.placeholder = t(target === 'editor' ? 'find.placeholderEditor' : 'find.placeholder');
+  }
+
   function openFindBar() {
+    // Ctrl+F searches wherever the caret is: the source when it's in the
+    // editor, the rendered document otherwise. Pressing it again while the
+    // bar is already open (so the focus is in its input) keeps the mode.
+    const wasOpen = !el.findBar.classList.contains('hidden');
+    if (splitViewActive() && document.activeElement === el.mdSourceEditor) {
+      editorFindOrigin = el.mdSourceEditor.selectionStart || 0;
+      const selected = el.mdSourceEditor.value.slice(
+        el.mdSourceEditor.selectionStart,
+        el.mdSourceEditor.selectionEnd
+      );
+      setFindTarget('editor');
+      // An editor's find seeds itself from what's selected, if that is a
+      // plain one-line stretch of text.
+      if (selected && !selected.includes('\n')) el.findInput.value = selected;
+    } else if (!wasOpen) {
+      setFindTarget('viewer');
+    }
+
     el.findBar.classList.remove('hidden');
     el.findInput.focus();
     el.findInput.select();
-    if (el.findInput.value) runDocFind();
+    if (el.findInput.value) runFind();
+    else updateFindCountUI();
   }
 
   function closeFindBar() {
     el.findBar.classList.add('hidden');
+    if (findTarget === 'editor') {
+      const match = editorFindMatches[editorFindIndex];
+      clearEditorFind();
+      // Hand the editor back with the caret on the hit that was showing.
+      el.mdSourceEditor.focus();
+      if (match) el.mdSourceEditor.setSelectionRange(match[0], match[1]);
+    }
     clearDocFindHighlights();
     docFindMatches = [];
     docFindIndex = -1;
     updateFindCountUI();
   }
 
-  el.findInput.addEventListener('input', runDocFind);
+  el.findInput.addEventListener('input', runFind);
   el.findInput.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') {
       e.preventDefault();
-      stepDocFind(e.shiftKey ? -1 : 1);
+      stepFind(e.shiftKey ? -1 : 1);
     } else if (e.key === 'Escape') {
       e.preventDefault();
       closeFindBar();
     }
   });
-  el.findPrev.addEventListener('click', () => stepDocFind(-1));
-  el.findNext.addEventListener('click', () => stepDocFind(1));
+  el.findPrev.addEventListener('click', () => stepFind(-1));
+  el.findNext.addEventListener('click', () => stepFind(1));
   el.findClose.addEventListener('click', closeFindBar);
 
   window.mdviewer.onMenuToggleFind(openFindBar);
@@ -2895,6 +3062,10 @@
     const literal = match.text.slice(match.ranges[0][0], match.ranges[0][1]);
     if (!literal) return;
 
+    // A project-search hit is always a hit in the rendered document, so
+    // this opens the bar on the viewer even if it was last used on the
+    // source.
+    setFindTarget('viewer');
     el.findBar.classList.remove('hidden');
     el.findInput.value = literal;
     runDocFind();

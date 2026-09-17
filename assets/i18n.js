@@ -88,6 +88,7 @@ const STRINGS = {
     'fullscreen.hint': 'Press Esc or F11 to exit fullscreen',
 
     'find.placeholder': 'Find in document',
+    'find.placeholderEditor': 'Find in source',
     'find.noResults': 'No results',
     'find.matchCount': '{current}/{total}',
     'find.prevTitle': 'Previous match (Shift+Enter)',
@@ -287,6 +288,7 @@ const STRINGS = {
     'fullscreen.hint': 'Esc 또는 F11을 누르면 전체화면이 종료됩니다',
 
     'find.placeholder': '문서 내 찾기',
+    'find.placeholderEditor': '소스에서 찾기',
     'find.noResults': '검색 결과 없음',
     'find.matchCount': '{current}/{total}',
     'find.prevTitle': '이전 항목 (Shift+Enter)',

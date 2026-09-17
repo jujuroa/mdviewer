@@ -781,13 +781,25 @@ html, body {
   user-select: none;
 }
 
+#editor-highlight mark {
+  border-radius: 2px;
+  color: transparent;
+}
+
 /* Where the viewer's selection lands in the source. Deliberately not the
    colour of a text selection: this marks a spot, it isn't something the
    editor itself has selected. */
-#editor-highlight mark {
+#editor-highlight[data-mode="mirror"] mark {
   background: rgba(78, 201, 176, 0.32);
-  border-radius: 2px;
-  color: transparent;
+}
+
+/* Find-in-source hits, in the same amber the viewer's find uses, so the two
+   find modes read as the same feature. */
+#editor-highlight[data-mode="find"] mark {
+  background: rgba(255, 213, 79, 0.25);
+}
+#editor-highlight[data-mode="find"] mark.current {
+  background: rgba(255, 152, 0, 0.55);
 }
 
 #editor-resizer.hidden { display: none; }
