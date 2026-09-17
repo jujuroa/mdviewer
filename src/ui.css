@@ -726,26 +726,69 @@ html, body {
 }
 .preview-body.hidden { display: none; }
 
-#md-source-editor {
+/* The editor is a textarea over a highlight layer that mirrors its text
+   exactly (see renderEditorMirror in renderer.js): a textarea can't paint a
+   highlight of its own, and its native selection isn't even drawn while the
+   focus is in the viewer. Every property that affects where a glyph lands —
+   font, size, line-height, padding, tab-size, wrapping — must therefore be
+   identical on both, which is why they are declared together. */
+#editor-pane {
+  position: relative;
   flex: 0 0 auto;
   width: 50%;
   min-width: 160px;
   max-width: calc(100% - 160px);
-  resize: none;
-  border: none;
-  outline: none;
+  /* Always dark, regardless of the app's light/dark theme (like a code editor). */
+  background: #1e1e1e;
+  overflow: hidden;
+}
+#editor-pane.hidden { display: none; }
+
+#md-source-editor,
+#editor-highlight {
   padding: 16px 20px;
   font-family: "D2Coding", "D2Coding ligature", Consolas, "Cascadia Mono", "Cascadia Code",
     "SFMono-Regular", Menlo, monospace;
   font-size: 13px;
   line-height: 1.6;
-  /* Always dark, regardless of the app's light/dark theme (like a code editor). */
-  background: #1e1e1e;
+  tab-size: 2;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  word-break: normal;
+}
+
+#md-source-editor {
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  height: 100%;
+  resize: none;
+  border: none;
+  outline: none;
+  /* Transparent so the highlight layer underneath shows through. */
+  background: transparent;
   color: #d4d4d4;
   caret-color: #d4d4d4;
-  tab-size: 2;
 }
-#md-source-editor.hidden { display: none; }
+
+#editor-highlight {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  overflow: hidden;
+  color: transparent;
+  pointer-events: none;
+  user-select: none;
+}
+
+/* Where the viewer's selection lands in the source. Deliberately not the
+   colour of a text selection: this marks a spot, it isn't something the
+   editor itself has selected. */
+#editor-highlight mark {
+  background: rgba(78, 201, 176, 0.32);
+  border-radius: 2px;
+  color: transparent;
+}
 
 #editor-resizer.hidden { display: none; }
 
@@ -1547,7 +1590,7 @@ html, body {
 #app-shell.doc-fullscreen #terminal-panel,
 #app-shell.doc-fullscreen #resizer-terminal,
 #app-shell.doc-fullscreen .preview-toolbar,
-#app-shell.doc-fullscreen #md-source-editor,
+#app-shell.doc-fullscreen #editor-pane,
 #app-shell.doc-fullscreen #editor-resizer {
   display: none;
 }

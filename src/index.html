@@ -79,8 +79,11 @@
       <div id="json-path-bar" class="json-path-bar hidden"></div>
 
       <div id="preview-body" class="preview-body">
-        <textarea id="md-source-editor" class="hidden" spellcheck="false"
-          data-i18n-placeholder="editor.placeholder" placeholder="마크다운 소스를 입력하세요"></textarea>
+        <div id="editor-pane" class="hidden">
+          <div id="editor-highlight" aria-hidden="true"></div>
+          <textarea id="md-source-editor" spellcheck="false"
+            data-i18n-placeholder="editor.placeholder" placeholder="마크다운 소스를 입력하세요"></textarea>
+        </div>
         <div id="editor-resizer" class="resizer hidden"></div>
         <iframe id="preview-frame" class="hidden" title="markdown preview" sandbox="allow-same-origin"></iframe>
         <aside id="toc-panel" class="toc-panel hidden">

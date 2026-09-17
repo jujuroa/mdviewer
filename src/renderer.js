@@ -92,6 +92,8 @@
     treeDropTarget: document.getElementById('tree-drop-target'),
     instantViewBadge: document.getElementById('instant-view-badge'),
     mdSourceEditor: document.getElementById('md-source-editor'),
+    editorPane: document.getElementById('editor-pane'),
+    editorHighlight: document.getElementById('editor-highlight'),
     editorResizer: document.getElementById('editor-resizer'),
     btnToggleEdit: document.getElementById('btn-toggle-edit'),
     btnSaveSource: document.getElementById('btn-save-source'),
@@ -357,6 +359,10 @@
     doc.addEventListener('wheel', onPreviewWheel, { passive: false });
     doc.addEventListener('keydown', onPreviewZoomKey);
     doc.addEventListener('keydown', onFullscreenEscape);
+    // Mirrors a selection dragged out in the viewer onto the split-view
+    // editor (see updateEditorMirror). 'selectionchange' covers dragging,
+    // double-click-to-select and keyboard selection alike.
+    doc.addEventListener('selectionchange', updateEditorMirror);
     doc.addEventListener('mousedown', onPumlPanStart);
     doc.addEventListener('mousemove', onPumlPanMove);
     doc.addEventListener('mouseup', onPumlPanEnd);
@@ -1999,7 +2005,7 @@
   // ---------------------------------------------------------------------
 
   function splitViewActive() {
-    return state.editMode && !el.mdSourceEditor.classList.contains('hidden');
+    return state.editMode && !el.editorPane.classList.contains('hidden');
   }
 
   function getEditorLineHeight() {
@@ -2077,6 +2083,7 @@
 
   let viewerSyncQueued = false;
   el.mdSourceEditor.addEventListener('scroll', () => {
+    syncEditorMirrorScroll();
     if (state.suppressScrollSync || viewerSyncQueued) return;
     viewerSyncQueued = true;
     requestAnimationFrame(() => {
@@ -2104,6 +2111,126 @@
   splitViewResizeObserver.observe(el.mdSourceEditor);
   splitViewResizeObserver.observe(el.frame);
 
+
+  // ---------------------------------------------------------------------
+  // Viewer selection mirrored into the source editor
+  //
+  // Dragging out a selection in the preview marks the matching text in the
+  // split-view editor, so you can see at a glance where the rendered
+  // passage lives in the source. It is painted on a layer behind the
+  // textarea rather than being the textarea's own selection: a textarea
+  // doesn't draw its selection at all while the focus is elsewhere (which
+  // it is — the drag happened in the viewer), and hijacking the real
+  // selection would put the caret somewhere the user didn't ask for.
+  // ---------------------------------------------------------------------
+
+  function editorLineOffsets(value) {
+    const offsets = [0];
+    let at = 0;
+    for (const line of value.split('\n')) {
+      at += line.length + 1;
+      offsets.push(at);
+    }
+    return offsets;
+  }
+
+  function blockElementFor(node) {
+    if (!node) return null;
+    const element = node.nodeType === 1 ? node : node.parentElement;
+    return element ? element.closest('[data-source-line]') : null;
+  }
+
+  // Which slice of the source the viewer's current selection corresponds to.
+  // The block markers (data-source-line/-endline, see inject_source_line in
+  // main.js) only go down to block level, so the span they give is narrowed
+  // by looking for the selected text itself inside it: an exact hit for a
+  // plain-prose selection, and for a selection that crosses blocks (where
+  // the source carries markdown the rendered text doesn't) the stretch from
+  // its first line to its last.
+  function sourceRangeForViewerSelection() {
+    const doc = el.frame.contentDocument;
+    const selection = doc && doc.getSelection();
+    if (!selection || selection.isCollapsed || selection.rangeCount === 0) return null;
+    const selected = selection.toString();
+    if (!selected.trim()) return null;
+
+    const range = selection.getRangeAt(0);
+    const startBlock = blockElementFor(range.startContainer);
+    const endBlock = blockElementFor(range.endContainer) || startBlock;
+    if (!startBlock) return null;
+
+    const startLine = parseInt(startBlock.getAttribute('data-source-line'), 10);
+    if (Number.isNaN(startLine)) return null;
+    const endAttr = parseInt(endBlock.getAttribute('data-source-endline'), 10);
+    const endLine = Number.isNaN(endAttr) ? startLine + 1 : endAttr;
+
+    const value = el.mdSourceEditor.value;
+    const offsets = editorLineOffsets(value);
+    const spanStart = offsets[Math.min(startLine, offsets.length - 1)];
+    const spanEnd = Math.min(offsets[Math.min(endLine, offsets.length - 1)], value.length);
+    if (spanEnd <= spanStart) return null;
+
+    const span = value.slice(spanStart, spanEnd);
+    const exact = span.indexOf(selected);
+    if (exact !== -1) return [spanStart + exact, spanStart + exact + selected.length];
+
+    const lines = selected.split('\n').map((line) => line.trim()).filter(Boolean);
+    if (lines.length > 0) {
+      const from = span.indexOf(lines[0]);
+      const lastLine = lines[lines.length - 1];
+      const to = span.lastIndexOf(lastLine);
+      if (from !== -1 && to !== -1 && to + lastLine.length > from) {
+        return [spanStart + from, spanStart + to + lastLine.length];
+      }
+    }
+    // Nothing of the selection could be matched literally (a table cell, an
+    // image's alt text, a rendered list marker): mark the whole block, which
+    // is still the right neighbourhood.
+    return [spanStart, spanEnd];
+  }
+
+  // The layer holds the editor's exact text, with the marked slice wrapped
+  // so only its background shows (the text itself is transparent — the real
+  // glyphs come from the textarea sitting on top).
+  function renderEditorMirror(range) {
+    const layer = el.editorHighlight;
+    if (!range) {
+      layer.textContent = '';
+      return;
+    }
+    const value = el.mdSourceEditor.value;
+    const start = Math.max(0, Math.min(range[0], value.length));
+    const end = Math.max(start, Math.min(range[1], value.length));
+    layer.textContent = '';
+    layer.appendChild(document.createTextNode(value.slice(0, start)));
+    const mark = document.createElement('mark');
+    mark.textContent = value.slice(start, end);
+    layer.appendChild(mark);
+    layer.appendChild(document.createTextNode(value.slice(end)));
+    syncEditorMirrorScroll();
+  }
+
+  function syncEditorMirrorScroll() {
+    el.editorHighlight.scrollTop = el.mdSourceEditor.scrollTop;
+    el.editorHighlight.scrollLeft = el.mdSourceEditor.scrollLeft;
+  }
+
+  // Selection changes arrive in bursts while dragging, so the mapping runs
+  // at most once per frame.
+  let editorMirrorQueued = false;
+  function updateEditorMirror() {
+    if (editorMirrorQueued) return;
+    editorMirrorQueued = true;
+    requestAnimationFrame(() => {
+      editorMirrorQueued = false;
+      if (!splitViewActive()) {
+        renderEditorMirror(null);
+        return;
+      }
+      renderEditorMirror(sourceRangeForViewerSelection());
+    });
+  }
+
   // ---------------------------------------------------------------------
   // Body (source) editing
   // ---------------------------------------------------------------------
@@ -2125,8 +2252,9 @@
   }
 
   function setEditModeUI(enabled) {
-    el.mdSourceEditor.classList.toggle('hidden', !enabled);
+    el.editorPane.classList.toggle('hidden', !enabled);
     el.editorResizer.classList.toggle('hidden', !enabled);
+    if (!enabled) renderEditorMirror(null);
     el.btnToggleEdit.classList.toggle('active', enabled);
     el.btnSaveSource.classList.toggle('hidden', !enabled);
   }
@@ -2256,6 +2384,8 @@
     ta.setRangeText(`![](${result.relPath})`, ta.selectionStart, ta.selectionEnd, 'end');
     ta.dispatchEvent(new Event('input', { bubbles: true }));
   });
+
+  el.mdSourceEditor.addEventListener('input', () => renderEditorMirror(null));
 
   el.mdSourceEditor.addEventListener('keydown', (e) => {
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
@@ -2387,7 +2517,7 @@
   const EDITOR_SYNC_CONTEXT_LINES = 8;
 
   function syncEditorToDocFindMatch(mark) {
-    if (!state.editMode || el.mdSourceEditor.classList.contains('hidden')) return;
+    if (!state.editMode || el.editorPane.classList.contains('hidden')) return;
     const lineEl = mark.closest('[data-source-line]');
     if (!lineEl) return;
     const startLine = parseInt(lineEl.getAttribute('data-source-line'), 10);
@@ -3243,7 +3373,7 @@
     // Widening/narrowing the TOC panel would otherwise resize the preview
     // frame (flex:1). Steal the width from the editor pane instead, so the
     // preview stays visually fixed as long as the editor has room to give.
-    if (state.editMode && !el.mdSourceEditor.classList.contains('hidden')) {
+    if (state.editMode && !el.editorPane.classList.contains('hidden')) {
       const currentWidth = el.mdSourceEditor.getBoundingClientRect().width;
       const delta = expanding ? TOC_WIDTH_DELTA : -TOC_WIDTH_DELTA;
       const newWidth = Math.max(EDITOR_MIN_WIDTH, currentWidth - delta);
@@ -4216,7 +4346,7 @@
 
   setupResizer(el.resizerLeft, el.sidebar, 'left');
   setupResizer(el.resizerRight, el.cssPane, 'right');
-  setupResizer(el.editorResizer, el.mdSourceEditor, 'left');
+  setupResizer(el.editorResizer, el.editorPane, 'left');
   setupResizer(el.resizerTerminal, el.terminalPanel, 'bottom', () => {
     if (fitAddon) fitAddon.fit();
   });
