@@ -6,7 +6,13 @@ delete process.env.ELECTRON_RUN_AS_NODE;
 const { spawn } = require('child_process');
 const electronPath = require('electron');
 
-const child = spawn(electronPath, ['.'], {
+// Extra args after `npm start --` are forwarded to the app, so
+// `npm start -- D:\docs` opens that folder the same way the packaged
+// `mdviewer <path>` does. Relative paths resolve against the package
+// root, since that is where npm runs scripts from.
+const forwarded = process.argv.slice(2);
+
+const child = spawn(electronPath, ['.', ...forwarded], {
   stdio: 'inherit',
   env: process.env,
 });
