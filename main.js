@@ -52,21 +52,27 @@ function unregisterAbort(requestId, controller) {
   if (set.size === 0) activeRenderAborts.delete(requestId);
 }
 
+function plantumlSourceBody(source) {
+  const trimmed = source.trim();
+  return /@start\w+/i.test(trimmed) ? trimmed : `@startuml\n${trimmed}\n@enduml`;
+}
+
 // Runs java as an async child process rather than spawnSync: large/complex
 // diagrams can take java a few seconds (JVM startup + layout), and
 // spawnSync blocks the ENTIRE main process's event loop for that whole
 // time — freezing every window, menu, and IPC call in the app, not just the
 // diagram being rendered. spawn() lets the main process keep servicing
 // everything else while java runs in its own OS process.
-function renderPlantUmlSvg(source, signal) {
+//
+// This is the fallback path now (see renderPlantUmlSvg): starting a JVM per
+// diagram is what made rendering slow.
+function renderPlantUmlSvgBySpawn(body, signal) {
   const { jar, java } = plantumlRuntimePaths();
   if (!fs.existsSync(jar) || !fs.existsSync(java)) {
     return Promise.reject(new Error(
       'PlantUML runtime not found. Run "npm run prepare:plantuml" (or npm start / npm run dist, which do this automatically).'
     ));
   }
-  const trimmed = source.trim();
-  const body = /@start\w+/i.test(trimmed) ? trimmed : `@startuml\n${trimmed}\n@enduml`;
 
   return new Promise((resolve, reject) => {
     const child = spawn(java, ['-Djava.awt.headless=true', '-jar', jar, '-tsvg', '-pipe', '-charset', 'UTF-8'], { signal });
@@ -87,6 +93,210 @@ function renderPlantUmlSvg(source, signal) {
     child.stdin.write(body, 'utf-8');
     child.stdin.end();
   });
+}
+
+// ---------------------------------------------------------------------
+// PlantUML render server
+//
+// plantuml.jar can stay running as a small HTTP renderer, and reusing one
+// JVM is worth a lot here: measured on this machine, starting java and
+// opening the 29MB jar costs ~2.3s while drawing a typical diagram takes
+// ~0.3s, so the old one-JVM-per-diagram path spent most of its time
+// starting Java over and over — and a document with six diagrams started
+// six JVMs at once (~6s). Through the server the same jar returns
+// byte-identical SVG in ~15ms (~150ms for a very large diagram), and six
+// diagrams together in ~18ms.
+//
+// It is bound to 127.0.0.1 explicitly. The default is every interface,
+// which would put an unauthenticated renderer that can read local files
+// (PlantUML's !include) on the network. The `:<address>` half of the
+// option is undocumented in --help but the CLI does parse it.
+//
+// The server starts with the first diagram, not with the app, and is shut
+// down once nothing has needed it for a while — it holds ~144MB.
+// ---------------------------------------------------------------------
+
+// Kept short on purpose: the server answers in about a second, so a longer
+// wait only means a longer stall on the rare machine where it never
+// answers at all (a firewall or security product blocking a local port,
+// say) before the fallback takes over.
+const PLANTUML_SERVER_START_TIMEOUT_MS = 6000;
+const PLANTUML_SERVER_IDLE_MS = 5 * 60 * 1000;
+// After a failure, stop paying the startup wait on every diagram: render
+// through the fallback and try the server again later, backing off if it
+// keeps failing. A machine where it never works (a security product
+// blocking local ports) then stalls once in a while rather than on every
+// document, and a one-off hiccup recovers within the minute.
+const PLANTUML_SERVER_RETRY_BASE_MS = 60 * 1000;
+const PLANTUML_SERVER_RETRY_MAX_MS = 30 * 60 * 1000;
+let plantumlServer = null; // { child, port } while running
+let plantumlServerStarting = null; // Promise<port> while coming up
+let plantumlServerIdleTimer = null;
+let plantumlServerFailedAt = 0;
+let plantumlServerFailures = 0;
+
+function plantumlHexUrl(port, body) {
+  // The server takes the source in the URL; `~h` means "plain text, hex
+  // encoded", which needs no compression library and survives any
+  // character. Tested well past the sizes real documents reach (a 51KB
+  // source, i.e. a 127KB URL, renders fine).
+  return `http://127.0.0.1:${port}/plantuml/svg/~h${Buffer.from(body, 'utf-8').toString('hex')}`;
+}
+
+function findFreePort() {
+  return new Promise((resolve, reject) => {
+    const probe = require('node:net').createServer();
+    probe.on('error', reject);
+    probe.listen(0, '127.0.0.1', () => {
+      const { port } = probe.address();
+      probe.close(() => resolve(port));
+    });
+  });
+}
+
+async function startPlantUmlServer() {
+  const { jar, java } = plantumlRuntimePaths();
+  if (!fs.existsSync(jar) || !fs.existsSync(java)) {
+    throw new Error('PlantUML runtime not found');
+  }
+  const port = await findFreePort();
+  const child = spawn(java, [
+    '-Djava.awt.headless=true', '-jar', jar, `--http-server:${port}:127.0.0.1`,
+  ]);
+  child.stdout.on('data', () => {});
+  child.stderr.on('data', () => {});
+  child.on('exit', () => {
+    if (plantumlServer && plantumlServer.child === child) plantumlServer = null;
+  });
+
+  // Ready when it actually renders something, rather than when the port
+  // merely opens — that way the first real diagram never races the JVM.
+  const probeBody = '@startuml\nstart\nstop\n@enduml';
+  const deadline = Date.now() + PLANTUML_SERVER_START_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    if (child.exitCode !== null) throw new Error('PlantUML server exited while starting');
+    try {
+      const response = await fetch(plantumlHexUrl(port, probeBody));
+      if (response.ok && (await response.text()).startsWith('<')) {
+        plantumlServer = { child, port };
+        return port;
+      }
+    } catch (err) {
+      /* not listening yet */
+    }
+    await new Promise((resolve) => setTimeout(resolve, 150));
+  }
+  child.kill();
+  throw new Error('PlantUML server did not start in time');
+}
+
+function plantumlServerRecentlyFailed() {
+  if (plantumlServerFailedAt === 0) return false;
+  const backoff = Math.min(
+    PLANTUML_SERVER_RETRY_BASE_MS * 2 ** (plantumlServerFailures - 1),
+    PLANTUML_SERVER_RETRY_MAX_MS
+  );
+  return Date.now() - plantumlServerFailedAt < backoff;
+}
+
+function ensurePlantUmlServer() {
+  if (plantumlServer) return Promise.resolve(plantumlServer.port);
+  if (!plantumlServerStarting) {
+    plantumlServerStarting = startPlantUmlServer()
+      .then((port) => {
+        plantumlServerFailedAt = 0;
+        plantumlServerFailures = 0;
+        return port;
+      })
+      .catch((err) => {
+        plantumlServerFailedAt = Date.now();
+        plantumlServerFailures += 1;
+        throw err;
+      })
+      .finally(() => {
+        plantumlServerStarting = null;
+      });
+  }
+  return plantumlServerStarting;
+}
+
+function stopPlantUmlServer() {
+  clearTimeout(plantumlServerIdleTimer);
+  plantumlServerIdleTimer = null;
+  if (!plantumlServer) return;
+  const { child } = plantumlServer;
+  plantumlServer = null;
+  child.kill();
+}
+
+function keepPlantUmlServerWarm() {
+  clearTimeout(plantumlServerIdleTimer);
+  plantumlServerIdleTimer = setTimeout(stopPlantUmlServer, PLANTUML_SERVER_IDLE_MS);
+}
+
+async function renderPlantUmlSvgViaServer(body, signal) {
+  const port = await ensurePlantUmlServer();
+  const response = await fetch(plantumlHexUrl(port, body), { signal });
+  if (!response.ok) throw new Error(`PlantUML server returned HTTP ${response.status}`);
+  const svg = (await response.text()).trim();
+  if (!svg.startsWith('<')) throw new Error('PlantUML server returned no diagram');
+  keepPlantUmlServerWarm();
+  return svg;
+}
+
+// Rendered diagrams, keyed by the exact source that produced them. The
+// preview re-renders the whole document on every (debounced) keystroke
+// while editing, so without this every diagram in the file is redrawn for
+// each edit — including edits nowhere near a diagram. Held in memory only:
+// it is worth nothing across runs now that a warm render is ~15ms.
+const PLANTUML_CACHE_MAX_ENTRIES = 64;
+const PLANTUML_CACHE_MAX_BYTES = 32 * 1024 * 1024;
+const plantumlSvgCache = new Map();
+let plantumlCacheBytes = 0;
+
+function cachedPlantUmlSvg(body) {
+  const svg = plantumlSvgCache.get(body);
+  if (svg === undefined) return undefined;
+  // Re-insert so the least recently used entry is the one evicted next.
+  plantumlSvgCache.delete(body);
+  plantumlSvgCache.set(body, svg);
+  return svg;
+}
+
+function cachePlantUmlSvg(body, svg) {
+  if (svg.length > PLANTUML_CACHE_MAX_BYTES) return;
+  plantumlSvgCache.set(body, svg);
+  plantumlCacheBytes += svg.length;
+  while (
+    plantumlSvgCache.size > PLANTUML_CACHE_MAX_ENTRIES ||
+    plantumlCacheBytes > PLANTUML_CACHE_MAX_BYTES
+  ) {
+    const oldest = plantumlSvgCache.keys().next().value;
+    if (oldest === undefined) break;
+    plantumlCacheBytes -= plantumlSvgCache.get(oldest).length;
+    plantumlSvgCache.delete(oldest);
+  }
+}
+
+async function renderPlantUmlSvg(source, signal) {
+  const body = plantumlSourceBody(source);
+  const cached = cachedPlantUmlSvg(body);
+  if (cached !== undefined) return cached;
+
+  let svg;
+  try {
+    if (plantumlServerRecentlyFailed()) throw new Error('PlantUML server unavailable');
+    svg = await renderPlantUmlSvgViaServer(body, signal);
+  } catch (err) {
+    // A cancelled render is not a failure to work around.
+    if ((signal && signal.aborted) || err.name === 'AbortError') throw err;
+    // The server may be missing, wedged, or gone; the per-diagram JVM is
+    // slow but always available, so no diagram fails just because of it.
+    stopPlantUmlServer();
+    svg = await renderPlantUmlSvgBySpawn(body, signal);
+  }
+  cachePlantUmlSvg(body, svg);
+  return svg;
 }
 
 async function plantumlImageSrc(source, signal) {
@@ -1199,6 +1409,7 @@ function createWindow() {
     // 'window-all-closed' — and with it quitting the app — waits for every
     // window, including ones the user cannot see.
     closeMermaidWindow();
+    stopPlantUmlServer();
     mainWindow = null;
   });
 }
