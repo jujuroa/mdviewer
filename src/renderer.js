@@ -982,6 +982,17 @@
           : ' non-md');
       row.style.paddingLeft = 6 + depth * indentUnit + 'px';
       row.dataset.path = item.path;
+      // markActiveDocRow() can only mark rows that exist when it runs, so a
+      // subtree built later (a folder expanded for the first time, a refresh,
+      // the whole tree after reopening a project) re-applies the marker for
+      // itself as it goes.
+      if (
+        !item.isDir &&
+        state.currentFilePath &&
+        normalizePath(item.path) === normalizePath(state.currentFilePath)
+      ) {
+        row.classList.add('active-doc');
+      }
 
       const caret = document.createElement('span');
       caret.className = 'tree-caret';
@@ -1239,6 +1250,24 @@
     el.tree.focus({ preventScroll: true });
   }
 
+  // The "this is the document you're reading" marker, deliberately separate
+  // from the selection above: selection follows the last click or arrow key
+  // (a folder row included), while this one stays on whatever the preview is
+  // showing. Without it, opening a document and then poking around the tree
+  // leaves nothing pointing at the open file.
+  //
+  // Rows are matched by path rather than remembered by reference, since the
+  // tree rebuilds itself often (refresh, new file, reopened project) and any
+  // remembered element would be detached from the DOM by then.
+  function markActiveDocRow() {
+    for (const row of el.tree.querySelectorAll('.tree-row.active-doc')) {
+      row.classList.remove('active-doc');
+    }
+    if (!state.currentFilePath) return;
+    const row = findTreeRow(state.currentFilePath);
+    if (row) row.classList.add('active-doc');
+  }
+
   // Collapsed rows stay in the DOM (see .tree-children { display: none }),
   // so a plain query for .tree-row would let arrow navigation wander into
   // rows the user can't actually see — offsetParent is null exactly when an
@@ -1437,6 +1466,7 @@
     state.currentFilePath = filePath;
     state.currentFileKind = 'markdown';
     updateFileKindUI();
+    markActiveDocRow();
     window.mdviewer.watchFile(filePath);
     restoreScrollPosition(filePath);
 
@@ -1474,6 +1504,7 @@
     state.currentFilePath = filePath;
     state.currentFileKind = 'puml';
     updateFileKindUI();
+    markActiveDocRow();
     window.mdviewer.watchFile(filePath);
     restoreScrollPosition(filePath);
 
@@ -1626,6 +1657,7 @@
     state.currentFilePath = filePath;
     state.currentFileKind = 'json';
     updateFileKindUI();
+    markActiveDocRow();
     window.mdviewer.watchFile(filePath);
     restoreScrollPosition(filePath);
 
@@ -1658,6 +1690,7 @@
     state.currentFilePath = filePath;
     state.currentFileKind = 'text';
     updateFileKindUI();
+    markActiveDocRow();
     window.mdviewer.watchFile(filePath);
     restoreScrollPosition(filePath);
 

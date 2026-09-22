@@ -11,6 +11,7 @@
   --btn-fg: #ffffff;
   --hover: #e8e8e8;
   --selected: #e4e6f1;
+  --active-doc: #e7f0f8;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -26,6 +27,7 @@
     --btn-fg: #ffffff;
     --hover: #2a2d2e;
     --selected: #094771;
+    --active-doc: #26333f;
   }
 }
 
@@ -148,6 +150,21 @@ html, body {
 }
 .tree-row:hover { background: var(--hover); }
 .tree-row.selected { background: var(--selected); }
+
+/* The document the preview is currently showing. Kept visually distinct
+   from .selected (which follows the last click/arrow key, folders
+   included) because the two often sit on different rows: an accent bar
+   down the left edge plus an accent label marks the open file, while the
+   selection keeps its background. inset box-shadow rather than
+   border-left so nothing shifts sideways when the marker moves onto a
+   row. The tinted background only applies when the row isn't also
+   selected, so the selection still wins where they overlap. */
+.tree-row.active-doc { box-shadow: inset 2px 0 0 var(--accent); }
+.tree-row.active-doc:not(.selected) { background: var(--active-doc); }
+.tree-row.active-doc .tree-label {
+  color: var(--accent);
+  font-weight: 600;
+}
 .tree-row.dir .tree-label { font-weight: 500; }
 .tree-row.non-md .tree-label { color: var(--text-dim); cursor: default; }
 
