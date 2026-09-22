@@ -12,10 +12,10 @@
 // is what would ship.
 //
 // The version is injected with electron-builder's `extraMetadata`, not by
-// editing package.json: the repo keeps saying 1.2.2 (what is actually
-// released), while the built app reports the preview version everywhere it
-// matters - the installer file name, the About dialog, and the title bar
-// (see PREVIEW_VERSION_SUFFIX in main.js).
+// editing package.json: the repo keeps reporting the last released version,
+// while the built app reports the preview version everywhere it matters - the
+// installer file name, the About dialog, and the title bar (see
+// PREVIEW_VERSION_SUFFIX in main.js).
 //
 // This is an overwrite-style preview: same appId and productName as the
 // release, so installing it upgrades the installed MD Viewer in place and
