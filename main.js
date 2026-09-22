@@ -317,13 +317,21 @@ async function plantumlImageSrc(source, signal) {
 // diagram scrolls underneath. Zoom/pan interactivity itself is wired up from
 // the renderer (see initPreviewFrame in src/renderer.js) since the preview
 // iframe is sandboxed without allow-scripts.
+//
+// Diagrams open fitted to the document width (data-fit): a diagram wider than
+// the column is unreadable as a strip seen through a scrollbar, and being able
+// to see the whole thing is what a reader wants first. Fitting only ever
+// shrinks, so anything already narrower than the column opens untouched. The
+// percentage in the control bar is a measurement the renderer fills in once
+// the image has decoded, so the markup ships a placeholder.
 function plantumlDiagramHtml(imgSrc) {
   return (
-    '<div class="plantuml-diagram" data-zoom="100">' +
+    '<div class="plantuml-diagram" data-zoom="100" data-fit="1">' +
       '<div class="plantuml-zoom-controls">' +
         '<button type="button" class="puml-zoom-out" title="Zoom out">−</button>' +
         '<span class="puml-zoom-level">100%</span>' +
         '<button type="button" class="puml-zoom-in" title="Zoom in">+</button>' +
+        '<button type="button" class="puml-zoom-fit" title="Fit to width">↔</button>' +
         '<button type="button" class="puml-zoom-reset" title="Reset zoom">⟳</button>' +
       '</div>' +
       `<div class="plantuml-scroll"><img src="${imgSrc}" alt="PlantUML diagram"></div>` +
@@ -738,7 +746,7 @@ function sanitizeMarkdownHtml(rawHtml) {
     allowedAttributes: {
       ...sanitizeHtml.defaults.allowedAttributes,
       '*': [
-        'id', 'class', 'style', 'title', 'data-internal-href', 'data-zoom',
+        'id', 'class', 'style', 'title', 'data-internal-href', 'data-zoom', 'data-fit',
         'data-source-line', 'data-source-endline',
       ],
       a: ['href', 'name', 'target', 'rel', 'data-internal-href'],
