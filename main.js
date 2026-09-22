@@ -11,6 +11,14 @@ const hljs = require('highlight.js');
 const sanitizeHtml = require('sanitize-html');
 const { DEFAULT_LANGUAGE, SUPPORTED_LANGUAGES, STRINGS, translate } = require('./assets/i18n.js');
 
+// A preview build (`npm run dist:preview`) carries a prerelease version such
+// as 1.3.0-preview.3 and installs over the released app, so once it is running
+// nothing distinguishes it from the real thing. Put the version in the title
+// bar rather than leaving it to the About dialog, so "which build is this?"
+// is answerable at a glance. Released builds have no prerelease tag and are
+// left with the plain title.
+const PREVIEW_VERSION_SUFFIX = app.getVersion().includes('-') ? ` — ${app.getVersion()}` : '';
+
 const CONFIG_DIR_NAME = '.mdviewer';
 const CSS_FILE_NAME = 'custom.css';
 const MAX_RECENT_PROJECTS = 8;
@@ -1375,6 +1383,15 @@ function createWindow() {
       sandbox: true,
     },
   });
+
+  // Re-applied on every title update rather than set once, since the page's
+  // own <title> would otherwise win as soon as it loads.
+  if (PREVIEW_VERSION_SUFFIX) {
+    mainWindow.on('page-title-updated', (event, title) => {
+      event.preventDefault();
+      mainWindow.setTitle(title + PREVIEW_VERSION_SUFFIX);
+    });
+  }
 
   mainWindow.loadFile(path.join(__dirname, 'src', 'index.html'));
   buildAppMenu();

@@ -12,7 +12,9 @@
     "prepack": "npm run prepare:runtimes",
     "pack": "electron-builder --dir",
     "predist": "npm run prepare:runtimes",
-    "dist": "electron-builder --win nsis"
+    "dist": "electron-builder --win nsis",
+    "predist:preview": "npm run prepare:runtimes",
+    "dist:preview": "node scripts/dist-preview.js"
   },
   "author": "",
   "license": "MIT",
