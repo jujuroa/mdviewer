@@ -2119,6 +2119,79 @@
     return parseFloat(getComputedStyle(el.mdSourceEditor).lineHeight) || 20;
   }
 
+  // Top offset (in the textarea's scroll space) of every source line, as
+  // laid out with the editor's current width. The editor wraps long lines
+  // (pre-wrap), so `line * lineHeight` drifts further off the narrower the
+  // pane gets; this measures the real wrapping in an off-screen copy that
+  // shares the textarea's text metrics. Cached until the text or width
+  // changes.
+  let editorLineTopsCache = null;
+
+  function getEditorLineTops() {
+    const ta = el.mdSourceEditor;
+    const value = ta.value;
+    const width = ta.clientWidth;
+    const cache = editorLineTopsCache;
+    if (cache && cache.width === width && cache.value === value) return cache.tops;
+
+    const cs = getComputedStyle(ta);
+    const measure = document.createElement('div');
+    measure.setAttribute('aria-hidden', 'true');
+    Object.assign(measure.style, {
+      position: 'absolute',
+      visibility: 'hidden',
+      pointerEvents: 'none',
+      left: '-100000px',
+      top: '0',
+      boxSizing: 'border-box',
+      width: width + 'px',
+      padding: cs.padding,
+      border: '0',
+      font: cs.font,
+      letterSpacing: cs.letterSpacing,
+      lineHeight: cs.lineHeight,
+      tabSize: cs.tabSize,
+      whiteSpace: cs.whiteSpace,
+      overflowWrap: cs.overflowWrap,
+      wordBreak: cs.wordBreak,
+    });
+    const frag = document.createDocumentFragment();
+    for (const line of value.split('\n')) {
+      const div = document.createElement('div');
+      // An empty div would collapse to zero height; a textarea still gives
+      // the blank line a full line box.
+      div.textContent = line || '​';
+      frag.appendChild(div);
+    }
+    measure.appendChild(frag);
+    document.body.appendChild(measure);
+    const paddingTop = parseFloat(cs.paddingTop) || 0;
+    const tops = Array.from(measure.children, (div) => div.offsetTop - paddingTop);
+    measure.remove();
+
+    editorLineTopsCache = { value, width, tops };
+    return tops;
+  }
+
+  function editorScrollTopForLine(line) {
+    const tops = getEditorLineTops();
+    if (!tops.length) return 0;
+    return Math.max(0, tops[Math.max(0, Math.min(line, tops.length - 1))]);
+  }
+
+  // The source line at the top of the editor's viewport.
+  function editorLineAtScrollTop(scrollTop) {
+    const tops = getEditorLineTops();
+    let lo = 0;
+    let hi = tops.length - 1;
+    while (lo < hi) {
+      const mid = (lo + hi + 1) >> 1;
+      if (tops[mid] <= scrollTop + 1) lo = mid;
+      else hi = mid - 1;
+    }
+    return Math.max(0, lo);
+  }
+
   function getSourceLineElements() {
     const doc = el.frame.contentDocument;
     if (!doc || !doc.body) return [];
@@ -2169,7 +2242,7 @@
 
   function syncViewerScrollToEditor() {
     if (!splitViewActive()) return;
-    const topLine = Math.floor(el.mdSourceEditor.scrollTop / getEditorLineHeight());
+    const topLine = editorLineAtScrollTop(el.mdSourceEditor.scrollTop);
     const target = findViewerElementForLine(topLine);
     if (!target) return;
     withScrollSyncSuppressed(() => {
@@ -2184,7 +2257,7 @@
     const line = parseInt(target.getAttribute('data-source-line'), 10);
     if (Number.isNaN(line)) return;
     withScrollSyncSuppressed(() => {
-      el.mdSourceEditor.scrollTop = Math.max(0, line * getEditorLineHeight());
+      el.mdSourceEditor.scrollTop = editorScrollTopForLine(line);
     });
   }
 
@@ -2208,12 +2281,50 @@
   // based on actual layout position, unlike the editor's line-height
   // estimate which assumes unwrapped lines.
   let splitViewResizeTimer = null;
+  // A source line captured *before* a layout change we cause ourselves (the
+  // TOC collapse toggle). Once the resize settles, both panes go back to it
+  // instead of re-reading the viewer's top, which may already have drifted
+  // if the viewer itself was reflowed.
+  let splitViewAnchor = null;
+
+  function holdSplitViewAnchor() {
+    const target = findTopVisibleViewerElement();
+    const line = target ? parseInt(target.getAttribute('data-source-line'), 10) : NaN;
+    splitViewAnchor = Number.isNaN(line)
+      ? null
+      : { line, frameWidth: el.frame.getBoundingClientRect().width };
+    scheduleSplitViewResync();
+  }
+
+  function resyncSplitView() {
+    if (!splitViewActive()) {
+      splitViewAnchor = null;
+      return;
+    }
+    const anchor = splitViewAnchor;
+    splitViewAnchor = null;
+    if (!anchor) {
+      syncEditorScrollToViewer();
+      return;
+    }
+    // The viewer only needs moving if its own width changed (the editor was
+    // already at its minimum and couldn't absorb the whole TOC delta).
+    const viewerReflowed = el.frame.getBoundingClientRect().width !== anchor.frameWidth;
+    const target = viewerReflowed ? findViewerElementForLine(anchor.line) : null;
+    withScrollSyncSuppressed(() => {
+      if (target) el.frame.contentWindow.scrollTo(0, Math.max(0, viewerDocTop(target)));
+      el.mdSourceEditor.scrollTop = editorScrollTopForLine(anchor.line);
+    });
+  }
+
+  function scheduleSplitViewResync() {
+    clearTimeout(splitViewResizeTimer);
+    splitViewResizeTimer = setTimeout(resyncSplitView, 150);
+  }
+
   const splitViewResizeObserver = new ResizeObserver(() => {
     if (!splitViewActive()) return;
-    clearTimeout(splitViewResizeTimer);
-    splitViewResizeTimer = setTimeout(() => {
-      syncEditorScrollToViewer();
-    }, 150);
+    scheduleSplitViewResync();
   });
   splitViewResizeObserver.observe(el.mdSourceEditor);
   splitViewResizeObserver.observe(el.frame);
@@ -2791,8 +2902,10 @@
     }
     el.mdSourceEditor.setSelectionRange(selStart, selStart + (localIndex !== -1 ? query.length : 0));
 
-    const lineHeight = parseFloat(getComputedStyle(el.mdSourceEditor).lineHeight) || 20;
-    el.mdSourceEditor.scrollTop = Math.max(0, (targetLine - EDITOR_SYNC_CONTEXT_LINES) * lineHeight);
+    el.mdSourceEditor.scrollTop = Math.max(
+      0,
+      editorScrollTopForLine(targetLine) - EDITOR_SYNC_CONTEXT_LINES * getEditorLineHeight()
+    );
   }
 
   function updateFindCountUI() {
@@ -3417,9 +3530,7 @@
     ta.focus();
     ta.setSelectionRange(offset, offset);
 
-    const style = window.getComputedStyle(ta);
-    const lineHeight = parseFloat(style.lineHeight) || parseFloat(style.fontSize) * 1.4;
-    ta.scrollTop = Math.max(0, lineNumber * lineHeight - ta.clientHeight / 2);
+    ta.scrollTop = Math.max(0, editorScrollTopForLine(lineNumber) - ta.clientHeight / 2);
   }
 
   // Headings nest by level, so folding one hides every deeper heading that
@@ -3761,15 +3872,22 @@
 
   function toggleTocCollapse() {
     const expanding = el.tocPanel.classList.contains('collapsed');
+    const splitView = splitViewActive();
+    // Rewrapping the editor moves its text, so remember which source line
+    // is on top before the widths change and return both panes to it after.
+    if (splitView) holdSplitViewAnchor();
     el.tocPanel.classList.toggle('collapsed');
     // Widening/narrowing the TOC panel would otherwise resize the preview
     // frame (flex:1). Steal the width from the editor pane instead, so the
     // preview stays visually fixed as long as the editor has room to give.
-    if (state.editMode && !el.editorPane.classList.contains('hidden')) {
-      const currentWidth = el.mdSourceEditor.getBoundingClientRect().width;
+    // Size the pane, not the textarea: the textarea (and the highlight layer
+    // behind it) must keep filling the pane, or they fall out of step with
+    // it and stop following later window/splitter resizes.
+    if (splitView) {
+      const currentWidth = el.editorPane.getBoundingClientRect().width;
       const delta = expanding ? TOC_WIDTH_DELTA : -TOC_WIDTH_DELTA;
       const newWidth = Math.max(EDITOR_MIN_WIDTH, currentWidth - delta);
-      el.mdSourceEditor.style.width = newWidth + 'px';
+      el.editorPane.style.width = newWidth + 'px';
     }
     persistProjectState();
   }
