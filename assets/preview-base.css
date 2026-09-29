@@ -167,10 +167,26 @@ body.markdown-body.wide-view {
   text-align: center;
 }
 
-/* A PlantUML diagram keeps its natural size and scrolls inside its own
-   zoom/pan area (.plantuml-scroll), where scrolling is the point. */
+/* Zoomed past the document width, a PlantUML diagram keeps its size and
+   scrolls inside its own zoom/pan area (.plantuml-scroll), where scrolling is
+   the point. */
 .markdown-body .plantuml-diagram img {
   max-width: none;
+}
+
+/* Fit-to-width, which is how a diagram opens (see plantumlDiagramHtml) and
+   what the .puml-zoom-fit button returns it to. Letting CSS do the fitting,
+   rather than the renderer computing a percentage once, is what keeps the
+   diagram fitted when the space around it changes - dragging the sidebar,
+   opening the edit pane, resizing the window. The percentage on the control
+   bar is measured back off this.
+
+   max-width rather than width, so fitting only ever shrinks: a diagram
+   narrower than the column stays at its natural size instead of being blown
+   up to fill the line. Growing one is what the + button is for. */
+.markdown-body .plantuml-diagram[data-fit="1"] .plantuml-scroll img {
+  max-width: 100%;
+  height: auto;
 }
 
 /* A mermaid diagram has no such area, so a wide one would just put a
@@ -254,6 +270,12 @@ body.markdown-body.wide-view {
   background: rgba(255, 255, 255, 0.18);
 }
 
+/* Fit is a mode you stay in, unlike the other three buttons which fire and
+   are done, so its button stays lit while it is on. */
+.markdown-body .plantuml-diagram[data-fit="1"] .puml-zoom-fit {
+  background: rgba(255, 255, 255, 0.28);
+}
+
 .markdown-body .plantuml-zoom-controls .puml-zoom-level {
   min-width: 38px;
   text-align: center;
@@ -268,6 +290,7 @@ body.markdown-body.wide-view {
   }
   .markdown-body .plantuml-zoom-controls button { color: #1a1a1a; }
   .markdown-body .plantuml-zoom-controls button:hover { background: rgba(0, 0, 0, 0.08); }
+  .markdown-body .plantuml-diagram[data-fit="1"] .puml-zoom-fit { background: rgba(0, 0, 0, 0.16); }
   .markdown-body .plantuml-zoom-controls .puml-zoom-level { color: #1a1a1a; }
 }
 

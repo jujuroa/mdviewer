@@ -351,9 +351,15 @@
     doc.addEventListener('click', onJsonNodeClick);
     doc.addEventListener('dblclick', onJsonNodeDblClick);
 
-    // PlantUML diagram zoom (+/-/reset buttons, Ctrl+wheel) and click-drag pan.
+    // PlantUML diagram zoom (+/-/fit/reset buttons, Ctrl+wheel) and
+    // click-drag pan.
     doc.addEventListener('click', onPumlZoomControlClick);
     doc.addEventListener('wheel', onPumlWheel, { passive: false });
+    doc.addEventListener('load', onPumlImageLoad, true);
+    // Dragging the sidebar, opening the edit pane and resizing the window all
+    // change the iframe's own viewport, so its resize event covers every way
+    // a fitted diagram's percentage can go stale.
+    el.frame.contentWindow.addEventListener('resize', refreshPumlFitLabels);
     // Ctrl+wheel zooms the whole preview. Registered after onPumlWheel so a
     // diagram under the cursor gets first refusal on the event.
     doc.addEventListener('wheel', onPreviewWheel, { passive: false });
@@ -426,28 +432,95 @@
   const PUML_ZOOM_STEP = 25;
   let pumlPanState = null;
 
+  function pumlNaturalWidth(img) {
+    return img.naturalWidth || parseInt(img.getAttribute('width'), 10) || 0;
+  }
+
+  // The percentage a diagram is actually being shown at. Under fit-to-width
+  // the width is the browser's to decide, so it is measured rather than
+  // stored - which is also what keeps the label honest after a resize.
+  function pumlEffectiveZoom(diagramEl) {
+    const img = diagramEl.querySelector('.plantuml-scroll img');
+    if (diagramEl.dataset.fit === '1' && img) {
+      const naturalWidth = pumlNaturalWidth(img);
+      if (naturalWidth) return Math.round((img.clientWidth / naturalWidth) * 100);
+    }
+    return parseInt(diagramEl.dataset.zoom || '100', 10);
+  }
+
+  function updatePumlZoomLabel(diagramEl) {
+    const label = diagramEl.querySelector('.puml-zoom-level');
+    if (label) label.textContent = `${pumlEffectiveZoom(diagramEl)}%`;
+  }
+
   function setPumlZoom(diagramEl, percent) {
     const clamped = Math.max(PUML_ZOOM_MIN, Math.min(PUML_ZOOM_MAX, Math.round(percent)));
+    delete diagramEl.dataset.fit;
     diagramEl.dataset.zoom = String(clamped);
     const img = diagramEl.querySelector('.plantuml-scroll img');
     if (img) {
-      const naturalWidth = img.naturalWidth || parseInt(img.getAttribute('width'), 10) || 0;
+      const naturalWidth = pumlNaturalWidth(img);
       img.style.width = clamped === 100 || !naturalWidth ? '' : `${Math.round(naturalWidth * clamped / 100)}px`;
     }
-    const label = diagramEl.querySelector('.puml-zoom-level');
-    if (label) label.textContent = `${clamped}%`;
+    updatePumlZoomLabel(diagramEl);
+  }
+
+  // Fit-to-width is a mode rather than a percentage: the image is handed to
+  // CSS at max-width: 100% (see .plantuml-diagram[data-fit] in
+  // preview-base.css) so it keeps fitting when the space around it changes -
+  // the window, the sidebar, the edit pane - instead of freezing at whatever
+  // percentage happened to fit when it was turned on. It is also the only way
+  // to fit a diagram so wide that the percentage would fall below
+  // PUML_ZOOM_MIN. Diagrams open in this mode; the markup carries data-fit
+  // from the start (see plantumlDiagramHtml in main.js).
+  function setPumlFit(diagramEl) {
+    const img = diagramEl.querySelector('.plantuml-scroll img');
+    if (!img) return;
+    diagramEl.dataset.fit = '1';
+    img.style.width = '';
+    updatePumlZoomLabel(diagramEl);
+  }
+
+  // A diagram opens fitted, so the percentage its control bar should show is
+  // not known until the image has decoded and the browser has laid it out -
+  // the markup can only ship a placeholder. An <img>'s load event doesn't
+  // bubble, so this is registered in the capture phase instead, which covers
+  // every diagram in every document rendered from here on with one listener
+  // rather than re-wiring after each render.
+  function onPumlImageLoad(e) {
+    const img = e.target;
+    if (!img.matches || !img.matches('.plantuml-scroll img')) return;
+    const diagramEl = img.closest('.plantuml-diagram');
+    if (diagramEl) updatePumlZoomLabel(diagramEl);
+  }
+
+  // A fit diagram's percentage is a measurement, so it goes stale whenever
+  // the space around it changes. Called from the preview frame's resize.
+  function refreshPumlFitLabels() {
+    const doc = el.frame.contentDocument;
+    if (!doc) return;
+    for (const diagramEl of doc.querySelectorAll('.plantuml-diagram[data-fit="1"]')) {
+      updatePumlZoomLabel(diagramEl);
+    }
   }
 
   function onPumlZoomControlClick(e) {
-    const btn = e.target.closest('.puml-zoom-in, .puml-zoom-out, .puml-zoom-reset');
+    const btn = e.target.closest('.puml-zoom-in, .puml-zoom-out, .puml-zoom-fit, .puml-zoom-reset');
     if (!btn) return;
     const diagramEl = btn.closest('.plantuml-diagram');
     if (!diagramEl) return;
     e.preventDefault();
-    const current = parseInt(diagramEl.dataset.zoom || '100', 10);
+    // Stepping out of fit mode continues from the size actually on screen,
+    // so "fit, then a bit bigger" does what it looks like.
+    const current = pumlEffectiveZoom(diagramEl);
     if (btn.classList.contains('puml-zoom-in')) setPumlZoom(diagramEl, current + PUML_ZOOM_STEP);
     else if (btn.classList.contains('puml-zoom-out')) setPumlZoom(diagramEl, current - PUML_ZOOM_STEP);
-    else setPumlZoom(diagramEl, 100);
+    else if (btn.classList.contains('puml-zoom-fit')) {
+      // Pressing it while already fitted drops to 100% - with fit being the
+      // default, that is the way to ask for the diagram's actual size.
+      if (diagramEl.dataset.fit === '1') setPumlZoom(diagramEl, 100);
+      else setPumlFit(diagramEl);
+    } else setPumlFit(diagramEl); // reset: back to how the diagram opened
   }
 
   function onPumlWheel(e) {
@@ -455,7 +528,7 @@
     const diagramEl = e.target.closest('.plantuml-diagram');
     if (!diagramEl) return;
     e.preventDefault();
-    const current = parseInt(diagramEl.dataset.zoom || '100', 10);
+    const current = pumlEffectiveZoom(diagramEl);
     setPumlZoom(diagramEl, current + (e.deltaY < 0 ? PUML_ZOOM_STEP : -PUML_ZOOM_STEP));
   }
 
