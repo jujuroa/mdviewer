@@ -710,7 +710,7 @@
       // can pick up and get confused by once the body has since been
       // swapped out for a different document.
       e.preventDefault();
-      const target = el.frame.contentDocument.getElementById(href.slice(1));
+      const target = findAnchorTarget(href.slice(1));
       if (target) {
         pushScrollJumpHistory();
         target.scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -738,7 +738,7 @@
       await loadAndRenderFile(absPath);
       await revealPathInTree(absPath, { select: true });
       if (hash) {
-        const target = el.frame.contentDocument.getElementById(hash);
+        const target = findAnchorTarget(hash);
         if (target) target.scrollIntoView();
       }
     } else if (/\.puml$/i.test(absPath)) {
@@ -756,7 +756,7 @@
     } else if (absPath) {
       openExternalSafe(pathToFileUrl(absPath));
     } else if (hash) {
-      const target = el.frame.contentDocument.getElementById(hash);
+      const target = findAnchorTarget(hash);
       if (target) {
         pushScrollJumpHistory();
         target.scrollIntoView();
@@ -3422,13 +3422,52 @@
   // Floating table of contents / sibling pages
   // ---------------------------------------------------------------------
 
+  // Heading anchor convention (GitHub-style), e.g.
+  //   "# 1. 시작하기 전에!"             -> #1-시작하기-전에
+  //   "## 설치 방법 (Windows & Mac)"    -> #설치-방법-windows--mac
+  //   "### API Reference: User Auth"   -> #api-reference-user-auth
+  //   "## 🚀 향후 업데이트 계획"         -> #향후-업데이트-계획
+  // Lowercase, drop emoji and punctuation (letters/digits of any script,
+  // "_" and "-" stay), trim, then every remaining space becomes "-" one for
+  // one — which is why "Windows & Mac" keeps its double dash.
   function slugify(text) {
     return text
       .toLowerCase()
+      .replace(/[\p{Extended_Pictographic}‍️]/gu, '')
+      .replace(/[^\p{L}\p{N}\p{M}\s_-]/gu, '')
       .trim()
-      .replace(/[^a-z0-9가-힣\s-]/g, '')
-      .replace(/\s+/g, '-')
-      .slice(0, 60);
+      .replace(/\s/g, '-');
+  }
+
+  // Punctuation- and dash-insensitive form of an anchor, so links written
+  // against a slightly different slug rule (collapsed dashes, a leading
+  // dash left by a stripped emoji) still find their heading.
+  function looseAnchorKey(text) {
+    return text.toLowerCase().replace(/[^\p{L}\p{N}]/gu, '');
+  }
+
+  function decodeAnchor(hash) {
+    try {
+      return decodeURIComponent(hash);
+    } catch (e) {
+      return hash;
+    }
+  }
+
+  // The element a "#hash" link points at in the current document: an exact
+  // id (or <a name>) first, then a heading whose slug matches loosely.
+  function findAnchorTarget(hash) {
+    const doc = el.frame.contentDocument;
+    if (!doc || !hash) return null;
+    const id = decodeAnchor(hash);
+    const exact = doc.getElementById(id) || doc.getElementsByName(id)[0];
+    if (exact) return exact;
+    const key = looseAnchorKey(id);
+    if (!key) return null;
+    for (const heading of doc.querySelectorAll('h1, h2, h3, h4, h5, h6')) {
+      if (looseAnchorKey(heading.id || slugify(heading.textContent)) === key) return heading;
+    }
+    return null;
   }
 
   function findHeadingLineNumbers(sourceText) {
@@ -3564,9 +3603,11 @@
     const usedIds = new Set();
     headings.forEach((heading, index) => {
       if (!heading.id) {
-        const base = slugify(heading.textContent) || `section-${index}`;
+        const base = slugify(heading.textContent.trim()) || `section-${index}`;
+        // Repeats get "-1", "-2", ... like GitHub, so "#개요-1" reaches the
+        // second "개요".
         let candidate = base;
-        let n = 2;
+        let n = 1;
         while (usedIds.has(candidate)) candidate = `${base}-${n++}`;
         heading.id = candidate;
       }
@@ -3701,7 +3742,7 @@
       return { type: 'external', href, key: href };
     }
     if (href.startsWith('#') && href.length > 1) {
-      return { type: 'anchor', hash: href.slice(1), key: href };
+      return { type: 'anchor', hash: decodeAnchor(href.slice(1)), key: href };
     }
     return null;
   }
@@ -3754,7 +3795,7 @@
         if (info.type === 'external') {
           openExternalSafe(info.href);
         } else if (info.type === 'anchor') {
-          const target = el.frame.contentDocument.getElementById(info.hash);
+          const target = findAnchorTarget(info.hash);
           if (target) {
             pushScrollJumpHistory();
             target.scrollIntoView({ behavior: 'smooth', block: 'start' });

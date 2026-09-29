@@ -628,6 +628,14 @@ function toFileUrl(p) {
 // link has no extension and isn't a directory reference, resolve it as a
 // ".md" page if that file actually exists; otherwise leave it as-is so
 // links to real extension-less files (Makefile, LICENSE, ...) still work.
+function safeDecodeUri(text) {
+  try {
+    return decodeURIComponent(text);
+  } catch (e) {
+    return text;
+  }
+}
+
 function resolveInternalLinkPath(baseDir, relPath) {
   const absPath = path.resolve(baseDir, relPath);
   if (relPath.endsWith('/') || path.extname(relPath)) return absPath;
@@ -719,7 +727,12 @@ function createMarkdownRenderer(baseDir) {
       if (!/^([a-z]+:)?\/\//i.test(href) && !href.startsWith('#') && !href.startsWith('mailto:')) {
         // relative link: resolve to an absolute path (+ optional #hash) so the
         // renderer can intercept the click and either open it in-app or via the OS
-        const [relPath, hash] = href.split('#');
+        // markdown-it has already percent-encoded the href, so a Korean file
+        // name or "#설치-방법" would otherwise never match a path on disk or
+        // a heading id.
+        const hashAt = href.indexOf('#');
+        const relPath = safeDecodeUri(hashAt === -1 ? href : href.slice(0, hashAt));
+        const hash = hashAt === -1 ? '' : safeDecodeUri(href.slice(hashAt + 1));
         const absPath = relPath ? resolveInternalLinkPath(baseDir, relPath) : '';
         token.attrSet('data-internal-href', absPath + (hash ? '#' + hash : ''));
       }
