@@ -2632,10 +2632,77 @@
     if (e.key === 'Tab') {
       e.preventDefault();
       const ta = el.mdSourceEditor;
-      ta.setRangeText('\t', ta.selectionStart, ta.selectionEnd, 'end');
-      ta.dispatchEvent(new Event('input', { bubbles: true }));
+      const multiLine = ta.value.slice(ta.selectionStart, ta.selectionEnd).includes('\n');
+      if (multiLine || e.shiftKey) {
+        shiftEditorLines(ta, e.shiftKey);
+        return;
+      }
+      replaceEditorText(ta, '\t', ta.selectionStart, ta.selectionEnd);
     }
   });
+
+  // Replace [from, to) in the editor through execCommand so the change lands
+  // on the textarea's native undo stack (setRangeText bypasses it, leaving
+  // Ctrl+Z unable to take the edit back). execCommand fires 'input' itself;
+  // the setRangeText path is only a fallback should the command be refused.
+  function replaceEditorText(ta, text, from, to) {
+    ta.focus();
+    ta.setSelectionRange(from, to);
+    const ok = text
+      ? document.execCommand('insertText', false, text)
+      : from === to || document.execCommand('delete');
+    if (ok) return;
+    ta.setRangeText(text, from, to, 'end');
+    ta.dispatchEvent(new Event('input', { bubbles: true }));
+  }
+
+  // Tab / Shift+Tab over a multi-line selection (or Shift+Tab anywhere):
+  // indent or outdent every line the selection touches, the way code
+  // editors do, instead of replacing the selection with a tab. Outdent
+  // strips one leading tab or up to two spaces (the editor's tab-size).
+  function shiftEditorLines(ta, outdent) {
+    const { value, selectionStart: start, selectionEnd: end } = ta;
+    const blockStart = value.lastIndexOf('\n', start - 1) + 1;
+    // A selection that ends right after a newline doesn't reach into the
+    // next line, so that line is left alone.
+    const lastPos = end > start && value[end - 1] === '\n' ? end - 1 : end;
+    let blockEnd = value.indexOf('\n', lastPos);
+    if (blockEnd === -1) blockEnd = value.length;
+
+    const lines = value.slice(blockStart, blockEnd).split('\n');
+    const edits = [];
+    let at = blockStart;
+    const shifted = lines.map((line) => {
+      let next = line;
+      if (outdent) {
+        const m = /^(\t| {1,2})/.exec(line);
+        if (m) next = line.slice(m[0].length);
+      } else if (line.length || lines.length === 1) {
+        // Blank lines inside a block stay blank rather than gaining a tab.
+        next = '\t' + line;
+      }
+      edits.push({ at, delta: next.length - line.length });
+      at += line.length + 1;
+      return next;
+    });
+    if (edits.every((edit) => edit.delta === 0)) return;
+
+    // Carry an original offset through the edits: an offset at a line's
+    // very start stays there (so whole-line selections stay whole), and
+    // one inside removed indentation lands on the new line start.
+    const mapPos = (pos) => {
+      let shift = 0;
+      for (const edit of edits) {
+        if (pos <= edit.at) break;
+        shift += edit.delta > 0 ? edit.delta : -Math.min(-edit.delta, pos - edit.at);
+      }
+      return pos + shift;
+    };
+    const newStart = mapPos(start);
+    const newEnd = mapPos(end);
+    replaceEditorText(ta, shifted.join('\n'), blockStart, blockEnd);
+    ta.setSelectionRange(newStart, newEnd);
+  }
 
   el.btnToggleEdit.addEventListener('click', toggleEditMode);
   el.btnSaveSource.addEventListener('click', saveSource);
