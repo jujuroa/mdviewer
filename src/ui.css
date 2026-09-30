@@ -762,7 +762,8 @@ html, body {
 #editor-pane.hidden { display: none; }
 
 #md-source-editor,
-#editor-highlight {
+#editor-highlight,
+#editor-syntax {
   padding: 16px 20px;
   font-family: "D2Coding", "D2Coding ligature", Consolas, "Cascadia Mono", "Cascadia Code",
     "SFMono-Regular", Menlo, monospace;
@@ -782,10 +783,17 @@ html, body {
   resize: none;
   border: none;
   outline: none;
-  /* Transparent so the highlight layer underneath shows through. */
+  /* Transparent, text included, so the highlight and syntax layers
+     underneath show through; only the caret and selection are its own. */
   background: transparent;
-  color: #d4d4d4;
+  color: transparent;
   caret-color: #d4d4d4;
+}
+#md-source-editor::placeholder { color: #6e6e6e; }
+/* Translucent, so the coloured glyphs underneath stay readable. */
+#md-source-editor::selection {
+  background: rgba(173, 214, 255, 0.3);
+  color: transparent;
 }
 
 #editor-highlight {
@@ -797,6 +805,42 @@ html, body {
   pointer-events: none;
   user-select: none;
 }
+
+/* The editor's text in colour (see "Markdown syntax colouring" in
+   renderer.js). It sits above the mark layer so marks tint behind the
+   glyphs. Colours only: a weight or style change could alter glyph widths
+   and pull the text out from under the caret. */
+#editor-syntax {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  overflow: hidden;
+  color: #d4d4d4;
+  pointer-events: none;
+  user-select: none;
+}
+#editor-syntax .md-heading { color: #569cd6; }
+#editor-syntax .md-h1 { color: #4fc1ff; }
+#editor-syntax .md-heading-mark { color: #3a7bbf; }
+#editor-syntax .md-fence { color: #808080; }
+#editor-syntax .md-fence-info { color: #9cdcfe; }
+#editor-syntax .md-code-block,
+#editor-syntax .md-code { color: #ce9178; }
+#editor-syntax .md-quote-mark { color: #4e7a3e; }
+#editor-syntax .md-quote { color: #6a9955; }
+#editor-syntax .md-list-mark,
+#editor-syntax .md-task { color: #d7ba7d; }
+#editor-syntax .md-hr,
+#editor-syntax .md-table-pipe,
+#editor-syntax .md-link-mark,
+#editor-syntax .md-escape { color: #808080; }
+#editor-syntax .md-link-text { color: #4ec9b0; }
+#editor-syntax .md-link-url { color: #7f9fbf; text-decoration: underline; }
+#editor-syntax .md-strong { color: #dcdcaa; }
+#editor-syntax .md-em { color: #c586c0; }
+#editor-syntax .md-strike { color: #8a8a8a; text-decoration: line-through; }
+#editor-syntax .md-html { color: #569cd6; }
+#editor-syntax .md-comment { color: #6a737d; }
 
 #editor-highlight mark {
   border-radius: 2px;

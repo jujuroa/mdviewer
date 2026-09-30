@@ -99,6 +99,7 @@
     mdSourceEditor: document.getElementById('md-source-editor'),
     editorPane: document.getElementById('editor-pane'),
     editorHighlight: document.getElementById('editor-highlight'),
+    editorSyntax: document.getElementById('editor-syntax'),
     editorResizer: document.getElementById('editor-resizer'),
     btnToggleEdit: document.getElementById('btn-toggle-edit'),
     btnSaveSource: document.getElementById('btn-save-source'),
@@ -2342,6 +2343,211 @@
 
 
   // ---------------------------------------------------------------------
+  // Markdown syntax colouring in the source editor
+  //
+  // A textarea can only draw its text in one colour, so its text is drawn
+  // transparent and a layer underneath (#editor-syntax) repaints the same
+  // characters in colour. Only colours change, never font weight or style:
+  // a bolder glyph could be wider and the caret would drift off the text.
+  // The colouring is line-based and deliberately forgiving — it only has to
+  // look right, not parse CommonMark exactly.
+  // ---------------------------------------------------------------------
+  function escapeSyntaxHtml(text) {
+    return text.replace(/[&<>]/g, (c) => (c === '&' ? '&amp;' : c === '<' ? '&lt;' : '&gt;'));
+  }
+
+  function syntaxSpan(cls, text) {
+    return text ? `<span class="md-${cls}">${escapeSyntaxHtml(text)}</span>` : '';
+  }
+
+  // Inline constructs, tried at each position in order. Each `re` is sticky
+  // (anchored at lastIndex) and `render` turns the match into html.
+  const INLINE_SYNTAX = [
+    {
+      re: /(`+)([^`]|[^`].*?[^`])\1(?!`)/y,
+      render: (m) => syntaxSpan('code', m[0]),
+    },
+    {
+      re: /\\[\\`*_{}[\]()#+\-.!|~<>]/y,
+      render: (m) => syntaxSpan('escape', m[0]),
+    },
+    {
+      re: /(!?\[)([^\]]*)(\]\()([^)]*)(\))/y,
+      render: (m) =>
+        syntaxSpan('link-mark', m[1]) + `<span class="md-link-text">${renderInlineSyntax(m[2])}</span>` +
+        syntaxSpan('link-mark', m[3]) + syntaxSpan('link-url', m[4]) + syntaxSpan('link-mark', m[5]),
+    },
+    {
+      re: /<(?:https?:\/\/|mailto:)[^<>\s]+>/y,
+      render: (m) => syntaxSpan('link-url', m[0]),
+    },
+    {
+      re: /<!--.*?-->|<\/?[A-Za-z][\w-]*(?:\s[^<>]*)?\/?>/y,
+      render: (m) => syntaxSpan(m[0].startsWith('<!--') ? 'comment' : 'html', m[0]),
+    },
+    {
+      re: /(\*\*|__)(?=\S)(.*?\S)\1/y,
+      render: (m) => `<span class="md-strong">${m[1]}${renderInlineSyntax(m[2])}${m[1]}</span>`,
+    },
+    {
+      re: /~~(?=\S)(.*?\S)~~/y,
+      render: (m) => `<span class="md-strike">~~${renderInlineSyntax(m[1])}~~</span>`,
+    },
+    {
+      re: /([*_])(?=[^\s*_])(.*?[^\s\\])\1(?![*_\w])/y,
+      render: (m) => `<span class="md-em">${m[1]}${renderInlineSyntax(m[2])}${m[1]}</span>`,
+    },
+  ];
+  const INLINE_SYNTAX_START = /[`\\![<*_~]/;
+
+  function renderInlineSyntax(text) {
+    let html = '';
+    let plainFrom = 0;
+    let i = 0;
+    while (i < text.length) {
+      const c = text[i];
+      // `_` inside a word (snake_case) is not emphasis.
+      if (!INLINE_SYNTAX_START.test(c) || (c === '_' && /\w/.test(text[i - 1] || ''))) {
+        i++;
+        continue;
+      }
+      let match = null;
+      let rule = null;
+      for (rule of INLINE_SYNTAX) {
+        rule.re.lastIndex = i;
+        match = rule.re.exec(text);
+        if (match) break;
+      }
+      if (!match) {
+        i++;
+        continue;
+      }
+      html += escapeSyntaxHtml(text.slice(plainFrom, i)) + rule.render(match);
+      i += match[0].length;
+      plainFrom = i;
+    }
+    return html + escapeSyntaxHtml(text.slice(plainFrom));
+  }
+
+  const FENCE_OPEN_RE = /^( {0,3})(`{3,}|~{3,})(.*)$/;
+  const FENCE_CLOSE_RE = /^ {0,3}(`{3,}|~{3,})\s*$/;
+  const ATX_HEADING_RE = /^( {0,3})(#{1,6})(?=\s|$)(.*)$/;
+  const SETEXT_UNDERLINE_RE = /^ {0,3}(=+|-+)\s*$/;
+  const HR_RE = /^ {0,3}([-*_])(?:\s*\1){2,}\s*$/;
+  const QUOTE_RE = /^(?: {0,3}>\s?)+/;
+  const LIST_RE = /^(\s*)([-*+]|\d{1,9}[.)])(\s+)(\[[ xX]\](?=\s|$))?/;
+  const TABLE_SEPARATOR_RE = /^\s*\|?\s*:?-+:?\s*(\|\s*:?-*:?\s*)*\|?\s*$/;
+
+  function renderTableRowSyntax(line) {
+    return line
+      .split(/(?<!\\)\|/)
+      .map(renderInlineSyntax)
+      .join('<span class="md-table-pipe">|</span>');
+  }
+
+  // Lines are coloured one at a time, carrying just enough state across
+  // lines for the multi-line constructs: fenced code and HTML comments.
+  function renderMarkdownSyntax(text) {
+    const lines = text.split('\n');
+    const out = [];
+    let fence = null; // { char, length } while inside a fenced block
+    let inComment = false;
+    let prevParagraph = false; // the previous line could be a setext heading
+
+    lines.forEach((line, index) => {
+      let html;
+      let paragraph = false;
+      let m;
+
+      if (fence) {
+        m = line.match(FENCE_CLOSE_RE);
+        if (m && m[1][0] === fence.char && m[1].length >= fence.length) {
+          html = syntaxSpan('fence', line);
+          fence = null;
+        } else {
+          html = syntaxSpan('code-block', line);
+        }
+      } else if (inComment || /^\s*<!--/.test(line)) {
+        html = syntaxSpan('comment', line);
+        inComment = line.lastIndexOf('-->') < Math.max(line.lastIndexOf('<!--'), 0) || !line.includes('-->');
+      } else if ((m = line.match(FENCE_OPEN_RE)) && !(m[2][0] === '`' && m[3].includes('`'))) {
+        fence = { char: m[2][0], length: m[2].length };
+        html = syntaxSpan('fence', m[1] + m[2]) + syntaxSpan('fence-info', m[3]);
+      } else if ((m = line.match(ATX_HEADING_RE))) {
+        html = `<span class="md-heading md-h${m[2].length}">` +
+          syntaxSpan('heading-mark', m[1] + m[2]) + renderInlineSyntax(m[3]) + '</span>';
+      } else if (prevParagraph && SETEXT_UNDERLINE_RE.test(line)) {
+        const level = line.trim()[0] === '=' ? 1 : 2;
+        out[index - 1] = `<span class="md-heading md-h${level}">${renderInlineSyntax(lines[index - 1])}</span>`;
+        html = syntaxSpan('heading-mark', line);
+      } else if (HR_RE.test(line)) {
+        html = syntaxSpan('hr', line);
+      } else if ((m = line.match(QUOTE_RE))) {
+        html = syntaxSpan('quote-mark', m[0]) +
+          `<span class="md-quote">${renderInlineSyntax(line.slice(m[0].length))}</span>`;
+      } else if ((m = line.match(LIST_RE))) {
+        html = escapeSyntaxHtml(m[1]) + syntaxSpan('list-mark', m[2]) + escapeSyntaxHtml(m[3]) +
+          syntaxSpan('task', m[4] || '') + renderInlineSyntax(line.slice(m[0].length));
+      } else if (/^\s*\|/.test(line)) {
+        html = TABLE_SEPARATOR_RE.test(line) ? syntaxSpan('table-pipe', line) : renderTableRowSyntax(line);
+      } else {
+        html = renderInlineSyntax(line);
+        paragraph = line.trim() !== '';
+      }
+      out.push(html);
+      prevParagraph = paragraph;
+    });
+    return out.join('\n');
+  }
+
+  // The layers have no scrollbar of their own, so they are padded by the
+  // width of the textarea's; otherwise their lines would wrap at a
+  // different place than the text they sit under.
+  function syncEditorLayerWidth() {
+    const ta = el.mdSourceEditor;
+    const padding = `${20 + ta.offsetWidth - ta.clientWidth}px`;
+    for (const layer of [el.editorHighlight, el.editorSyntax]) {
+      if (layer.style.paddingRight !== padding) layer.style.paddingRight = padding;
+    }
+  }
+  new ResizeObserver(syncEditorLayerWidth).observe(el.mdSourceEditor);
+
+  // The layer is repainted from the textarea's text at most once a frame,
+  // whatever changed it: typing, or a file being loaded into the editor.
+  let editorSyntaxQueued = false;
+  function scheduleEditorSyntax() {
+    if (editorSyntaxQueued) return;
+    editorSyntaxQueued = true;
+    requestAnimationFrame(() => {
+      editorSyntaxQueued = false;
+      const value = el.mdSourceEditor.value;
+      const html = state.currentFileKind === 'markdown' ? renderMarkdownSyntax(value) : escapeSyntaxHtml(value);
+      // The trailing newline gives a final empty line a line box, as the
+      // textarea has, so the layer can scroll as far as the textarea does.
+      el.editorSyntax.innerHTML = html + '\n';
+      syncEditorLayerWidth();
+      syncEditorMirrorScroll();
+    });
+  }
+
+  // Files are loaded by assigning `value`, which fires no event: hook the
+  // setter on this one element so every assignment repaints the layer.
+  {
+    const valueProp = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value');
+    Object.defineProperty(el.mdSourceEditor, 'value', {
+      configurable: true,
+      get() {
+        return valueProp.get.call(this);
+      },
+      set(v) {
+        valueProp.set.call(this, v);
+        scheduleEditorSyntax();
+      },
+    });
+  }
+  el.mdSourceEditor.addEventListener('input', scheduleEditorSyntax);
+
+  // ---------------------------------------------------------------------
   // Viewer selection mirrored into the source editor
   //
   // Dragging out a selection in the preview marks the matching text in the
@@ -2449,8 +2655,10 @@
   }
 
   function syncEditorMirrorScroll() {
-    el.editorHighlight.scrollTop = el.mdSourceEditor.scrollTop;
-    el.editorHighlight.scrollLeft = el.mdSourceEditor.scrollLeft;
+    for (const layer of [el.editorHighlight, el.editorSyntax]) {
+      layer.scrollTop = el.mdSourceEditor.scrollTop;
+      layer.scrollLeft = el.mdSourceEditor.scrollLeft;
+    }
   }
 
   // Selection changes arrive in bursts while dragging, so the mapping runs
