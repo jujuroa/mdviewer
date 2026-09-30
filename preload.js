@@ -3,6 +3,7 @@ const { contextBridge, ipcRenderer, webUtils } = require('electron');
 contextBridge.exposeInMainWorld('mdviewer', {
   openFolderDialog: () => ipcRenderer.invoke('dialog:open-folder'),
   openFileDialog: () => ipcRenderer.invoke('dialog:open-file'),
+  saveFileDialog: (defaultDir, defaultName) => ipcRenderer.invoke('dialog:save-file', defaultDir, defaultName),
   listDir: (dirPath) => ipcRenderer.invoke('fs:list-dir', dirPath),
   renderMarkdown: (filePath, requestId) => ipcRenderer.invoke('fs:render-markdown', filePath, requestId),
   renderPlantUmlFile: (filePath, requestId) => ipcRenderer.invoke('fs:render-plantuml', filePath, requestId),
@@ -73,6 +74,8 @@ contextBridge.exposeInMainWorld('mdviewer', {
   },
   onMenuOpenFolder: (callback) => ipcRenderer.on('menu:open-folder', callback),
   onMenuOpenFile: (callback) => ipcRenderer.on('menu:open-file', callback),
+  onMenuNewDocument: (callback) => ipcRenderer.on('menu:new-document', callback),
+  onMenuCloseDocument: (callback) => ipcRenderer.on('menu:close-document', callback),
   onOpenPathFromOS: (callback) => {
     const listener = (event, filePath) => callback(filePath);
     ipcRenderer.on('file:open-path', listener);

@@ -1238,6 +1238,12 @@ function buildAppMenu() {
       label: t('menu.file'),
       submenu: [
         {
+          label: t('menu.newDocument'),
+          accelerator: 'CmdOrCtrl+N',
+          click: () => mainWindow.webContents.send('menu:new-document'),
+        },
+        { type: 'separator' },
+        {
           label: t('menu.openFolder'),
           accelerator: 'CmdOrCtrl+O',
           click: () => mainWindow.webContents.send('menu:open-folder'),
@@ -1252,6 +1258,11 @@ function buildAppMenu() {
           label: t('menu.save'),
           accelerator: 'CmdOrCtrl+S',
           click: () => mainWindow.webContents.send('menu:save-file'),
+        },
+        {
+          label: t('menu.closeDocument'),
+          accelerator: 'CmdOrCtrl+W',
+          click: () => mainWindow.webContents.send('menu:close-document'),
         },
         { type: 'separator' },
         {
@@ -1440,6 +1451,22 @@ function createWindow() {
     mainWindow.webContents.send('window:fullscreen-changed', false);
   });
 
+  // The renderer blocks unload (beforeunload) while the editor holds unsaved
+  // text — an untitled draft exists nowhere else — and Electron leaves the
+  // asking to us: closing or reloading silently does nothing otherwise.
+  mainWindow.webContents.on('will-prevent-unload', (event) => {
+    const choice = dialog.showMessageBoxSync(mainWindow, {
+      type: 'warning',
+      title: t('close.discardTitle'),
+      message: t('close.discardMessage'),
+      buttons: [t('close.discardButton'), t('close.cancelButton')],
+      defaultId: 1,
+      cancelId: 1,
+      noLink: true,
+    });
+    if (choice === 0) event.preventDefault();
+  });
+
   const webContentsId = mainWindow.webContents.id;
   mainWindow.on('closed', () => {
     stopWatching(webContentsId);
@@ -1573,6 +1600,21 @@ ipcMain.handle('dialog:open-file', async () => {
   });
   if (result.canceled || result.filePaths.length === 0) return null;
   return result.filePaths[0];
+});
+
+// Save As for an untitled draft: the draft has no path until the user
+// picks one here.
+ipcMain.handle('dialog:save-file', async (event, defaultDir, defaultName) => {
+  const result = await dialog.showSaveDialog(mainWindow, {
+    title: t('draft.saveDialogTitle'),
+    defaultPath: defaultDir ? path.join(defaultDir, defaultName) : defaultName,
+    filters: [
+      { name: 'Markdown', extensions: ['md', 'markdown'] },
+      { name: 'All Files', extensions: ['*'] },
+    ],
+  });
+  if (result.canceled || !result.filePath) return null;
+  return result.filePath;
 });
 
 ipcMain.handle('fs:list-dir', (event, dirPath) => {

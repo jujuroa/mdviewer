@@ -43,6 +43,10 @@
     // Set while the viewer is showing a file that was dropped on it rather
     // than opened from the project tree — see instantViewDropped().
     instantViewPath: null,
+    // Set while the editor holds an untitled draft (File > New Document):
+    // text with no file behind it yet, so currentFilePath stays null until
+    // the first save picks a path (see saveUntitledDraft).
+    untitledDraft: false,
   };
 
   // Set just before a loadAndRender* call to mark the document it is about
@@ -80,6 +84,7 @@
     recentList: document.getElementById('recent-list'),
     welcomeOpenFolder: document.getElementById('welcome-open-folder'),
     welcomeOpenFile: document.getElementById('welcome-open-file'),
+    welcomeNewDocument: document.getElementById('welcome-new-document'),
     btnImportCss: document.getElementById('btn-import-css'),
     importDropdown: document.getElementById('import-css-dropdown'),
     importRecentList: document.getElementById('import-recent-list'),
@@ -1413,6 +1418,9 @@
 
   async function persistProjectState() {
     if (!state.rootPath) return;
+    // A draft has no file to record; saving now would only overwrite
+    // lastOpenFile with nothing.
+    if (state.untitledDraft) return;
     // An instant-viewed file isn't part of the project; recording it as
     // lastOpenFile would reopen an unrelated document on the next launch.
     if (state.instantViewPath) return;
@@ -1450,6 +1458,9 @@
     // link, back button) clears the instant-view flag on its own.
     state.instantViewPath = pendingInstantViewPath === nextFilePath ? nextFilePath : null;
     pendingInstantViewPath = null;
+    // Opening any document leaves the draft behind (guardNavigation has
+    // already asked about its unsaved text).
+    state.untitledDraft = false;
 
     captureScrollPosition();
     if (!state.navigatingBack && state.currentFilePath && state.currentFilePath !== nextFilePath) {
@@ -2469,6 +2480,7 @@
   function forceExitEditMode() {
     state.editMode = false;
     state.sourceDirty = false;
+    state.untitledDraft = false;
     setEditModeUI(false);
     el.editStatus.textContent = '';
   }
@@ -2519,7 +2531,11 @@
     state.sourceDirty = false;
     setEditModeUI(false);
     el.editStatus.textContent = '';
-    if (state.currentFilePath) {
+    if (state.untitledDraft) {
+      // A draft is only viewable through the editor, so leaving edit mode
+      // discards it.
+      showNoDocument();
+    } else if (state.currentFilePath) {
       loadAndRenderByPath(state.currentFilePath);
     } else {
       persistProjectState();
@@ -2554,7 +2570,9 @@
       }
       return;
     }
-    const baseDir = dirnameOf(state.currentFilePath);
+    // A draft resolves relative links/images against the project root until
+    // it is saved somewhere.
+    const baseDir = state.currentFilePath ? dirnameOf(state.currentFilePath) : state.rootPath || '';
     const result = await window.mdviewer.renderMarkdownText(el.mdSourceEditor.value, baseDir, requestId);
     if (isStaleRequest(requestId)) return;
     if (result.ok) {
@@ -2568,6 +2586,10 @@
   }
 
   async function saveSource() {
+    if (state.untitledDraft) {
+      await saveUntitledDraft();
+      return;
+    }
     if (!state.currentFilePath) return;
     state.suppressNextWatch = true;
     const result = await window.mdviewer.writeFile(state.currentFilePath, el.mdSourceEditor.value);
@@ -2599,9 +2621,16 @@
   // preventDefault only happens once we're sure there's an image to handle.
   el.mdSourceEditor.addEventListener('paste', async (e) => {
     const items = e.clipboardData && e.clipboardData.items;
-    if (!items || !state.currentFilePath) return;
+    if (!items) return;
     const hasImage = Array.from(items).some((item) => item.type.startsWith('image/'));
     if (!hasImage) return;
+    // The image is saved next to the document, which a draft doesn't have.
+    if (state.untitledDraft) {
+      e.preventDefault();
+      el.editStatus.textContent = t('draft.pasteImageNeedsSave');
+      return;
+    }
+    if (!state.currentFilePath) return;
     e.preventDefault();
 
     const result = await window.mdviewer.savePastedImage(state.currentFilePath);
@@ -2704,11 +2733,143 @@
     ta.setSelectionRange(newStart, newEnd);
   }
 
+  // ---------------------------------------------------------------------
+  // Untitled drafts: write first, pick a file name on the first save
+  // ---------------------------------------------------------------------
+
+  function fileKindForPath(filePath) {
+    if (/\.puml$/i.test(filePath)) return 'puml';
+    if (/\.json$/i.test(filePath)) return 'json';
+    if (isPlainTextPath(filePath)) return 'text';
+    return 'markdown';
+  }
+
+  // Opens an empty markdown draft in the split editor. Works with or
+  // without a project open; nothing touches the disk until it is saved.
+  async function newUntitledDraft() {
+    if (!(await guardNavigation())) return;
+    exitDocFullscreen();
+    // Records the document being left on the back stack, like any other
+    // switch (and clears the draft flag, set again just below).
+    beginDocumentNavigation(null);
+    beginRenderRequest();
+    state.untitledDraft = true;
+    state.currentFilePath = null;
+    state.currentFileKind = 'markdown';
+    showProjectView();
+    el.frame.contentDocument.body.innerHTML = '';
+    el.fileName.textContent = t('draft.title');
+    el.fileName.title = '';
+    updateFileKindUI();
+    markActiveDocRow();
+
+    el.mdSourceEditor.value = '';
+    state.editMode = true;
+    state.sourceDirty = false;
+    setEditModeUI(true);
+    el.editStatus.textContent = '';
+    el.mdSourceEditor.focus();
+    refreshToc();
+  }
+
+  // Puts the viewer back to the "nothing open" state, dropping any draft
+  // (its text already confirmed as discardable by the caller).
+  function showNoDocument() {
+    state.untitledDraft = false;
+    el.mdSourceEditor.value = '';
+    if (!state.rootPath) {
+      showWelcomeScreen();
+      return;
+    }
+    el.fileName.textContent = t('toolbar.selectDocument');
+    el.fileName.title = '';
+    el.frame.contentDocument.body.innerHTML =
+      `<div class="mdviewer-empty-state">${escapeHtml(t('toolbar.selectDocument'))}</div>`;
+    refreshToc();
+  }
+
+  // File > Close Document (Ctrl+W): closes the open file or draft and
+  // leaves the viewer empty, asking first about unsaved edits. The closed
+  // file goes on the back stack like any other switch, so mouse-back
+  // reopens it.
+  async function closeCurrentDocument() {
+    if (!state.currentFilePath && !state.untitledDraft) return;
+    if (!(await guardNavigation())) return;
+    exitDocFullscreen();
+    if (state.editMode) {
+      state.editMode = false;
+      state.sourceDirty = false;
+      setEditModeUI(false);
+      el.editStatus.textContent = '';
+    }
+    beginDocumentNavigation(null);
+    beginRenderRequest();
+    state.currentFilePath = null;
+    state.currentFileKind = 'markdown';
+    clearJsonPath();
+    updateFileKindUI();
+    markActiveDocRow();
+    showNoDocument();
+    persistProjectState();
+  }
+
+  // First save of a draft: ask where, write it, then carry on editing the
+  // new file in place (same buffer, so undo history and caret survive).
+  async function saveUntitledDraft() {
+    const filePath = await window.mdviewer.saveFileDialog(state.rootPath || '', t('draft.defaultFileName'));
+    if (!filePath || !state.untitledDraft) return;
+    const content = el.mdSourceEditor.value;
+    const result = await window.mdviewer.writeFile(filePath, content);
+    if (!result.ok) {
+      el.editStatus.textContent = t('edit.saveFailed', { error: result.error });
+      return;
+    }
+    state.untitledDraft = false;
+    state.sourceDirty = false;
+
+    // Without a project there is no tree to show the file in: open its
+    // folder as the project, the same way Open File does, and keep editing.
+    if (!state.rootPath) {
+      await openSingleFile(filePath);
+      if (state.currentFilePath === filePath && !state.editMode) await enterEditMode();
+      el.editStatus.textContent = t('edit.saved');
+      return;
+    }
+
+    state.currentFilePath = filePath;
+    state.currentFileKind = fileKindForPath(filePath);
+    renderBreadcrumb(filePath);
+    updateFileKindUI();
+    window.mdviewer.watchFile(filePath);
+    await refreshTreeDir(dirnameOf(filePath));
+    await revealPathInTree(filePath, { select: true });
+    markActiveDocRow();
+    el.editStatus.textContent = t('edit.saved');
+    if (state.currentFileKind === 'puml') {
+      await renderPumlFromText(content);
+    } else {
+      await renderSourcePreview();
+    }
+    persistProjectState();
+  }
+
+  // Closing or reloading the window would drop unsaved editor text without
+  // a word (for a draft, with no copy anywhere); blocking unload hands the
+  // question to main.js's 'will-prevent-unload' dialog.
+  window.addEventListener('beforeunload', (e) => {
+    if (!state.editMode || !state.sourceDirty) return;
+    e.preventDefault();
+    e.returnValue = '';
+  });
+
   el.btnToggleEdit.addEventListener('click', toggleEditMode);
   el.btnSaveSource.addEventListener('click', saveSource);
   el.btnRefreshPuml.addEventListener('click', refreshCurrentFile);
 
   window.mdviewer.onMenuToggleEditMode(toggleEditMode);
+  window.mdviewer.onMenuNewDocument(newUntitledDraft);
+  window.mdviewer.onMenuCloseDocument(closeCurrentDocument);
+  el.welcomeNewDocument.addEventListener('click', newUntitledDraft);
   window.mdviewer.onMenuSaveFile(() => {
     if (state.editMode) saveSource();
   });
