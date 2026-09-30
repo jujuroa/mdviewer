@@ -2468,6 +2468,48 @@
     });
   }
 
+  // Selecting text in the editor faintly marks every other place the same
+  // text appears, as code editors do. Only a one-line, non-blank selection
+  // counts, matched case-sensitively; the selection itself is left to the
+  // textarea's own highlight.
+  const OCCURRENCE_MAX_LENGTH = 200;
+  const OCCURRENCE_MAX_MATCHES = 2000;
+
+  function editorOccurrenceRanges() {
+    const ta = el.mdSourceEditor;
+    const { selectionStart: selStart, selectionEnd: selEnd, value } = ta;
+    if (selEnd <= selStart || selEnd - selStart > OCCURRENCE_MAX_LENGTH) return [];
+    const needle = value.slice(selStart, selEnd);
+    if (needle.includes('\n') || !needle.trim()) return [];
+    const ranges = [];
+    let at = value.indexOf(needle);
+    while (at !== -1 && ranges.length < OCCURRENCE_MAX_MATCHES) {
+      if (at !== selStart) ranges.push([at, at + needle.length]);
+      at = value.indexOf(needle, at + needle.length);
+    }
+    return ranges;
+  }
+
+  let editorOccurrenceQueued = false;
+  function updateEditorOccurrences() {
+    if (editorOccurrenceQueued) return;
+    editorOccurrenceQueued = true;
+    requestAnimationFrame(() => {
+      editorOccurrenceQueued = false;
+      // Only the user's own selection in the editor drives this; find hits
+      // own the layer while the bar is open.
+      if (!state.editMode || editorFindActive()) return;
+      if (document.activeElement !== el.mdSourceEditor) return;
+      const ranges = editorOccurrenceRanges();
+      // Nothing to mark: drop earlier occurrence marks, but leave a
+      // viewer-selection mirror alone.
+      if (!ranges.length && el.editorHighlight.dataset.mode !== 'occurrence') return;
+      renderEditorMarks('occurrence', ranges, -1);
+    });
+  }
+  // A textarea's selection changes are reported on the document.
+  document.addEventListener('selectionchange', updateEditorOccurrences);
+
   // ---------------------------------------------------------------------
   // Body (source) editing
   // ---------------------------------------------------------------------

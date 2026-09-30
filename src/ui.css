@@ -810,6 +810,13 @@ html, body {
   background: rgba(78, 201, 176, 0.32);
 }
 
+/* Other occurrences of the text selected in the editor: a faint tint of the
+   selection colour, so they read as "the same as what you selected". */
+#editor-highlight[data-mode="occurrence"] mark {
+  background: rgba(173, 214, 255, 0.15);
+  outline: 1px solid rgba(173, 214, 255, 0.28);
+}
+
 /* Find-in-source hits, in the same amber the viewer's find uses, so the two
    find modes read as the same feature. */
 #editor-highlight[data-mode="find"] mark {
