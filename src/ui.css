@@ -1456,7 +1456,14 @@ html, body {
   text-overflow: ellipsis;
 }
 .toc-item:hover { background: var(--hover); }
-.toc-item.current { color: var(--accent); font-weight: 600; }
+/* The section the viewer is scrolled to (see updateTocActive), marked the
+   same way the explorer marks the open document. */
+.toc-item.toc-active { box-shadow: inset 2px 0 0 var(--accent); }
+.toc-item.toc-active:not(:hover) { background: var(--active-doc); }
+.toc-item.toc-active .toc-label {
+  color: var(--accent);
+  font-weight: 600;
+}
 
 /* Heading rows carry a fold caret, so they lay out as caret + label; the
    links and sub-page lists stay plain .toc-item rows. */

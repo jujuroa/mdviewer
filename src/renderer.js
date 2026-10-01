@@ -401,7 +401,19 @@
     // Debounced scroll-position tracking, so re-opening a file later can
     // restore where the reader left off (see loadAndRenderFile).
     let viewerEditorSyncQueued = false;
+    let tocActiveQueued = false;
+    const queueTocActive = () => {
+      if (tocActiveQueued) return;
+      tocActiveQueued = true;
+      requestAnimationFrame(() => {
+        tocActiveQueued = false;
+        updateTocActive();
+      });
+    };
+    // Resizing the viewer moves headings without any scroll.
+    el.frame.contentWindow.addEventListener('resize', queueTocActive);
     el.frame.contentWindow.addEventListener('scroll', () => {
+      queueTocActive();
       clearTimeout(state.scrollDebounceTimer);
       state.scrollDebounceTimer = setTimeout(() => {
         captureScrollPosition();
@@ -4372,10 +4384,69 @@
     tocEntries.forEach((entry) => {
       if (entry.li) entry.li.classList.toggle('hidden', tocEntryHidden(entry, collapsed));
     });
+    updateTocActive();
+  }
+
+  // Index of the TOC entry currently marked as being read (-1: none), so the
+  // list only scrolls to follow it when it actually moves.
+  let tocActiveIndex = -1;
+
+  // The section being read: the last heading that has scrolled up past a
+  // line a fifth of the way down the viewer. At the very bottom of the
+  // document, headings too close to the end to ever reach that line count
+  // as soon as they're on screen — otherwise the last short sections could
+  // never be marked.
+  function currentTocIndex() {
+    const win = el.frame.contentWindow;
+    const doc = el.frame.contentDocument;
+    if (!win || !doc || !tocEntries.length) return -1;
+    const viewHeight = win.innerHeight;
+    const atBottom = win.scrollY + viewHeight >= doc.documentElement.scrollHeight - 2;
+    const line = atBottom ? viewHeight : viewHeight * 0.2;
+    let index = -1;
+    for (let i = 0; i < tocEntries.length; i++) {
+      const heading = tocEntries[i].heading;
+      if (!heading.isConnected) continue;
+      if (heading.getBoundingClientRect().top > line) break;
+      index = i;
+    }
+    return index;
+  }
+
+  // Marks the section being read in the TOC. Inside a folded heading the
+  // mark goes to the nearest heading still showing, so it's never lost.
+  function updateTocActive() {
+    let index = currentTocIndex();
+    const collapsed = tocCollapsedSet();
+    while (index !== -1 && tocEntryHidden(tocEntries[index], collapsed)) index = tocEntries[index].parent;
+    tocEntries.forEach((entry, i) => {
+      if (entry.li) entry.li.classList.toggle('toc-active', i === index);
+    });
+    if (index === tocActiveIndex) return;
+    tocActiveIndex = index;
+    const li = index !== -1 ? tocEntries[index].li : null;
+    if (li) scrollTocItemIntoView(li);
+  }
+
+  // Keeps the marked row inside the TOC's own scroll box. Done by hand
+  // rather than with scrollIntoView, which would also scroll the app's
+  // overflow:hidden layout boxes around it.
+  function scrollTocItemIntoView(li) {
+    const box = li.closest('.toc-panel-body');
+    if (!box || !li.offsetParent) return;
+    const boxRect = box.getBoundingClientRect();
+    const liRect = li.getBoundingClientRect();
+    const margin = 24;
+    if (liRect.top < boxRect.top + margin) {
+      box.scrollTop -= boxRect.top + margin - liRect.top;
+    } else if (liRect.bottom > boxRect.bottom - margin) {
+      box.scrollTop += liRect.bottom - (boxRect.bottom - margin);
+    }
   }
 
   function renderTocList() {
     el.tocList.innerHTML = '';
+    tocActiveIndex = -1;
     const collapsed = tocCollapsedSet();
 
     tocEntries.forEach((entry) => {
