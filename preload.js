@@ -41,6 +41,7 @@ contextBridge.exposeInMainWorld('mdviewer', {
   openPath: (folderPath) => ipcRenderer.invoke('shell:open-path', folderPath),
   setWindowFullscreen: (enabled) => ipcRenderer.invoke('window:set-fullscreen', enabled),
   exportPdf: (filePath, rootPath) => ipcRenderer.invoke('export:pdf', filePath, rootPath),
+  findProjectRoot: (filePath) => ipcRenderer.invoke('fs:find-project-root', filePath),
   loadProjectState: (rootPath) => ipcRenderer.invoke('fs:load-project-state', rootPath),
   saveProjectState: (rootPath, projectState) =>
     ipcRenderer.invoke('fs:save-project-state', rootPath, projectState),

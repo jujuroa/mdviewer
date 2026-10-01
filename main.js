@@ -1215,6 +1215,24 @@ function loadProjectState(rootPath) {
   }
 }
 
+// A file opened from outside the app (file association, command line)
+// usually belongs to a project somewhere above it. The nearest ancestor
+// folder holding a .mdviewer config folder is that project; null when
+// there is none, so the caller falls back to the file's own folder.
+function findProjectRootForFile(filePath) {
+  let dir = path.dirname(path.resolve(filePath));
+  for (;;) {
+    try {
+      if (fs.statSync(path.join(dir, CONFIG_DIR_NAME)).isDirectory()) return dir;
+    } catch (err) {
+      /* no config folder here; keep walking up */
+    }
+    const parent = path.dirname(dir);
+    if (parent === dir) return null;
+    dir = parent;
+  }
+}
+
 function saveProjectState(rootPath, projectState) {
   const dir = path.join(rootPath, CONFIG_DIR_NAME);
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
@@ -1879,6 +1897,8 @@ ipcMain.handle('fs:save-project-css', (event, rootPath, css) => {
     return { ok: false, error: err.message };
   }
 });
+
+ipcMain.handle('fs:find-project-root', (event, filePath) => findProjectRootForFile(filePath));
 
 ipcMain.handle('fs:load-project-state', (event, rootPath) => {
   try {

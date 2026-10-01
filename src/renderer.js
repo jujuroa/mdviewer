@@ -970,6 +970,9 @@
 
     if (savedState.lastOpenFile) {
       await loadAndRenderByPath(savedState.lastOpenFile);
+      // Unfold the tree down to the restored document so it's visible
+      // (and marked) without hunting for it in collapsed folders.
+      if (state.currentFilePath) await revealPathInTree(state.currentFilePath, { select: true });
       if (savedState.editModeOpen && state.currentFilePath) {
         await enterEditMode();
       }
@@ -978,11 +981,24 @@
     return true;
   }
 
-  async function openSingleFile(filePath) {
-    const dir = filePath.substring(0, Math.max(filePath.lastIndexOf('/'), filePath.lastIndexOf('\\')));
-    const opened = await openFolder(dir);
-    if (!opened) return;
+  // findProject: the file came from outside the app (double-click, command
+  // line, a drop with no project open), so open the nearest ancestor folder
+  // that is an mdviewer project (has a .mdviewer folder) rather than just
+  // the file's own folder. Already inside the open project → stay in it.
+  async function openSingleFile(filePath, { findProject = false } = {}) {
+    let dir = filePath.substring(0, Math.max(filePath.lastIndexOf('/'), filePath.lastIndexOf('\\')));
+    if (findProject) {
+      const projectRoot = await window.mdviewer.findProjectRoot(filePath);
+      if (projectRoot) dir = projectRoot;
+    }
+    if (state.rootPath && normalizePath(dir) === normalizePath(state.rootPath)) {
+      if (!(await guardNavigation())) return;
+    } else {
+      const opened = await openFolder(dir);
+      if (!opened) return;
+    }
     await loadAndRenderByPath(filePath);
+    if (state.currentFilePath) await revealPathInTree(state.currentFilePath, { select: true });
   }
 
   async function populateRecentList() {
@@ -4975,7 +4991,7 @@
   });
 
   window.mdviewer.onOpenPathFromOS((filePath) => {
-    openSingleFile(filePath);
+    openSingleFile(filePath, { findProject: true });
   });
 
   window.mdviewer.onOpenFolderFromOS((folderPath) => {
@@ -5187,7 +5203,7 @@
     // welcome screen is), so there is nothing to instant-view into: fall
     // back to opening the file's folder, the way "Open File" does.
     if (!state.rootPath) {
-      await openSingleFile(filePath);
+      await openSingleFile(filePath, { findProject: true });
       return;
     }
 
