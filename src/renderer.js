@@ -1,5 +1,10 @@
 (() => {
   const state = {
+    // Every project folder shown in the explorer, in the order opened.
+    // rootPath is the active one among them: the project of the document
+    // being viewed, whose CSS, saved state, search, breadcrumb and
+    // terminal apply (see switchProjectForPath / activateProject).
+    projects: [],
     rootPath: null,
     currentFilePath: null,
     currentFileKind: 'markdown',
@@ -11,7 +16,6 @@
     sourceDebounceTimer: null,
     suppressNextWatch: false,
     terminalOpen: false,
-    terminalStarted: false,
     scrollPositions: {},
     scrollDebounceTimer: null,
     suppressScrollSync: false,
@@ -195,12 +199,18 @@
     state.customTextExtensions = result.ok ? result.extensions : [];
   }
 
+  // Rebuilds every project's top level (subfolders collapse again), leaving
+  // each project row expanded or collapsed as the user had it.
   async function refreshTreeRoot() {
-    if (!state.rootPath) return;
-    const result = await window.mdviewer.listDir(state.rootPath);
-    if (!result.ok) return;
-    el.tree.innerHTML = '';
-    buildTreeNodes(el.tree, result.items, 0);
+    for (const root of state.projects) {
+      const node = findProjectNode(root);
+      if (!node) continue;
+      const result = await window.mdviewer.listDir(root);
+      if (!result.ok) continue;
+      const childrenContainer = node.querySelector(':scope > .tree-children');
+      childrenContainer.innerHTML = '';
+      buildTreeNodes(childrenContainer, result.items, 1);
+    }
   }
 
   function renderExtList() {
@@ -727,7 +737,7 @@
     window.mdviewer.setWindowFullscreen(false);
     // xterm sizes itself from the panel's pixel box, which stayed frozen at
     // display:none for as long as the mode was on.
-    if (state.terminalOpen && fitAddon) fitAddon.fit();
+    fitActiveTerminal();
   }
 
   function toggleDocFullscreen() {
@@ -895,58 +905,124 @@
     populateRecentList();
   }
 
-  async function openFolder(folderPath) {
-    if (!(await guardNavigation())) return false;
-    if (state.editMode) forceExitEditMode();
-    // The new project's tree is the whole point of opening it; don't land
-    // in a chrome-less fullscreen view of the document being left behind.
-    exitDocFullscreen();
+  function isPathUnder(filePath, rootPath) {
+    const target = normalizePath(filePath);
+    const root = normalizePath(rootPath);
+    return target === root || target.startsWith(root + '/');
+  }
 
-    const check = await window.mdviewer.listDir(folderPath);
-    if (!check.ok) {
-      await window.mdviewer.removeRecentProject(folderPath);
-      showWelcomeScreen();
-      const errRow = document.createElement('li');
-      errRow.className = 'recent-empty';
-      errRow.textContent = t('folder.openFailed', { error: check.error });
-      el.recentList.prepend(errRow);
-      return false;
+  // The open project a path belongs to — the innermost one when projects
+  // nest — or null when it sits outside all of them.
+  function projectRootFor(filePath) {
+    if (!filePath) return null;
+    let best = null;
+    for (const root of state.projects) {
+      if (isPathUnder(filePath, root) && (!best || root.length > best.length)) best = root;
     }
+    return best;
+  }
 
-    state.rootPath = folderPath;
-    state.currentFilePath = null;
-    state.currentFileKind = 'markdown';
-    state.docHistoryStack = [];
-    state.docForwardStack = [];
-    state.scrollJumpStack = [];
-    state.scrollForwardStack = [];
-    updateFileKindUI();
+  function isOpenProject(folderPath) {
+    return state.projects.some((root) => normalizePath(root) === normalizePath(folderPath));
+  }
 
-    // Restart the shell in the newly opened project's folder so its cwd
-    // stays in sync with what's shown in the tree/preview.
-    if (state.terminalOpen) {
-      ensureXterm();
-      term.reset();
-      await window.mdviewer.startTerminal(folderPath, term.cols, term.rows);
-      state.terminalStarted = true;
-      el.terminalCwd.textContent = folderPath;
-      el.terminalCwd.title = folderPath;
-    } else {
-      state.terminalStarted = false;
+  function findProjectNode(rootPath) {
+    const rootNorm = normalizePath(rootPath);
+    for (const node of el.tree.querySelectorAll(':scope > .project-node')) {
+      if (normalizePath(node.dataset.projectRoot) === rootNorm) return node;
     }
+    return null;
+  }
 
-    el.projectPath.textContent = folderPath;
-    el.projectPath.title = folderPath;
+  // Runs after every change to the open projects or the active one. Lets
+  // the main process reopen these projects after a reload it has to do
+  // itself (a language change), so the user keeps their place, and keeps a
+  // terminal per project with the active project's on screen.
+  function syncOpenProjects() {
+    window.mdviewer.setOpenProjects(state.projects, state.rootPath);
+    syncTerminalSessions();
+  }
+
+  function markActiveProjectRow() {
+    for (const node of el.tree.querySelectorAll(':scope > .project-node')) {
+      const row = node.querySelector(':scope > .tree-row');
+      row.classList.toggle('active-project', !!state.rootPath && node.dataset.projectRoot === state.rootPath);
+    }
+  }
+
+  // A project's top-level row in the explorer: a folder row like any other
+  // (so arrow keys, drops and New File treat it as one), plus the
+  // project-only items on its context menu.
+  function buildProjectNode(rootPath, items) {
+    const node = document.createElement('div');
+    node.className = 'tree-node project-node';
+    node.dataset.projectRoot = rootPath;
+
+    const row = document.createElement('div');
+    row.className = 'tree-row dir project-root';
+    row.style.paddingLeft = '6px';
+    row.dataset.path = rootPath;
+    row.title = rootPath;
+
+    const caret = document.createElement('span');
+    caret.className = 'tree-caret expanded';
+    caret.textContent = '▶';
+    row.appendChild(caret);
+
+    const icon = document.createElement('span');
+    icon.className = 'tree-icon';
+    icon.textContent = '🗂';
+    row.appendChild(icon);
+
+    const label = document.createElement('span');
+    label.className = 'tree-label';
+    label.textContent = pathBasename(rootPath) || rootPath;
+    row.appendChild(label);
+
+    node.appendChild(row);
+
+    const childrenContainer = document.createElement('div');
+    childrenContainer.className = 'tree-children expanded';
+    childrenContainer.dataset.loaded = '1';
+    buildTreeNodes(childrenContainer, items, 1);
+    node.appendChild(childrenContainer);
+
+    row.addEventListener('click', () => {
+      selectTreeRow(row);
+      const expanded = childrenContainer.classList.toggle('expanded');
+      caret.classList.toggle('expanded', expanded);
+    });
+    row.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      window.mdviewer.showTreeContextMenu(rootPath, rootPath, { isProjectRoot: true });
+    });
+
+    return node;
+  }
+
+  function addProjectToTree(rootPath, items) {
+    state.projects.push(rootPath);
+    el.tree.appendChild(buildProjectNode(rootPath, items));
+    markActiveProjectRow();
+    syncOpenProjects();
+  }
+
+  // Makes rootPath the active project: saves the outgoing one's state, then
+  // loads this one's CSS, panel layout, zoom and scroll offsets. Leaves the
+  // open document alone — callers decide what to show.
+  async function applyProjectState(rootPath) {
+    if (state.rootPath && state.rootPath !== rootPath) {
+      captureScrollPosition();
+      await persistProjectState();
+    }
+    state.rootPath = rootPath;
+    el.projectPath.textContent = rootPath;
+    el.projectPath.title = rootPath;
     el.btnOpenProjectFolder.disabled = false;
-    el.fileName.textContent = t('toolbar.selectDocument');
-    el.fileName.title = '';
-    el.frame.contentDocument.body.innerHTML =
-      `<div class="mdviewer-empty-state">${escapeHtml(t('toolbar.selectDocument'))}</div>`;
     resetProjectSearch();
-    el.tree.innerHTML = '';
-    buildTreeNodes(el.tree, check.items, 0);
+    markActiveProjectRow();
 
-    const stateResult = await window.mdviewer.loadProjectState(folderPath);
+    const stateResult = await window.mdviewer.loadProjectState(rootPath);
     const savedState = stateResult.ok ? stateResult.state : {};
 
     state.cssEnabled = savedState.cssEnabled !== undefined ? savedState.cssEnabled : true;
@@ -961,10 +1037,43 @@
 
     el.tocPanel.classList.toggle('collapsed', !!savedState.tocCollapsed);
 
-    await window.mdviewer.addRecentProject(folderPath);
-    // Lets the main process reopen this project after a reload it has to
-    // do itself (a language change), so the user keeps their place.
-    await window.mdviewer.setActiveProject(folderPath);
+    syncOpenProjects();
+    return savedState;
+  }
+
+  // Opening a document of another open project (tree click, link, back
+  // button) makes that project the active one, so its CSS and saved state
+  // apply to what is now on screen.
+  async function switchProjectForPath(filePath) {
+    const root = projectRootFor(filePath);
+    if (!root || root === state.rootPath) return;
+    await applyProjectState(root);
+  }
+
+  // Activates a project and shows its last open document (or the empty
+  // "select a document" view), the way opening it fresh always has. The
+  // document being left goes on the back stack, so mouse-back returns to it.
+  async function activateProject(rootPath) {
+    const savedState = await applyProjectState(rootPath);
+
+    if (state.currentFilePath) {
+      state.docHistoryStack.push(state.currentFilePath);
+      state.docForwardStack = [];
+    }
+    beginRenderRequest();
+    state.currentFilePath = null;
+    state.currentFileKind = 'markdown';
+    state.instantViewPath = null;
+    state.scrollJumpStack = [];
+    state.scrollForwardStack = [];
+    clearJsonPath();
+    updateFileKindUI();
+    markActiveDocRow();
+
+    el.fileName.textContent = t('toolbar.selectDocument');
+    el.fileName.title = '';
+    el.frame.contentDocument.body.innerHTML =
+      `<div class="mdviewer-empty-state">${escapeHtml(t('toolbar.selectDocument'))}</div>`;
     showProjectView();
     refreshToc();
 
@@ -977,23 +1086,158 @@
         await enterEditMode();
       }
     }
+  }
 
+  // Adds the folder to the explorer next to the projects already open (or,
+  // if it's already there, switches to it) and makes it the active project.
+  async function openFolder(folderPath) {
+    const existing = state.projects.find((root) => normalizePath(root) === normalizePath(folderPath));
+    if (existing && existing === state.rootPath) {
+      await revealPathInTree(existing, { select: true });
+      return true;
+    }
+
+    if (!(await guardNavigation())) return false;
+    if (state.editMode) forceExitEditMode();
+    // The new project's tree is the whole point of opening it; don't land
+    // in a chrome-less fullscreen view of the document being left behind.
+    exitDocFullscreen();
+
+    let rootPath = existing;
+    if (!rootPath) {
+      const check = await window.mdviewer.listDir(folderPath);
+      if (!check.ok) {
+        await window.mdviewer.removeRecentProject(folderPath);
+        const message = t('folder.openFailed', { error: check.error });
+        // With other projects open the viewer stays as it is; the welcome
+        // screen (and its recent list) is only on screen when none are.
+        if (state.projects.length) {
+          setToolbarStatus(message);
+          return false;
+        }
+        showWelcomeScreen();
+        const errRow = document.createElement('li');
+        errRow.className = 'recent-empty';
+        errRow.textContent = message;
+        el.recentList.prepend(errRow);
+        return false;
+      }
+      rootPath = folderPath;
+      addProjectToTree(rootPath, check.items);
+    }
+
+    await window.mdviewer.addRecentProject(rootPath);
+    await activateProject(rootPath);
+    const row = findTreeRow(rootPath);
+    if (row) row.scrollIntoView({ block: 'nearest' });
     return true;
+  }
+
+  // Explorer > project context menu > Close Project. The other projects
+  // stay open; if the closed one was active, the next one takes over.
+  async function closeProject(rootPath) {
+    const index = state.projects.findIndex((root) => normalizePath(root) === normalizePath(rootPath));
+    if (index < 0) return;
+    const root = state.projects[index];
+    const closingActive = root === state.rootPath;
+    const docInside = !!state.currentFilePath && projectRootFor(state.currentFilePath) === root;
+    if (docInside && !(await guardNavigation())) return;
+
+    if (closingActive) {
+      captureScrollPosition();
+      await persistProjectState();
+    }
+    if (docInside) dropCurrentDocument();
+
+    state.projects.splice(index, 1);
+    const node = findProjectNode(root);
+    if (node) node.remove();
+    if (selectedRow && !selectedRow.isConnected) selectedRow = null;
+    // Back/forward must not lead into a project that is no longer open.
+    state.docHistoryStack = state.docHistoryStack.filter((p) => !isPathUnder(p, root));
+    state.docForwardStack = state.docForwardStack.filter((p) => !isPathUnder(p, root));
+
+    if (closingActive) {
+      const next = state.projects[Math.min(index, state.projects.length - 1)];
+      if (!next) {
+        clearActiveProject();
+      } else if (state.currentFilePath || state.untitledDraft) {
+        // Something unrelated to the closed project is on screen (a draft,
+        // an instant-viewed file): keep it, just move the project over.
+        await applyProjectState(next);
+      } else {
+        await activateProject(next);
+      }
+    } else if (docInside) {
+      showNoDocument();
+    }
+    syncOpenProjects();
+  }
+
+  // Explorer empty-space menu > Close All Projects.
+  async function closeAllProjects() {
+    if (!state.projects.length) return;
+    const docInside = !!projectRootFor(state.currentFilePath);
+    if (docInside && !(await guardNavigation())) return;
+
+    captureScrollPosition();
+    await persistProjectState();
+    if (docInside) dropCurrentDocument();
+
+    state.docHistoryStack = state.docHistoryStack.filter((p) => !projectRootFor(p));
+    state.docForwardStack = state.docForwardStack.filter((p) => !projectRootFor(p));
+    state.projects = [];
+    for (const node of el.tree.querySelectorAll(':scope > .project-node')) node.remove();
+    selectedRow = null;
+    clearActiveProject();
+    syncOpenProjects();
+  }
+
+  // The open document belongs to a project being closed: leave the viewer
+  // with nothing open (the callers decide what to show instead).
+  function dropCurrentDocument() {
+    exitDocFullscreen();
+    if (state.editMode) forceExitEditMode();
+    beginRenderRequest();
+    state.currentFilePath = null;
+    state.currentFileKind = 'markdown';
+    state.scrollJumpStack = [];
+    state.scrollForwardStack = [];
+    clearJsonPath();
+    updateFileKindUI();
+  }
+
+  // Last project closed: back to the state the app starts in.
+  function clearActiveProject() {
+    state.rootPath = null;
+    state.scrollPositions = {};
+    el.projectPath.textContent = t('sidebar.noFolderOpen');
+    el.projectPath.title = '';
+    el.btnOpenProjectFolder.disabled = true;
+    resetProjectSearch();
+    el.cssEditor.value = '';
+    state.cssDirty = false;
+    el.cssStatus.textContent = '';
+    applyLiveCss();
+    if (state.currentFilePath || state.untitledDraft) return;
+    el.fileName.textContent = '';
+    el.fileName.title = '';
+    showWelcomeScreen();
   }
 
   // findProject: the file came from outside the app (double-click, command
   // line, a drop with no project open), so open the nearest ancestor folder
   // that is an mdviewer project (has a .mdviewer folder) rather than just
-  // the file's own folder. Already inside the open project → stay in it.
+  // the file's own folder. Already inside an open project → stay in it.
   async function openSingleFile(filePath, { findProject = false } = {}) {
-    let dir = filePath.substring(0, Math.max(filePath.lastIndexOf('/'), filePath.lastIndexOf('\\')));
-    if (findProject) {
-      const projectRoot = await window.mdviewer.findProjectRoot(filePath);
-      if (projectRoot) dir = projectRoot;
-    }
-    if (state.rootPath && normalizePath(dir) === normalizePath(state.rootPath)) {
+    if (projectRootFor(filePath)) {
       if (!(await guardNavigation())) return;
     } else {
+      let dir = filePath.substring(0, Math.max(filePath.lastIndexOf('/'), filePath.lastIndexOf('\\')));
+      if (findProject) {
+        const projectRoot = await window.mdviewer.findProjectRoot(filePath);
+        if (projectRoot) dir = projectRoot;
+      }
       const opened = await openFolder(dir);
       if (!opened) return;
     }
@@ -1119,7 +1363,7 @@
 
       row.addEventListener('contextmenu', (e) => {
         e.preventDefault();
-        window.mdviewer.showTreeContextMenu(item.path, state.rootPath);
+        window.mdviewer.showTreeContextMenu(item.path, projectRootFor(item.path) || state.rootPath);
       });
 
       if (item.isDir) {
@@ -1181,6 +1425,10 @@
   // loaded, and stops as soon as an ancestor isn't in the (possibly stale)
   // DOM yet.
   function findTreeRow(targetPath) {
+    // A project nested in another open project also shows up as a folder
+    // inside the outer one; its own top-level row is the one meant.
+    const projectNode = findProjectNode(targetPath);
+    if (projectNode) return projectNode.querySelector(':scope > .tree-row');
     const targetNorm = normalizePath(targetPath);
     const rows = el.tree.querySelectorAll('.tree-row');
     for (const row of rows) {
@@ -1206,11 +1454,7 @@
   // needed) — used after creating a new file/folder inside it, since the
   // existing DOM (if already loaded) has no idea the new entry exists.
   async function refreshTreeDir(dirPath) {
-    if (!state.rootPath) return;
-    if (normalizePath(dirPath) === normalizePath(state.rootPath)) {
-      await refreshTreeRoot();
-      return;
-    }
+    if (!state.projects.length) return;
     const row = findTreeRow(dirPath);
     if (!row) return;
     const childrenContainer = row.parentElement.querySelector(':scope > .tree-children');
@@ -1229,28 +1473,22 @@
   // needed. Enter creates the entry via IPC and opens it (for files);
   // Escape cancels without creating anything.
   async function beginCreateTreeEntry({ targetDir, kind }) {
-    if (!state.rootPath) return;
+    if (!state.projects.length) return;
 
-    let parentContainer;
-    let depth;
-    if (normalizePath(targetDir) === normalizePath(state.rootPath)) {
-      parentContainer = el.tree;
-      depth = 0;
-    } else {
-      const dirRow = findTreeRow(targetDir);
-      if (!dirRow) return; // target folder isn't currently visible in the tree
-      const childrenContainer = dirRow.parentElement.querySelector(':scope > .tree-children');
-      if (!childrenContainer) return;
-      depth = treeRowDepth(dirRow) + 1;
-      if (!childrenContainer.classList.contains('expanded') || childrenContainer.dataset.loaded !== '1') {
-        childrenContainer.classList.add('expanded');
-        const caret = dirRow.querySelector('.tree-caret');
-        if (caret) caret.classList.add('expanded');
-        childrenContainer.innerHTML = '';
-        childrenContainer.dataset.loaded = '1';
-        await renderTreeLevel(childrenContainer, targetDir, depth, 16);
-      }
-      parentContainer = childrenContainer;
+    // A project root is a folder row too, so this covers creating at the
+    // top of a project as well.
+    const dirRow = findTreeRow(targetDir);
+    if (!dirRow) return; // target folder isn't currently visible in the tree
+    const parentContainer = dirRow.parentElement.querySelector(':scope > .tree-children');
+    if (!parentContainer) return;
+    const depth = treeRowDepth(dirRow) + 1;
+    if (!parentContainer.classList.contains('expanded') || parentContainer.dataset.loaded !== '1') {
+      parentContainer.classList.add('expanded');
+      const caret = dirRow.querySelector('.tree-caret');
+      if (caret) caret.classList.add('expanded');
+      parentContainer.innerHTML = '';
+      parentContainer.dataset.loaded = '1';
+      await renderTreeLevel(parentContainer, targetDir, depth, 16);
     }
 
     // Only one in-progress "new entry" row at a time.
@@ -1446,6 +1684,10 @@
 
   function captureScrollPosition() {
     if (!state.currentFilePath) return;
+    // Right after a switch to another project, the document still on screen
+    // belongs to the previous one, which already saved its offset.
+    const owner = projectRootFor(state.currentFilePath);
+    if (owner && owner !== state.rootPath) return;
     const win = el.frame.contentWindow;
     if (!win) return;
     state.scrollPositions[state.currentFilePath] = { top: win.scrollY, savedAt: Date.now() };
@@ -1551,6 +1793,7 @@
   }
 
   async function loadAndRenderFile(filePath) {
+    await switchProjectForPath(filePath);
     beginDocumentNavigation(filePath);
     const requestId = beginRenderRequest();
     const cancelLoading = scheduleLoadingIndicator();
@@ -1589,6 +1832,7 @@
   // PlantUML files are viewed as a rendered diagram (no live-render-on-type):
   // re-rendering only happens on open, save, and the explicit refresh button.
   async function loadAndRenderPuml(filePath) {
+    await switchProjectForPath(filePath);
     beginDocumentNavigation(filePath);
     const requestId = beginRenderRequest();
     const cancelLoading = scheduleLoadingIndicator();
@@ -1744,6 +1988,7 @@
   // JSON files are shown as a collapsible tree. Like markdown (and unlike
   // PlantUML), the tree re-renders live as you type in edit mode.
   async function loadAndRenderJson(filePath) {
+    await switchProjectForPath(filePath);
     beginDocumentNavigation(filePath);
     beginRenderRequest(); // JSON itself renders synchronously; this just cancels/invalidates any slower request left over from before navigating here.
     clearJsonPath();
@@ -1778,6 +2023,7 @@
   // .txt/.log files are shown as plain, unrendered text. Like markdown and
   // JSON (and unlike PlantUML), it re-renders live as you type.
   async function loadAndRenderText(filePath) {
+    await switchProjectForPath(filePath);
     beginDocumentNavigation(filePath);
     beginRenderRequest(); // plain text itself renders synchronously; this just cancels/invalidates any slower request left over from before navigating here.
     const result = await window.mdviewer.renderPlainTextFile(filePath);
@@ -1983,19 +2229,20 @@
     el.fileName.innerHTML = '';
     el.fileName.title = filePath;
 
-    if (!state.rootPath) {
+    const rootPath = projectRootFor(filePath) || state.rootPath;
+    if (!rootPath) {
       el.fileName.textContent = pathBasename(filePath);
       return;
     }
 
-    const sep = state.rootPath.includes('\\') && !state.rootPath.includes('/') ? '\\' : '/';
-    const rootNorm = normalizePath(state.rootPath);
+    const sep = rootPath.includes('\\') && !rootPath.includes('/') ? '\\' : '/';
+    const rootNorm = normalizePath(rootPath);
     const fileNorm = normalizePath(filePath);
     let rel = '';
     if (fileNorm === rootNorm) {
       rel = '';
     } else if (fileNorm.startsWith(rootNorm + '/')) {
-      rel = filePath.slice(state.rootPath.replace(/[\\/]+$/, '').length);
+      rel = filePath.slice(rootPath.replace(/[\\/]+$/, '').length);
     } else {
       rel = filePath;
     }
@@ -2019,9 +2266,9 @@
       el.fileName.appendChild(seg);
     };
 
-    addSegment(pathBasename(state.rootPath) || state.rootPath, state.rootPath, true);
+    addSegment(pathBasename(rootPath) || rootPath, rootPath, true);
 
-    let acc = state.rootPath.replace(/[\\/]+$/, '');
+    let acc = rootPath.replace(/[\\/]+$/, '');
     for (let i = 0; i < segments.length; i++) {
       acc = acc + sep + segments[i];
       const isLast = i === segments.length - 1;
@@ -2047,8 +2294,8 @@
   async function onBreadcrumbSegmentClick(folderPath) {
     if (!state.rootPath) return;
 
-    if (normalizePath(folderPath) === normalizePath(state.rootPath)) {
-      el.tree.scrollTop = 0;
+    if (isOpenProject(folderPath)) {
+      await revealPathInTree(folderPath);
       return;
     }
 
@@ -2064,24 +2311,20 @@
   }
 
   async function revealPathInTree(targetPath, { select = false } = {}) {
-    if (!state.rootPath) return;
+    if (!state.projects.length) return;
     const targetNorm = normalizePath(targetPath);
-
-    if (targetNorm === normalizePath(state.rootPath)) {
-      el.tree.scrollTop = 0;
-      return;
-    }
 
     let container = el.tree;
     let depth = 0;
     let matchedRow = null;
 
     while (container) {
+      // Only the top level (project rows) can hold more than one match,
+      // when projects nest — the innermost one is where the path lives.
       const rows = Array.from(container.querySelectorAll(':scope > .tree-node > .tree-row'));
-      const ancestorRow = rows.find((r) => {
-        const rPath = normalizePath(r.dataset.path);
-        return rPath === targetNorm || targetNorm.startsWith(rPath + '/');
-      });
+      const ancestorRow = rows
+        .filter((r) => isPathUnder(targetPath, r.dataset.path))
+        .sort((a, b) => b.dataset.path.length - a.dataset.path.length)[0];
       if (!ancestorRow) break;
 
       if (normalizePath(ancestorRow.dataset.path) === targetNorm) {
@@ -4950,15 +5193,14 @@
     if (file) openSingleFile(file);
   });
 
-  // Right-clicking empty tree space (not any specific row) creates new
-  // files/folders at the project root — row-level contextmenu handlers
-  // (see buildTreeNodes) don't call stopPropagation, so this only fires
-  // when the click didn't land on a row.
+  // Right-clicking empty tree space (not any specific row) gets the menu
+  // for the explorer as a whole: new/open project, close them all.
+  // Row-level contextmenu handlers (see buildTreeNodes) don't call
+  // stopPropagation, so this only fires when the click didn't land on a row.
   el.tree.addEventListener('contextmenu', (e) => {
     if (e.target.closest('.tree-row')) return;
     e.preventDefault();
-    if (!state.rootPath) return;
-    window.mdviewer.showTreeContextMenu(state.rootPath, state.rootPath);
+    window.mdviewer.showTreeEmptyContextMenu({ hasProjects: state.projects.length > 0 });
   });
 
   window.mdviewer.onTreeCreateNew(({ targetDir, kind }) => {
@@ -4967,6 +5209,27 @@
 
   window.mdviewer.onTreeRefreshDir(({ targetDir }) => {
     refreshTreeDir(targetDir);
+  });
+
+  window.mdviewer.onTreeCloseProject(({ rootPath }) => {
+    closeProject(rootPath);
+  });
+
+  window.mdviewer.onTreeCloseAllProjects(() => {
+    closeAllProjects();
+  });
+
+  // After a reload the main process did itself (a language change): put
+  // every project back in the explorer, in order, then reactivate the one
+  // that was active.
+  window.mdviewer.onRestoreProjects(async ({ roots, active }) => {
+    for (const root of roots) {
+      if (isOpenProject(root)) continue;
+      const result = await window.mdviewer.listDir(root);
+      if (result.ok) addProjectToTree(root, result.items);
+    }
+    const target = (active && isOpenProject(active) && active) || state.projects[0];
+    if (target) await openFolder(target);
   });
 
   // "Convert to SVG" writes the file with no dialog of any kind, so this
@@ -5037,10 +5300,7 @@
   }
 
   function isInsideProject(filePath) {
-    if (!state.rootPath) return false;
-    const root = normalizePath(state.rootPath);
-    const target = normalizePath(filePath);
-    return target === root || target.startsWith(root + '/');
+    return !!projectRootFor(filePath);
   }
 
   // The toolbar's one-line status slot, the same place save and paste
@@ -5221,12 +5481,27 @@
   // Bottom terminal panel
   // ---------------------------------------------------------------------
 
-  let term = null;
-  let fitAddon = null;
+  // One shell per open project, all started together when the panel opens,
+  // each with its own xterm; the panel shows only the active project's.
+  // With no project open there is a single shell in the home folder.
+  // Sessions are keyed by project root ('' for that home shell) — the same
+  // key main.js files the PTY under.
+  const terminalSessions = new Map(); // key -> { key, term, fitAddon, container, started }
 
-  function ensureXterm() {
-    if (term) return;
-    term = new window.Terminal({
+  function activeTerminalKey() {
+    return state.rootPath || '';
+  }
+
+  function activeTerminal() {
+    return terminalSessions.get(activeTerminalKey()) || null;
+  }
+
+  function createTerminalSession(key) {
+    const container = document.createElement('div');
+    container.className = 'terminal-session hidden';
+    el.terminalXterm.appendChild(container);
+
+    const term = new window.Terminal({
       fontFamily:
         '"D2Coding", "D2Coding ligature", Consolas, "Cascadia Mono", "Cascadia Code", "SFMono-Regular", Menlo, monospace',
       fontSize: 13,
@@ -5235,28 +5510,28 @@
       scrollback: 5000,
       theme: { background: '#1e1e1e', foreground: '#d4d4d4' },
     });
-    fitAddon = new window.FitAddon.FitAddon();
+    const fitAddon = new window.FitAddon.FitAddon();
     term.loadAddon(fitAddon);
-    term.open(el.terminalXterm);
+    term.open(container);
     term.onData((data) => {
-      window.mdviewer.sendTerminalInput(data);
+      window.mdviewer.sendTerminalInput(key, data);
     });
     term.onResize(({ cols, rows }) => {
-      window.mdviewer.resizeTerminal(cols, rows);
+      window.mdviewer.resizeTerminal(key, cols, rows);
     });
     // Right-click is this app's copy/paste gesture in the terminal (the
     // contextmenu handler below), so the right button must never reach
     // xterm's mouse reporting. Once a full-screen program turns mouse
     // tracking on -- Claude Code, vim, htop -- xterm forwards both the press
     // and the release to the program as escape sequences
-    // ([<2;col;rowM / ...m), and a program that reads a right-button
+    // ([<2;col;rowM / ...m), and a program that reads a right-button
     // report as "paste" pastes on each of them, on top of the paste this
     // panel already did: one right-click, up to three pastes. Swallowing the
     // event in the capture phase, before it reaches the xterm element
     // underneath, keeps right-click meaning exactly one thing no matter what
     // is running in the shell.
     for (const type of ['mousedown', 'mouseup', 'auxclick']) {
-      el.terminalXterm.addEventListener(
+      container.addEventListener(
         type,
         (e) => {
           if (e.button !== 2) return;
@@ -5266,7 +5541,7 @@
       );
     }
 
-    el.terminalXterm.addEventListener('contextmenu', async (e) => {
+    container.addEventListener('contextmenu', async (e) => {
       e.preventDefault();
       if (term.hasSelection()) {
         const selection = term.getSelection();
@@ -5277,17 +5552,98 @@
         if (text) term.paste(text);
       }
     });
+
+    const session = { key, term, fitAddon, container, started: false };
+    terminalSessions.set(key, session);
+    return session;
   }
 
-  async function ensureTerminalStarted() {
-    ensureXterm();
-    if (state.terminalStarted) return;
-    const cwd = state.rootPath || undefined;
-    fitAddon.fit();
-    await window.mdviewer.startTerminal(cwd, term.cols, term.rows);
-    state.terminalStarted = true;
-    el.terminalCwd.textContent = cwd || '';
-    el.terminalCwd.title = cwd || '';
+  async function startTerminalSession(session) {
+    // Marked before the await so a second sync running meanwhile doesn't
+    // start the same shell twice.
+    session.started = true;
+    // A hidden xterm has no size of its own to fit to, so it takes the
+    // shown one's: they all sit in the same panel. Starting at the default
+    // 80 columns instead and resizing on first show leaves ConPTY wrapping
+    // the prompt where xterm doesn't, and typed text lands mid-line.
+    if (!session.container.classList.contains('hidden')) {
+      session.fitAddon.fit();
+    } else {
+      matchTerminalSize(session);
+    }
+    const result = await window.mdviewer.startTerminal(
+      session.key,
+      session.key || undefined,
+      session.term.cols,
+      session.term.rows
+    );
+    if (!result || !result.ok) session.started = false;
+  }
+
+  function disposeTerminalSession(session) {
+    window.mdviewer.stopTerminal(session.key);
+    session.term.dispose();
+    session.container.remove();
+    terminalSessions.delete(session.key);
+  }
+
+  // Sizes a hidden session like the one on screen.
+  function matchTerminalSize(session) {
+    const shown = activeTerminal();
+    if (!shown || shown === session || shown.container.classList.contains('hidden')) return;
+    if (session.term.cols !== shown.term.cols || session.term.rows !== shown.term.rows) {
+      session.term.resize(shown.term.cols, shown.term.rows);
+    }
+  }
+
+  // Fits the session on screen to the panel and keeps the hidden ones the
+  // same size, so switching projects never resizes a shell (see
+  // startTerminalSession for why that matters).
+  function fitActiveTerminal() {
+    // Fullscreen hides the terminal panel; fitting it at zero size there
+    // would only have to be undone on the way out (exitDocFullscreen refits).
+    if (!state.terminalOpen || state.docFullscreen) return;
+    const session = activeTerminal();
+    if (!session) return;
+    session.fitAddon.fit();
+    for (const other of terminalSessions.values()) matchTerminalSize(other);
+  }
+
+  function showActiveTerminal() {
+    const key = activeTerminalKey();
+    for (const session of terminalSessions.values()) {
+      session.container.classList.toggle('hidden', session.key !== key);
+    }
+    el.terminalCwd.textContent = key;
+    el.terminalCwd.title = key;
+    fitActiveTerminal();
+  }
+
+  // Brings the sessions in line with the open projects: a closed project's
+  // shell is stopped right away, while shells for newly opened projects
+  // only start once the panel is (or gets) open. startExited also restarts
+  // shells that exited on their own — the panel being opened, which has
+  // always started a fresh shell when the old one was gone.
+  async function syncTerminalSessions({ startExited = false } = {}) {
+    const wanted = state.projects.length ? [...state.projects] : [''];
+    for (const session of [...terminalSessions.values()]) {
+      if (!wanted.includes(session.key)) disposeTerminalSession(session);
+    }
+    const toStart = [];
+    if (state.terminalOpen) {
+      for (const key of wanted) {
+        let session = terminalSessions.get(key);
+        if (!session) {
+          session = createTerminalSession(key);
+          toStart.push(session);
+        } else if (startExited && !session.started) {
+          session.term.reset();
+          toStart.push(session);
+        }
+      }
+    }
+    showActiveTerminal();
+    await Promise.all(toStart.map(startTerminalSession));
   }
 
   async function openTerminalPanel() {
@@ -5296,9 +5652,9 @@
     el.resizerTerminal.classList.remove('hidden');
     el.btnToggleTerminal.classList.add('active');
     state.terminalOpen = true;
-    await ensureTerminalStarted();
-    fitAddon.fit();
-    term.focus();
+    await syncTerminalSessions({ startExited: true });
+    const session = activeTerminal();
+    if (session) session.term.focus();
   }
 
   function closeTerminalPanel() {
@@ -5316,37 +5672,38 @@
     }
   }
 
+  // Restarts only the shell on screen; the other projects' keep running.
   async function restartTerminal() {
-    await window.mdviewer.stopTerminal();
-    state.terminalStarted = false;
-    ensureXterm();
-    term.reset();
-    await ensureTerminalStarted();
-    term.focus();
+    const session = activeTerminal();
+    if (!session) return;
+    await window.mdviewer.stopTerminal(session.key);
+    session.term.reset();
+    await startTerminalSession(session);
+    session.term.focus();
   }
 
   el.btnToggleTerminal.addEventListener('click', toggleTerminalPanel);
   window.mdviewer.onMenuToggleTerminal(toggleTerminalPanel);
   el.btnTerminalClose.addEventListener('click', closeTerminalPanel);
   el.btnTerminalClear.addEventListener('click', () => {
-    if (term) term.clear();
+    const session = activeTerminal();
+    if (session) session.term.clear();
   });
   el.btnTerminalRestart.addEventListener('click', restartTerminal);
 
-  window.mdviewer.onTerminalData((data) => {
-    if (term) term.write(data);
+  window.mdviewer.onTerminalData((key, data) => {
+    const session = terminalSessions.get(key);
+    if (session) session.term.write(data);
   });
 
-  window.mdviewer.onTerminalExit((code) => {
-    if (term) term.write(`\r\n\x1b[31m[${t('terminal.shellExited', { code })}]\x1b[0m\r\n`);
-    state.terminalStarted = false;
+  window.mdviewer.onTerminalExit((key, code) => {
+    const session = terminalSessions.get(key);
+    if (!session) return;
+    session.term.write(`\r\n\x1b[31m[${t('terminal.shellExited', { code })}]\x1b[0m\r\n`);
+    session.started = false;
   });
 
-  window.addEventListener('resize', () => {
-    // Fullscreen hides the terminal panel; fitting it at zero size there
-    // would only have to be undone on the way out (exitDocFullscreen refits).
-    if (state.terminalOpen && !state.docFullscreen && fitAddon) fitAddon.fit();
-  });
+  window.addEventListener('resize', fitActiveTerminal);
 
   // ---------------------------------------------------------------------
   // Pane resizers
@@ -5393,7 +5750,7 @@
   setupResizer(el.resizerRight, el.cssPane, 'right');
   setupResizer(el.editorResizer, el.editorPane, 'left');
   setupResizer(el.resizerTerminal, el.terminalPanel, 'bottom', () => {
-    if (fitAddon) fitAddon.fit();
+    fitActiveTerminal();
   });
 
   // ---------------------------------------------------------------------

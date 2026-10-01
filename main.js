@@ -445,14 +445,19 @@ function mermaidDiagramHtml(svg) {
 
 let mainWindow;
 
-// The project folder the renderer currently has open. A settings change
-// that has to reload the window (see setLanguage) uses this to put the
-// user back where they were instead of dropping them on the welcome
-// screen; the per-project .mdviewer/state.json takes it from there and
-// restores the open file, scroll offset and panel layout.
+// The project folders the renderer's explorer has open, and the active one
+// among them. A settings change that has to reload the window (see
+// setLanguage) uses these to put the user back where they were instead of
+// dropping them on the welcome screen; the per-project .mdviewer/state.json
+// takes it from there and restores the open file, scroll offset and panel
+// layout.
+let openProjectRoots = [];
 let activeProjectRoot = null;
 const fileWatchers = new Map(); // webContents.id -> fs.FSWatcher
-const terminals = new Map(); // webContents.id -> { proc: ChildProcess }
+// webContents.id -> Map(session key -> pty). The renderer runs a shell per
+// open project and names each by its project root ('' for the home-folder
+// shell it runs while no project is open).
+const terminals = new Map();
 
 // When launched by double-clicking a .md file (file association), via
 // `mdviewer.exe file.md`, or via `mdviewer .` from a shell (PATH-installed),
@@ -554,12 +559,11 @@ function reloadWindowRestoringProject() {
     mainWindow.setMenuBarVisibility(true);
   }
   // Registered before reload() so the listener is in place by the time
-  // the fresh page finishes loading. The renderer's 'folder:open-path'
-  // handler is the same one the OS/CLI "open this folder" path uses.
-  if (activeProjectRoot) {
-    const root = activeProjectRoot;
+  // the fresh page finishes loading.
+  if (openProjectRoots.length) {
+    const payload = { roots: [...openProjectRoots], active: activeProjectRoot };
     mainWindow.webContents.once('did-finish-load', () => {
-      mainWindow.webContents.send('folder:open-path', root);
+      mainWindow.webContents.send('projects:restore', payload);
     });
   }
   mainWindow.reload();
@@ -1505,26 +1509,43 @@ function stopWatching(webContentsId) {
   }
 }
 
-// ---- Bottom terminal panel: real PTY-backed shell per window ----
+// ---- Bottom terminal panel: real PTY-backed shells per window ----
 // Uses node-pty (ConPTY on Windows / a real pty on macOS/Linux) so the
 // embedded terminal behaves like a normal shell: colors, cursor movement,
 // Tab completion, Ctrl+C, and interactive/curses programs all work.
 
-function killTerminal(webContentsId) {
-  const t = terminals.get(webContentsId);
-  if (t) {
+// Shells killed on purpose (restart, project closed, window closed). Their
+// exit is expected, so it isn't reported as "shell exited" — on a restart
+// that report would land in the session's fresh shell.
+const killedTerminals = new WeakSet();
+
+function getTerminal(webContentsId, key) {
+  const sessions = terminals.get(webContentsId);
+  return sessions ? sessions.get(key) : undefined;
+}
+
+// Kills one session, or every session of the window when key is omitted.
+function killTerminal(webContentsId, key) {
+  const sessions = terminals.get(webContentsId);
+  if (!sessions) return;
+  const keys = key === undefined ? [...sessions.keys()] : [key];
+  for (const k of keys) {
+    const proc = sessions.get(k);
+    if (!proc) continue;
+    killedTerminals.add(proc);
     try {
-      t.kill();
+      proc.kill();
     } catch (err) {
       /* already dead */
     }
-    terminals.delete(webContentsId);
+    sessions.delete(k);
   }
+  if (!sessions.size) terminals.delete(webContentsId);
 }
 
-function spawnTerminalFor(event, cwd, cols, rows) {
+function spawnTerminalFor(event, key, cwd, cols, rows) {
   const webContentsId = event.sender.id;
-  killTerminal(webContentsId);
+  killTerminal(webContentsId, key);
 
   const isWin = process.platform === 'win32';
   const shellExe = isWin ? 'powershell.exe' : process.env.SHELL || '/bin/bash';
@@ -1548,15 +1569,21 @@ function spawnTerminalFor(event, cwd, cols, rows) {
     cwd,
     env: process.env,
   });
-  terminals.set(webContentsId, ptyProcess);
+  if (!terminals.has(webContentsId)) terminals.set(webContentsId, new Map());
+  terminals.get(webContentsId).set(key, ptyProcess);
 
   const sender = event.sender;
   ptyProcess.onData((data) => {
-    if (!sender.isDestroyed()) sender.send('term:data', data);
+    if (!sender.isDestroyed()) sender.send('term:data', key, data);
   });
   ptyProcess.onExit(({ exitCode }) => {
-    if (!sender.isDestroyed()) sender.send('term:exit', exitCode);
-    terminals.delete(webContentsId);
+    if (killedTerminals.has(ptyProcess)) return;
+    if (!sender.isDestroyed()) sender.send('term:exit', key, exitCode);
+    const sessions = terminals.get(webContentsId);
+    if (sessions && sessions.get(key) === ptyProcess) {
+      sessions.delete(key);
+      if (!sessions.size) terminals.delete(webContentsId);
+    }
   });
 }
 
@@ -1980,7 +2007,7 @@ function projectRelativePath(itemPath, rootPath) {
   return rel.replace(/\\/g, '/');
 }
 
-ipcMain.handle('tree:show-context-menu', (event, itemPath, rootPath) => {
+ipcMain.handle('tree:show-context-menu', (event, itemPath, rootPath, options = {}) => {
   const win = BrowserWindow.fromWebContents(event.sender);
   const isDir = fs.statSync(itemPath).isDirectory();
   // New File/Folder/Refresh act on whatever was right-clicked: inside it for
@@ -2030,9 +2057,69 @@ ipcMain.handle('tree:show-context-menu', (event, itemPath, rootPath) => {
       click: () => convertPumlToSvg(itemPath, win),
     });
   }
+  // A project's own row in the explorer, where several projects can be
+  // open side by side.
+  if (options && options.isProjectRoot) {
+    items.push({ type: 'separator' });
+    items.push({
+      label: t('context.closeProject'),
+      click: () => win.webContents.send('tree:close-project', { rootPath: itemPath }),
+    });
+  }
   const menu = Menu.buildFromTemplate(items);
   menu.popup({ window: win });
 });
+
+// Right-click on empty explorer space, below every project: the menu for
+// the explorer as a whole rather than for any one folder in it.
+ipcMain.handle('tree:show-empty-context-menu', (event, { hasProjects }) => {
+  const win = BrowserWindow.fromWebContents(event.sender);
+  const menu = Menu.buildFromTemplate([
+    {
+      label: t('context.newProject'),
+      click: () => createNewProject(win),
+    },
+    {
+      label: t('context.openProject'),
+      click: () => win.webContents.send('menu:open-folder'),
+    },
+    { type: 'separator' },
+    {
+      label: t('context.closeAllProjects'),
+      enabled: !!hasProjects,
+      click: () => win.webContents.send('tree:close-all-projects'),
+    },
+  ]);
+  menu.popup({ window: win });
+});
+
+// New Project: the user names a folder that doesn't exist yet, and it is
+// created with its .mdviewer folder already in place — which is what makes
+// it an mdviewer project (see findProjectRootForFile) even while empty —
+// then opened in the explorer like any other folder.
+async function createNewProject(win) {
+  const result = await dialog.showSaveDialog(win, {
+    title: t('project.newDialogTitle'),
+    buttonLabel: t('project.newDialogButton'),
+    defaultPath: t('project.newDefaultName'),
+  });
+  if (result.canceled || !result.filePath) return;
+  const rootPath = result.filePath;
+  if (fs.existsSync(rootPath)) {
+    dialog.showErrorBox(
+      t('project.newFailedTitle'),
+      t('project.newAlreadyExists', { name: path.basename(rootPath) })
+    );
+    return;
+  }
+  try {
+    fs.mkdirSync(path.join(rootPath, CONFIG_DIR_NAME), { recursive: true });
+  } catch (err) {
+    dialog.showErrorBox(t('project.newFailedTitle'), t('project.newFailedMessage', { error: err.message }));
+    return;
+  }
+  if (!win.isDestroyed()) win.webContents.send('folder:open-path', rootPath);
+}
 
 // Backs both the tree's "Export to PDF..." context menu item and the new
 // File > Export to PDF... menu item (which targets whatever's currently
@@ -2249,8 +2336,9 @@ ipcMain.handle('recent:list', () => {
   }));
 });
 
-ipcMain.handle('project:set-active', (event, rootPath) => {
-  activeProjectRoot = rootPath || null;
+ipcMain.handle('project:set-open', (event, roots, active) => {
+  openProjectRoots = Array.isArray(roots) ? roots : [];
+  activeProjectRoot = active || null;
   return { ok: true };
 });
 
@@ -2264,17 +2352,17 @@ ipcMain.handle('recent:remove', (event, rootPath) => {
   buildAppMenu();
 });
 
-ipcMain.handle('term:start', (event, cwd, cols, rows) => {
+ipcMain.handle('term:start', (event, key, cwd, cols, rows) => {
   try {
-    spawnTerminalFor(event, cwd || app.getPath('home'), cols, rows);
+    spawnTerminalFor(event, key || '', cwd || app.getPath('home'), cols, rows);
     return { ok: true };
   } catch (err) {
     return { ok: false, error: err.message };
   }
 });
 
-ipcMain.handle('term:input', (event, data) => {
-  const t = terminals.get(event.sender.id);
+ipcMain.handle('term:input', (event, key, data) => {
+  const t = getTerminal(event.sender.id, key || '');
   if (!t) return { ok: false, error: translate(currentLanguage, 'term.noRunningTerminal') };
   try {
     t.write(data);
@@ -2284,8 +2372,8 @@ ipcMain.handle('term:input', (event, data) => {
   }
 });
 
-ipcMain.handle('term:resize', (event, cols, rows) => {
-  const t = terminals.get(event.sender.id);
+ipcMain.handle('term:resize', (event, key, cols, rows) => {
+  const t = getTerminal(event.sender.id, key || '');
   if (t) {
     try {
       t.resize(cols, rows);
@@ -2296,8 +2384,8 @@ ipcMain.handle('term:resize', (event, cols, rows) => {
   return { ok: true };
 });
 
-ipcMain.handle('term:stop', (event) => {
-  killTerminal(event.sender.id);
+ipcMain.handle('term:stop', (event, key) => {
+  killTerminal(event.sender.id, key || '');
   return { ok: true };
 });
 

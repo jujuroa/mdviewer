@@ -166,6 +166,12 @@ html, body {
   font-weight: 600;
 }
 .tree-row.dir .tree-label { font-weight: 500; }
+
+/* A project's top-level row in the explorer. With several projects open
+   the active one (whose CSS and saved state apply) gets the accent. */
+.tree-row.project-root .tree-label { font-weight: 600; }
+.tree-node.project-node + .tree-node.project-node { border-top: 1px solid var(--border); }
+.tree-row.project-root.active-project .tree-label { color: var(--accent); }
 .tree-row.non-md .tree-label { color: var(--text-dim); cursor: default; }
 
 .tree-row.tree-row-flash {
@@ -1654,6 +1660,9 @@ html, body {
   text-align: center;
 }
 .terminal-xterm .xterm { height: 100%; }
+/* One per project shell; only the active project's is shown. */
+.terminal-session { height: 100%; }
+.terminal-session.hidden { display: none; }
 
 /* ---- Fullscreen document view (F11) ----
 

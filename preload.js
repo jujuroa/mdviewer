@@ -36,7 +36,9 @@ contextBridge.exposeInMainWorld('mdviewer', {
   },
   createFolder: (dirPath, name) => ipcRenderer.invoke('fs:create-folder', dirPath, name),
   renderMarkdownText: (text, baseDir, requestId) => ipcRenderer.invoke('md:render-text', text, baseDir, requestId),
-  showTreeContextMenu: (itemPath, rootPath) => ipcRenderer.invoke('tree:show-context-menu', itemPath, rootPath),
+  showTreeContextMenu: (itemPath, rootPath, options) =>
+    ipcRenderer.invoke('tree:show-context-menu', itemPath, rootPath, options),
+  showTreeEmptyContextMenu: (options) => ipcRenderer.invoke('tree:show-empty-context-menu', options),
   showInFolder: (itemPath) => ipcRenderer.invoke('shell:show-in-folder', itemPath),
   openPath: (folderPath) => ipcRenderer.invoke('shell:open-path', folderPath),
   setWindowFullscreen: (enabled) => ipcRenderer.invoke('window:set-fullscreen', enabled),
@@ -48,7 +50,7 @@ contextBridge.exposeInMainWorld('mdviewer', {
 
   listRecentProjects: () => ipcRenderer.invoke('recent:list'),
   addRecentProject: (rootPath) => ipcRenderer.invoke('recent:add', rootPath),
-  setActiveProject: (rootPath) => ipcRenderer.invoke('project:set-active', rootPath),
+  setOpenProjects: (roots, active) => ipcRenderer.invoke('project:set-open', roots, active),
   removeRecentProject: (rootPath) => ipcRenderer.invoke('recent:remove', rootPath),
 
   getI18n: () => ipcRenderer.invoke('i18n:get'),
@@ -56,10 +58,10 @@ contextBridge.exposeInMainWorld('mdviewer', {
   getCustomExtensions: () => ipcRenderer.invoke('settings:get-custom-extensions'),
   setCustomExtensions: (list) => ipcRenderer.invoke('settings:set-custom-extensions', list),
 
-  startTerminal: (cwd, cols, rows) => ipcRenderer.invoke('term:start', cwd, cols, rows),
-  sendTerminalInput: (data) => ipcRenderer.invoke('term:input', data),
-  resizeTerminal: (cols, rows) => ipcRenderer.invoke('term:resize', cols, rows),
-  stopTerminal: () => ipcRenderer.invoke('term:stop'),
+  startTerminal: (key, cwd, cols, rows) => ipcRenderer.invoke('term:start', key, cwd, cols, rows),
+  sendTerminalInput: (key, data) => ipcRenderer.invoke('term:input', key, data),
+  resizeTerminal: (key, cols, rows) => ipcRenderer.invoke('term:resize', key, cols, rows),
+  stopTerminal: (key) => ipcRenderer.invoke('term:stop', key),
 
   clipboardWriteText: (text) => ipcRenderer.invoke('clipboard:write-text', text),
   clipboardWriteImage: (pngDataUrl) => ipcRenderer.invoke('clipboard:write-image', pngDataUrl),
@@ -81,6 +83,11 @@ contextBridge.exposeInMainWorld('mdviewer', {
     const listener = (event, filePath) => callback(filePath);
     ipcRenderer.on('file:open-path', listener);
     return () => ipcRenderer.removeListener('file:open-path', listener);
+  },
+  onRestoreProjects: (callback) => {
+    const listener = (event, payload) => callback(payload);
+    ipcRenderer.on('projects:restore', listener);
+    return () => ipcRenderer.removeListener('projects:restore', listener);
   },
   onOpenFolderFromOS: (callback) => {
     const listener = (event, folderPath) => callback(folderPath);
@@ -105,6 +112,12 @@ contextBridge.exposeInMainWorld('mdviewer', {
     ipcRenderer.on('tree:refresh-dir', listener);
     return () => ipcRenderer.removeListener('tree:refresh-dir', listener);
   },
+  onTreeCloseAllProjects: (callback) => ipcRenderer.on('tree:close-all-projects', callback),
+  onTreeCloseProject: (callback) => {
+    const listener = (event, payload) => callback(payload);
+    ipcRenderer.on('tree:close-project', listener);
+    return () => ipcRenderer.removeListener('tree:close-project', listener);
+  },
   onPumlSvgConverted: (callback) => {
     const listener = (event, payload) => callback(payload);
     ipcRenderer.on('puml:svg-converted', listener);
@@ -128,12 +141,12 @@ contextBridge.exposeInMainWorld('mdviewer', {
   onViewerCopyImage: (callback) => ipcRenderer.on('viewer:copy-image', callback),
 
   onTerminalData: (callback) => {
-    const listener = (event, data) => callback(data);
+    const listener = (event, key, data) => callback(key, data);
     ipcRenderer.on('term:data', listener);
     return () => ipcRenderer.removeListener('term:data', listener);
   },
   onTerminalExit: (callback) => {
-    const listener = (event, code) => callback(code);
+    const listener = (event, key, code) => callback(key, code);
     ipcRenderer.on('term:exit', listener);
     return () => ipcRenderer.removeListener('term:exit', listener);
   },
