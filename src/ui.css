@@ -172,6 +172,20 @@ html, body {
 .tree-row.project-root .tree-label { font-weight: 600; }
 .tree-node.project-node + .tree-node.project-node { border-top: 1px solid var(--border); }
 .tree-row.project-root.active-project .tree-label { color: var(--accent); }
+
+/* Files fade the longer they've gone unmodified (step chosen by
+   treeAgeStep in renderer.js: 1 week / 1 month / 6 months / 1 year).
+   Only the icon and name fade, so the row's hover/selection background
+   stays full strength; the open document and a hovered row come back to
+   full strength so they stay easy to read. */
+.tree-row.age-1 :is(.tree-icon, .tree-label) { opacity: 0.85; }
+.tree-row.age-2 :is(.tree-icon, .tree-label) { opacity: 0.7; }
+.tree-row.age-3 :is(.tree-icon, .tree-label) { opacity: 0.55; }
+.tree-row.age-4 :is(.tree-icon, .tree-label) { opacity: 0.42; }
+.tree-row.active-doc :is(.tree-icon, .tree-label),
+.tree-row:hover :is(.tree-icon, .tree-label),
+.tree-row.tree-row-flash :is(.tree-icon, .tree-label),
+.tree-row.drop-target :is(.tree-icon, .tree-label) { opacity: 1; }
 .tree-row.non-md .tree-label { color: var(--text-dim); cursor: default; }
 
 .tree-row.tree-row-flash {

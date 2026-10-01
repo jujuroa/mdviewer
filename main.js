@@ -957,10 +957,21 @@ function listDir(dirPath) {
     .map((e) => {
       const full = path.join(dirPath, e.name);
       const isDir = e.isDirectory();
+      // Lets the tree fade documents nobody has touched in a while. A file
+      // that can't be stat'ed (locked, vanished mid-listing) just isn't faded.
+      let mtimeMs = null;
+      if (!isDir) {
+        try {
+          mtimeMs = fs.statSync(full).mtimeMs;
+        } catch (err) {
+          /* leave it unfaded */
+        }
+      }
       return {
         name: e.name,
         path: full,
         isDir,
+        mtimeMs,
         isMarkdown: !isDir && /\.(md|markdown)$/i.test(e.name),
         isPuml: !isDir && /\.puml$/i.test(e.name),
         isJson: !isDir && /\.json$/i.test(e.name),

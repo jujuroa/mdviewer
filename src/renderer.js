@@ -1300,6 +1300,28 @@
     buildTreeNodes(container, result.items, depth, indentUnit);
   }
 
+  // How long ago a file was last modified, as a fade step for its tree row
+  // (0 = recent, shown as is; higher = older, shown fainter — see the
+  // .tree-row.age-N rules in ui.css). Steps rather than a continuous fade
+  // so "this week" and "this month" read as visibly different groups.
+  const DAY_MS = 24 * 60 * 60 * 1000;
+  const TREE_AGE_STEPS_DAYS = [7, 30, 180, 365];
+  function treeAgeStep(mtimeMs) {
+    if (!mtimeMs) return 0;
+    const days = (Date.now() - mtimeMs) / DAY_MS;
+    let step = 0;
+    while (step < TREE_AGE_STEPS_DAYS.length && days >= TREE_AGE_STEPS_DAYS[step]) step += 1;
+    return step;
+  }
+
+  // A file just modified (saved here, or changed on disk while open) is
+  // as recent as it gets; drop its fade without rebuilding the tree.
+  function markTreeRowFresh(filePath) {
+    const row = findTreeRow(filePath);
+    if (!row) return;
+    for (let step = 1; step <= TREE_AGE_STEPS_DAYS.length; step++) row.classList.remove('age-' + step);
+  }
+
   function buildTreeNodes(container, items, depth, indentUnit = 16) {
     for (const item of items) {
       const node = document.createElement('div');
@@ -1321,6 +1343,8 @@
           : ' non-md');
       row.style.paddingLeft = 6 + depth * indentUnit + 'px';
       row.dataset.path = item.path;
+      const ageStep = item.isDir ? 0 : treeAgeStep(item.mtimeMs);
+      if (ageStep) row.classList.add('age-' + ageStep);
       // markActiveDocRow() can only mark rows that exist when it runs, so a
       // subtree built later (a folder expanded for the first time, a refresh,
       // the whole tree after reopening a project) re-applies the marker for
@@ -2362,6 +2386,7 @@
 
   window.mdviewer.onFileChanged((changedPath) => {
     if (changedPath !== state.currentFilePath) return;
+    markTreeRowFresh(changedPath);
     if (state.suppressNextWatch) {
       state.suppressNextWatch = false;
       return;
@@ -3105,6 +3130,7 @@
     if (result.ok) {
       state.sourceDirty = false;
       el.editStatus.textContent = t('edit.saved');
+      markTreeRowFresh(state.currentFilePath);
       if (state.currentFileKind === 'puml') {
         await renderPumlFromText(el.mdSourceEditor.value);
       }
