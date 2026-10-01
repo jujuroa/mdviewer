@@ -170,6 +170,16 @@ html, body {
 /* A project's top-level row in the explorer. With several projects open
    the active one (whose CSS and saved state apply) gets the accent. */
 .tree-row.project-root .tree-label { font-weight: 600; }
+.tree-row.project-root .tree-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.tree-project-icon {
+  width: 14px;
+  height: 14px;
+  filter: grayscale(1);
+}
 .tree-node.project-node + .tree-node.project-node { border-top: 1px solid var(--border); }
 .tree-row.project-root.active-project .tree-label { color: var(--accent); }
 

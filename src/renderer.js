@@ -981,9 +981,15 @@
     caret.textContent = '▶';
     row.appendChild(caret);
 
+    // The app's own icon in grayscale: an emoji here was hard to tell from
+    // the folder and file icons below it.
     const icon = document.createElement('span');
     icon.className = 'tree-icon';
-    icon.textContent = '🗂';
+    const iconImg = document.createElement('img');
+    iconImg.className = 'tree-project-icon';
+    iconImg.src = '../assets/icon.png';
+    iconImg.alt = '';
+    icon.appendChild(iconImg);
     row.appendChild(icon);
 
     const label = document.createElement('span');
