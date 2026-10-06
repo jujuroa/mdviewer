@@ -5581,6 +5581,247 @@
   }
 
   // ---------------------------------------------------------------------
+  // File links: Ctrl+click on a file name in the terminal or the source
+  // editor opens that file, at the line when one is written after it
+  // (`docs/guide.md:42`, as compilers and grep print it).
+  // ---------------------------------------------------------------------
+
+  // Runs of characters a path can be made of; quotes, brackets and the like
+  // end a run so `[x](docs/a.md)` and "a.md" yield just the path.
+  const PATH_RUN_RE = /[^\s"'`<>()[\]{}|*?,;]+/g;
+  // The path itself must end in an extension, so ordinary words never turn
+  // into links. A #fragment (markdown link) or :line[:col] may follow, and
+  // after the line anything else (grep's `file:12:matched text`).
+  const PATH_TOKEN_RE = /^((.+?\.[A-Za-z0-9_]+)(#[^#:]*)?(?::(\d+)(?::\d+)?)?)(?::.*)?$/;
+
+  // Path-looking tokens of one line of text: [{ start, end, path, line }],
+  // start/end being string offsets of the part to underline and line the
+  // 1-based line number written after it, if any.
+  function findPathCandidates(text) {
+    const result = [];
+    PATH_RUN_RE.lastIndex = 0;
+    let m;
+    while ((m = PATH_RUN_RE.exec(text))) {
+      let token = m[0];
+      let start = m.index;
+      // Claude Code's @file mentions.
+      const lead = /^@/.exec(token);
+      if (lead) {
+        token = token.slice(lead[0].length);
+        start += lead[0].length;
+      }
+      // Sentence punctuation is not part of the path.
+      token = token.replace(/[.:!]+$/, '');
+      if (/:\/\//.test(token) || /^(www\.|mailto:)/i.test(token)) continue;
+      const parts = PATH_TOKEN_RE.exec(token);
+      if (!parts) continue;
+      let filePath = parts[2];
+      if (/%[0-9A-Fa-f]{2}/.test(filePath)) {
+        try {
+          filePath = decodeURIComponent(filePath);
+        } catch (err) {
+          // Not percent-encoding after all; use it as written.
+        }
+      }
+      result.push({
+        start,
+        end: start + parts[1].length,
+        path: filePath,
+        line: parts[4] ? parseInt(parts[4], 10) : null,
+      });
+    }
+    return result;
+  }
+
+  // Keeps the candidates that name existing files, each with `targets`: the
+  // absolute paths it may mean (more than one only for an ambiguous bare
+  // file name).
+  async function resolveLinkCandidates(candidates, baseDirs, rootPath) {
+    if (!candidates.length) return [];
+    const results = await window.mdviewer.resolveLinkPaths(
+      candidates.map((c) => c.path),
+      baseDirs,
+      rootPath
+    );
+    return candidates
+      .map((c, i) => ({ ...c, targets: (results && results[i]) || [] }))
+      .filter((c) => c.targets.length);
+  }
+
+  function projectRelativeLabel(filePath) {
+    const root = projectRootFor(filePath);
+    return root ? filePath.slice(root.length).replace(/^[\\/]/, '') : filePath;
+  }
+
+  async function openFileLink(link) {
+    let target = link.targets[0];
+    if (link.targets.length > 1) {
+      const index = await window.mdviewer.pickPath(link.targets.map(projectRelativeLabel));
+      if (index < 0) return;
+      target = link.targets[index];
+    }
+
+    const alreadyOpen =
+      state.currentFilePath && normalizePath(state.currentFilePath) === normalizePath(target);
+    if (!alreadyOpen) {
+      if (isViewablePath(target) && !projectRootFor(target)) {
+        // Outside every open project: open it the way "Open File" does,
+        // in the nearest project above it.
+        if (!(await guardNavigation())) return;
+        await openSingleFile(target, { findProject: true });
+      } else {
+        // Hands anything the app cannot show to the OS.
+        await openInternalLink(target);
+      }
+      // Navigation refused (unsaved changes kept) or handed off elsewhere.
+      if (!state.currentFilePath || normalizePath(state.currentFilePath) !== normalizePath(target)) return;
+    }
+    if (link.line) revealSourceLine(link.line - 1);
+  }
+
+  // Brings a 0-based source line of the open document into view.
+  function revealSourceLine(line) {
+    if (state.editMode) {
+      // The viewer follows through the split view's scroll sync.
+      scrollSourceToLine(line);
+    } else if (state.currentFileKind === 'markdown' || state.currentFileKind === 'puml') {
+      const block = findViewerElementForLine(line);
+      if (block) block.scrollIntoView({ block: 'center' });
+    } else if (state.currentFileKind === 'text') {
+      scrollPlainTextToLine(line);
+    }
+  }
+
+  // The plain-text view is one <pre> without per-line markers, so the line
+  // is found by counting newlines through its text.
+  function scrollPlainTextToLine(line) {
+    const doc = el.frame.contentDocument;
+    const win = el.frame.contentWindow;
+    const pre = doc && doc.querySelector('.plaintext-view');
+    if (!pre) return;
+    const walker = doc.createTreeWalker(pre, NodeFilter.SHOW_TEXT);
+    let remaining = line;
+    let node;
+    while ((node = walker.nextNode())) {
+      let offset = 0;
+      while (remaining > 0) {
+        const nl = node.data.indexOf('\n', offset);
+        if (nl === -1) break;
+        offset = nl + 1;
+        remaining--;
+      }
+      if (remaining > 0 || offset >= node.data.length) continue;
+      const range = doc.createRange();
+      range.setStart(node, offset);
+      range.setEnd(node, offset + 1);
+      const rect = range.getBoundingClientRect();
+      win.scrollTo(0, Math.max(0, rect.top + win.scrollY - win.innerHeight / 2));
+      return;
+    }
+  }
+
+  // The editor is a textarea, whose text has no elements to hit-test, so
+  // the link is read off the line around the caret the click just placed.
+  el.mdSourceEditor.addEventListener('click', async (e) => {
+    if (!(e.ctrlKey || e.metaKey) || e.button !== 0) return;
+    const ta = el.mdSourceEditor;
+    if (ta.selectionStart !== ta.selectionEnd) return;
+    const caret = ta.selectionStart;
+    const value = ta.value;
+    const lineStart = value.lastIndexOf('\n', caret - 1) + 1;
+    let lineEnd = value.indexOf('\n', caret);
+    if (lineEnd === -1) lineEnd = value.length;
+    const column = caret - lineStart;
+    const candidate = findPathCandidates(value.slice(lineStart, lineEnd)).find(
+      (c) => c.start <= column && column <= c.end
+    );
+    if (!candidate) return;
+
+    const rootPath = state.rootPath || '';
+    const baseDirs = state.currentFilePath ? [dirnameOf(state.currentFilePath), rootPath] : [rootPath];
+    const [link] = await resolveLinkCandidates([candidate], baseDirs, rootPath);
+    if (!link) {
+      setToolbarStatus(t('link.notFound', { path: candidate.path }));
+      return;
+    }
+    await openFileLink(link);
+  });
+
+  // The cells of one logical terminal line — a long line the terminal
+  // wrapped spans several rows — as a string, with a way back from string
+  // offsets to cell positions. Wide (CJK) characters take two cells, so the
+  // two don't line up one to one.
+  function readTerminalLogicalLine(term, row) {
+    const buffer = term.buffer.active;
+    let first = row;
+    while (first > 0 && buffer.getLine(first) && buffer.getLine(first).isWrapped) first--;
+    let last = row;
+    while (buffer.getLine(last + 1) && buffer.getLine(last + 1).isWrapped) last++;
+
+    const cell = buffer.getNullCell();
+    const cells = []; // per UTF-16 offset: { x, y, width }, 1-based
+    let text = '';
+    for (let y = first; y <= last; y++) {
+      const line = buffer.getLine(y);
+      if (!line) break;
+      for (let x = 0; x < line.length; x++) {
+        line.getCell(x, cell);
+        const width = cell.getWidth();
+        // The second half of a wide character.
+        if (width === 0) continue;
+        const chars = cell.getChars() || ' ';
+        for (let i = 0; i < chars.length; i++) cells.push({ x: x + 1, y: y + 1, width });
+        text += chars;
+      }
+    }
+    return {
+      text,
+      rangeFor(start, end) {
+        const a = cells[start];
+        const b = cells[end - 1];
+        return { start: { x: a.x, y: a.y }, end: { x: b.x + b.width - 1, y: b.y } };
+      },
+    };
+  }
+
+  // The shell's working directory isn't visible to the app, so paths are
+  // resolved against the project root, falling back to any project file
+  // whose path ends with what was printed (see resolveLinkPath in main.js).
+  function registerTerminalFileLinks(term, key, container) {
+    term.registerLinkProvider({
+      provideLinks(y, callback) {
+        const row = readTerminalLogicalLine(term, y - 1);
+        const candidates = findPathCandidates(row.text);
+        if (!candidates.length) {
+          callback(undefined);
+          return;
+        }
+        resolveLinkCandidates(candidates, key ? [key] : [], key).then(
+          (links) => {
+            callback(
+              links.map((link) => ({
+                range: row.rangeFor(link.start, link.end),
+                text: row.text.slice(link.start, link.end),
+                decorations: { pointerCursor: true, underline: true },
+                activate: (event) => {
+                  if (event.ctrlKey || event.metaKey) openFileLink(link);
+                },
+                hover: () => {
+                  container.title = t('link.ctrlClickToOpen');
+                },
+                leave: () => {
+                  container.title = '';
+                },
+              }))
+            );
+          },
+          () => callback(undefined)
+        );
+      },
+    });
+  }
+
+  // ---------------------------------------------------------------------
   // Bottom terminal panel
   // ---------------------------------------------------------------------
 
@@ -5616,6 +5857,7 @@
     const fitAddon = new window.FitAddon.FitAddon();
     term.loadAddon(fitAddon);
     term.open(container);
+    registerTerminalFileLinks(term, key, container);
     term.onData((data) => {
       window.mdviewer.sendTerminalInput(key, data);
     });

@@ -1875,6 +1875,128 @@ ipcMain.handle('fs:stat-path', async (event, targetPath) => {
   }
 });
 
+// ---------------------------------------------------------------------
+// File links: Ctrl+click on a file name in the terminal or the source
+// editor (see findPathCandidates in src/renderer.js). The renderer sends the
+// path-looking tokens it found and gets back, for each, the existing files
+// it names — usually one, several when only a bare file name was written
+// and the project has more than one file by that name.
+// ---------------------------------------------------------------------
+
+// Every file under a project by lowercased name, for names written without
+// their folder (or relative to a folder the shell has cd'd into, which the
+// app cannot see). Rebuilt at most every few seconds: the terminal asks
+// again on every line the mouse crosses.
+const LINK_INDEX_TTL_MS = 10 * 1000;
+const LINK_INDEX_MAX_FILES = 50000;
+const linkIndexCache = new Map(); // rootPath -> { builtAt, promise }
+
+async function buildLinkIndex(rootPath) {
+  const byName = new Map();
+  let count = 0;
+  async function walk(dir) {
+    if (count >= LINK_INDEX_MAX_FILES) return;
+    let entries;
+    try {
+      entries = await fs.promises.readdir(dir, { withFileTypes: true });
+    } catch (err) {
+      return;
+    }
+    const subDirs = [];
+    for (const entry of entries) {
+      if (isHidden(entry.name)) continue;
+      if (entry.isDirectory()) {
+        if (!SEARCH_SKIP_DIRS.has(entry.name.toLowerCase())) subDirs.push(path.join(dir, entry.name));
+        continue;
+      }
+      if (!entry.isFile()) continue;
+      if (++count > LINK_INDEX_MAX_FILES) return;
+      const key = entry.name.toLowerCase();
+      const full = path.join(dir, entry.name);
+      const list = byName.get(key);
+      if (list) list.push(full);
+      else byName.set(key, [full]);
+    }
+    for (const sub of subDirs) await walk(sub);
+  }
+  await walk(rootPath);
+  return byName;
+}
+
+function linkIndexFor(rootPath) {
+  const cached = linkIndexCache.get(rootPath);
+  if (cached && Date.now() - cached.builtAt < LINK_INDEX_TTL_MS) return cached.promise;
+  const promise = buildLinkIndex(rootPath);
+  linkIndexCache.set(rootPath, { builtAt: Date.now(), promise });
+  return promise;
+}
+
+async function isExistingFile(filePath) {
+  try {
+    return (await fs.promises.stat(filePath)).isFile();
+  } catch (err) {
+    return false;
+  }
+}
+
+async function resolveLinkPath(candidate, baseDirs, rootPath) {
+  // Git Bash prints /d/work/x.md for D:\work\x.md.
+  if (process.platform === 'win32') {
+    candidate = candidate.replace(/^\/([a-zA-Z])(?=\/)/, (m, drive) => drive.toUpperCase() + ':');
+  }
+  if (path.isAbsolute(candidate)) {
+    const full = path.normalize(candidate);
+    return (await isExistingFile(full)) ? [full] : [];
+  }
+  for (const base of baseDirs) {
+    if (!base) continue;
+    const full = path.resolve(base, candidate);
+    if (await isExistingFile(full)) return [full];
+  }
+  if (!rootPath) return [];
+  // Not found where it was expected: any file in the project whose path
+  // ends with what was written.
+  const index = await linkIndexFor(rootPath);
+  const normalized = path.normalize(candidate).replace(/^(\.[\\/])+/, '').toLowerCase();
+  const matches = index.get(path.basename(normalized)) || [];
+  return matches.filter((full) => {
+    const lower = full.toLowerCase();
+    return lower === normalized || lower.endsWith(path.sep + normalized);
+  });
+}
+
+ipcMain.handle('fs:resolve-link-paths', async (event, candidates, baseDirs, rootPath) => {
+  const results = [];
+  for (const candidate of candidates) {
+    try {
+      results.push(await resolveLinkPath(candidate, baseDirs || [], rootPath || ''));
+    } catch (err) {
+      results.push([]);
+    }
+  }
+  return results;
+});
+
+// A popup listing the files a link could mean; resolves with the picked
+// index, or -1 when the menu was dismissed.
+ipcMain.handle('menu:pick-path', (event, labels) => {
+  const win = BrowserWindow.fromWebContents(event.sender);
+  return new Promise((resolve) => {
+    let picked = -1;
+    const menu = Menu.buildFromTemplate(
+      labels.map((label, i) => ({
+        // A single & would be read as a mnemonic marker on Windows.
+        label: String(label).replace(/&/g, '&&'),
+        click: () => {
+          picked = i;
+        },
+      }))
+    );
+    // The close callback can run before the clicked item's handler.
+    menu.popup({ window: win, callback: () => setTimeout(() => resolve(picked), 0) });
+  });
+});
+
 ipcMain.handle('md:render-text', async (event, text, baseDir, requestId) => {
   try {
     return { ok: true, html: await renderMarkdownText(text, baseDir, requestId) };

@@ -25,6 +25,9 @@ contextBridge.exposeInMainWorld('mdviewer', {
   createFile: (dirPath, name) => ipcRenderer.invoke('fs:create-file', dirPath, name),
   copyEntries: (targetDir, sourcePaths) => ipcRenderer.invoke('fs:copy-entries', targetDir, sourcePaths),
   statPath: (targetPath) => ipcRenderer.invoke('fs:stat-path', targetPath),
+  resolveLinkPaths: (candidates, baseDirs, rootPath) =>
+    ipcRenderer.invoke('fs:resolve-link-paths', candidates, baseDirs, rootPath),
+  pickPath: (labels) => ipcRenderer.invoke('menu:pick-path', labels),
   // Electron 32 dropped File.path; this is the supported way to turn a
   // dropped/selected File back into a path on disk.
   getPathForFile: (file) => {
