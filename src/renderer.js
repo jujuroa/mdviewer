@@ -1363,6 +1363,7 @@
       row.dataset.path = item.path;
       const ageStep = item.isDir ? 0 : treeAgeStep(item.mtimeMs);
       if (ageStep) row.classList.add('age-' + ageStep);
+      if (item.isHidden) row.classList.add('dot-entry');
       // markActiveDocRow() can only mark rows that exist when it runs, so a
       // subtree built later (a folder expanded for the first time, a refresh,
       // the whole tree after reopening a project) re-applies the marker for

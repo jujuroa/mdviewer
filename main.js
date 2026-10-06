@@ -953,7 +953,9 @@ function listDir(dirPath) {
   const entries = fs.readdirSync(dirPath, { withFileTypes: true });
   const plainTextPattern = plainTextExtensionPattern();
   const items = entries
-    .filter((e) => !isHidden(e.name))
+    // Hidden folders (.git, .mdviewer, ...) are listed so they can be
+    // browsed, and the tree shows them dimmed; hidden files stay out.
+    .filter((e) => !isHidden(e.name) || e.isDirectory())
     .map((e) => {
       const full = path.join(dirPath, e.name);
       const isDir = e.isDirectory();
@@ -971,6 +973,7 @@ function listDir(dirPath) {
         name: e.name,
         path: full,
         isDir,
+        isHidden: isHidden(e.name),
         mtimeMs,
         isMarkdown: !isDir && /\.(md|markdown)$/i.test(e.name),
         isPuml: !isDir && /\.puml$/i.test(e.name),

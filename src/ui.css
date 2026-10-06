@@ -192,6 +192,8 @@ html, body {
 .tree-row.age-2 :is(.tree-icon, .tree-label) { opacity: 0.7; }
 .tree-row.age-3 :is(.tree-icon, .tree-label) { opacity: 0.55; }
 .tree-row.age-4 :is(.tree-icon, .tree-label) { opacity: 0.42; }
+/* Hidden (dot-named) folders: listed, but kept in the background. */
+.tree-row.dot-entry :is(.tree-icon, .tree-label) { opacity: 0.45; }
 .tree-row.active-doc :is(.tree-icon, .tree-label),
 .tree-row:hover :is(.tree-icon, .tree-label),
 .tree-row.tree-row-flash :is(.tree-icon, .tree-label),
