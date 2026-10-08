@@ -655,6 +655,46 @@ function resolveInternalLinkPath(baseDir, relPath) {
   return fs.existsSync(withMdExt) ? withMdExt : absPath;
 }
 
+// CommonMark only lets `**` close right after punctuation when whitespace or
+// more punctuation follows, so in Korean, where particles attach with no
+// space, `**함수()**를` or `**"인용"**이` stays literal. A CJK character on
+// the outer side of a delimiter run is treated like whitespace for that
+// check (the direction of CommonMark's CJK-friendly amendment); runs with
+// no CJK neighbour keep the stock behaviour.
+const CJK_CHAR_RE = /[\p{Script=Hangul}\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}]/u;
+
+function useCjkFriendlyEmphasis(md) {
+  const { isWhiteSpace, isMdAsciiPunct, isPunctChar } = md.utils;
+  const BaseState = md.inline.State;
+  class CjkFriendlyState extends BaseState {
+    scanDelims(start, canSplitWord) {
+      const result = super.scanDelims(start, canSplitWord);
+      const lastChar = start > 0 ? Array.from(this.src.slice(Math.max(0, start - 2), start)).pop() : ' ';
+      const pos = start + result.length;
+      const nextChar = pos < this.posMax ? String.fromCodePoint(this.src.codePointAt(pos)) : ' ';
+      const isLastCjk = CJK_CHAR_RE.test(lastChar);
+      const isNextCjk = CJK_CHAR_RE.test(nextChar);
+      if (!isLastCjk && !isNextCjk) return result;
+
+      const isPunct = (ch) => isMdAsciiPunct(ch.codePointAt(0)) || isPunctChar(ch);
+      const isLastPunct = isPunct(lastChar);
+      const isNextPunct = isPunct(nextChar);
+      const isLastSpace = isWhiteSpace(lastChar.codePointAt(0));
+      const isNextSpace = isWhiteSpace(nextChar.codePointAt(0));
+      const leftFlanking = !isNextSpace && (!isNextPunct || isLastSpace || isLastPunct || isLastCjk);
+      const rightFlanking = !isLastSpace && (!isLastPunct || isNextSpace || isNextPunct || isNextCjk);
+      // `_` still never opens or closes inside a word, CJK or not, so file
+      // names like 보고서_초안_최종.md stay as written.
+      return {
+        can_open: leftFlanking && (canSplitWord || !rightFlanking || isLastPunct),
+        can_close: rightFlanking && (canSplitWord || !leftFlanking || isNextPunct),
+        length: result.length,
+      };
+    }
+  }
+  md.inline.State = CjkFriendlyState;
+}
+
 function createMarkdownRenderer(baseDir) {
   const md = new MarkdownIt({
     html: true,
@@ -672,6 +712,7 @@ function createMarkdownRenderer(baseDir) {
       return md.utils.escapeHtml(str);
     },
   }).use(taskLists, { enabled: true, label: true });
+  useCjkFriendlyEmphasis(md);
 
   // Tags block-level elements with their originating source line range, so
   // the renderer can map a match found while searching the preview (see
