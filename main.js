@@ -544,6 +544,18 @@ function setCustomTextExtensions(list) {
   return normalized;
 }
 
+// Auto save (File > Auto Save): on unless turned off. The renderer saves
+// when the editor loses focus and wherever it would otherwise ask about
+// unsaved changes; untitled drafts are left out (see src/renderer.js).
+function getAutoSave() {
+  return loadSettings().autoSave !== false;
+}
+
+function setAutoSave(enabled) {
+  saveSettings({ ...loadSettings(), autoSave: !!enabled });
+  if (mainWindow) mainWindow.webContents.send('settings:auto-save-changed', !!enabled);
+}
+
 function plainTextExtensionPattern() {
   const all = ['txt', 'log', ...getCustomTextExtensions()];
   return new RegExp('\\.(' + all.join('|') + ')$', 'i');
@@ -1335,6 +1347,12 @@ function buildAppMenu() {
           label: t('menu.save'),
           accelerator: 'CmdOrCtrl+S',
           click: () => mainWindow.webContents.send('menu:save-file'),
+        },
+        {
+          label: t('menu.autoSave'),
+          type: 'checkbox',
+          checked: getAutoSave(),
+          click: (item) => setAutoSave(item.checked),
         },
         {
           label: t('menu.closeDocument'),
@@ -2495,6 +2513,19 @@ ipcMain.handle('i18n:get', () => {
 ipcMain.handle('settings:set-language', (event, lang) => {
   setLanguage(lang);
   return { ok: true, language: currentLanguage };
+});
+
+ipcMain.handle('settings:get-auto-save', () => getAutoSave());
+
+// Synchronous on purpose: the renderer saves from 'beforeunload', where an
+// async write would be cut off by the page going away.
+ipcMain.on('fs:write-file-sync', (event, filePath, content) => {
+  try {
+    fs.writeFileSync(filePath, content, 'utf-8');
+    event.returnValue = { ok: true };
+  } catch (err) {
+    event.returnValue = { ok: false, error: err.message };
+  }
 });
 
 ipcMain.handle('settings:get-custom-extensions', () => {

@@ -35,6 +35,8 @@
     navigatingBack: false,
     navigatingForward: false,
     customTextExtensions: [],
+    // File > Auto Save (see canAutoSave).
+    autoSave: true,
     activeRequestId: null,
     baseCss: '',
     hljsCss: '',
@@ -2008,7 +2010,8 @@
   // or exiting edit mode does.
   async function refreshCurrentFile() {
     if (!state.currentFilePath) return;
-    if (!confirmDiscardIfDirty()) return;
+    await settleAutoSave();
+    if (!(await confirmDiscardIfDirty())) return;
 
     if (!state.editMode) {
       await loadAndRenderByPath(state.currentFilePath);
@@ -3025,10 +3028,27 @@
   // Body (source) editing
   // ---------------------------------------------------------------------
 
-  function confirmDiscardIfDirty() {
+  // Auto save covers documents that have a file; an untitled draft would
+  // need a save dialog, so it is always asked about instead.
+  function canAutoSave() {
+    return state.autoSave && state.editMode && !state.untitledDraft && !!state.currentFilePath;
+  }
+
+  // Resolves to whether the caller may go ahead and drop the editor's text.
+  // With auto save on, unsaved edits are saved instead of asked about; only
+  // a save that fails falls back to the question.
+  async function confirmDiscardIfDirty() {
     if (!state.editMode || !state.sourceDirty) return true;
+    if (canAutoSave()) {
+      await saveSource();
+      if (!state.sourceDirty) return true;
+    }
     return window.confirm(t('confirm.discardChanges'));
   }
+
+  window.mdviewer.onAutoSaveChanged((enabled) => {
+    state.autoSave = enabled;
+  });
 
   function forceExitEditMode() {
     state.editMode = false;
@@ -3039,6 +3059,7 @@
   }
 
   async function guardNavigation() {
+    await settleAutoSave();
     return confirmDiscardIfDirty();
   }
 
@@ -3078,8 +3099,9 @@
     persistProjectState();
   }
 
-  function exitEditMode() {
-    if (!confirmDiscardIfDirty()) return;
+  async function exitEditMode() {
+    await settleAutoSave();
+    if (!(await confirmDiscardIfDirty())) return;
     state.editMode = false;
     state.sourceDirty = false;
     setEditModeUI(false);
@@ -3157,6 +3179,37 @@
       state.suppressNextWatch = false;
       el.editStatus.textContent = t('edit.saveFailed', { error: result.error });
     }
+  }
+
+  // Leaving the editor (clicking elsewhere in the app, switching to another
+  // window) saves what was typed, while File > Auto Save is on. A draft has
+  // no file yet and saving it would open a dialog, so it still waits for an
+  // explicit save.
+  let autoSavePromise = null;
+  el.mdSourceEditor.addEventListener('blur', () => {
+    if (!state.sourceDirty || !canAutoSave()) return;
+    const filePath = state.currentFilePath;
+    const save = (autoSavePromise || Promise.resolve())
+      .then(() => {
+        // Still the same document with edits outstanding: an earlier save in
+        // the chain or a file switch may have settled it meanwhile.
+        if (state.editMode && state.sourceDirty && state.currentFilePath === filePath) return saveSource();
+      })
+      .catch(() => {
+        // saveSource reports its own failures in the status line.
+      });
+    autoSavePromise = save;
+    save.then(() => {
+      if (autoSavePromise === save) autoSavePromise = null;
+    });
+  });
+
+  // The click that took focus out of the editor is handled right after the
+  // save its blur started; whatever would otherwise ask about unsaved
+  // changes waits for that save, so the question never comes up for edits
+  // that are about to be on disk.
+  async function settleAutoSave() {
+    while (autoSavePromise) await autoSavePromise;
   }
 
   el.mdSourceEditor.addEventListener('input', () => {
@@ -3412,6 +3465,15 @@
   // question to main.js's 'will-prevent-unload' dialog.
   window.addEventListener('beforeunload', (e) => {
     if (!state.editMode || !state.sourceDirty) return;
+    // With auto save on, the text is written out (synchronously: the page
+    // is going away) instead of asked about.
+    if (canAutoSave()) {
+      const result = window.mdviewer.writeFileSync(state.currentFilePath, el.mdSourceEditor.value);
+      if (result && result.ok) {
+        state.sourceDirty = false;
+        return;
+      }
+    }
     e.preventDefault();
     e.returnValue = '';
   });
@@ -6106,6 +6168,7 @@
   (async () => {
     await initI18n();
     await loadCustomExtensions();
+    state.autoSave = (await window.mdviewer.getAutoSave()) !== false;
     initPreviewFrame();
     showWelcomeScreen();
     updateCssAppliedBadge();

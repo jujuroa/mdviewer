@@ -59,6 +59,9 @@ contextBridge.exposeInMainWorld('mdviewer', {
   getI18n: () => ipcRenderer.invoke('i18n:get'),
   setLanguage: (lang) => ipcRenderer.invoke('settings:set-language', lang),
   getCustomExtensions: () => ipcRenderer.invoke('settings:get-custom-extensions'),
+  getAutoSave: () => ipcRenderer.invoke('settings:get-auto-save'),
+  onAutoSaveChanged: (callback) => ipcRenderer.on('settings:auto-save-changed', (event, enabled) => callback(enabled)),
+  writeFileSync: (filePath, content) => ipcRenderer.sendSync('fs:write-file-sync', filePath, content),
   setCustomExtensions: (list) => ipcRenderer.invoke('settings:set-custom-extensions', list),
 
   startTerminal: (key, cwd, cols, rows) => ipcRenderer.invoke('term:start', key, cwd, cols, rows),
