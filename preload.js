@@ -145,6 +145,11 @@ contextBridge.exposeInMainWorld('mdviewer', {
   onNavForward: (callback) => ipcRenderer.on('mdviewer:nav-forward', callback),
   onViewerCopySelection: (callback) => ipcRenderer.on('viewer:copy-selection', callback),
   onViewerCopyImage: (callback) => ipcRenderer.on('viewer:copy-image', callback),
+  onViewerHtmlCopied: (callback) => {
+    const listener = (event, payload) => callback(payload);
+    ipcRenderer.on('viewer:html-copied', listener);
+    return () => ipcRenderer.removeListener('viewer:html-copied', listener);
+  },
 
   onTerminalData: (callback) => {
     const listener = (event, key, data) => callback(key, data);

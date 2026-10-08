@@ -5405,6 +5405,10 @@
     setToolbarStatus(t('export.svgSaved', { name: pathBasename(outPath) }));
   });
 
+  window.mdviewer.onViewerHtmlCopied(({ name }) => {
+    setToolbarStatus(t('export.htmlCopied', { name }));
+  });
+
   window.mdviewer.onMenuOpenFolder(async () => {
     const folder = await window.mdviewer.openFolderDialog();
     if (folder) openFolder(folder);

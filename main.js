@@ -2244,6 +2244,14 @@ ipcMain.handle('tree:show-context-menu', (event, itemPath, rootPath, options = {
       label: t('context.exportPdf'),
       click: () => exportMarkdownToPdf(itemPath, win, rootPath),
     });
+    items.push({
+      label: t('context.exportHtml'),
+      click: () => exportMarkdownToHtml(itemPath, win, rootPath),
+    });
+    items.push({
+      label: t('context.copyAsHtml'),
+      click: () => copyMarkdownAsHtml(itemPath, win, rootPath),
+    });
   }
   if (!isDir && /\.puml$/i.test(itemPath)) {
     items.push({ type: 'separator' });
@@ -2365,6 +2373,27 @@ ipcMain.handle('export:pdf', (event, filePath, rootPath) => {
 // — this is process-wide, so it very briefly affects the main window's own
 // colors too, but the export completes in well under a second for a
 // typical document, same as e.g. a quick native print-preview flash.
+// A rendered document as a page of its own, styled the way the project's
+// preview shows it. extraCss goes last so it can override everything else.
+function buildStandaloneHtml(html, rootPath, extraCss = '') {
+  const { defaultCss, hljsCss } = getBaseStyles();
+  // Match whatever the project's own preview currently shows: only pull
+  // in custom.css if the user has it toggled on (same default as the
+  // renderer's own cssEnabled flag — on unless explicitly turned off).
+  let userCss = '';
+  if (rootPath) {
+    const projectState = loadProjectState(rootPath);
+    const cssEnabled = projectState.cssEnabled !== undefined ? projectState.cssEnabled : true;
+    if (cssEnabled) userCss = loadProjectCss(rootPath);
+  }
+  return (
+    '<!DOCTYPE html><html><head><meta charset="utf-8">' +
+    `<style>${defaultCss}</style><style>${hljsCss}</style><style>${userCss}</style>` +
+    `<style>${extraCss}</style>` +
+    '</head><body class="markdown-body">' + html + '</body></html>'
+  );
+}
+
 async function exportMarkdownToPdf(filePath, parentWindow, rootPath) {
   const defaultName = `${path.basename(filePath, path.extname(filePath))}.pdf`;
   const saveResult = await dialog.showSaveDialog(parentWindow, {
@@ -2379,21 +2408,7 @@ async function exportMarkdownToPdf(filePath, parentWindow, rootPath) {
     // Switched before rendering, not just before printing: the PDF is always
     // light, so anything rendered into it should be rendered for a light page.
     nativeTheme.themeSource = 'light';
-    const html = await renderMarkdownFile(filePath);
-    const { defaultCss, hljsCss } = getBaseStyles();
-    // Match whatever the project's own preview currently shows: only pull
-    // in custom.css if the user has it toggled on (same default as the
-    // renderer's own cssEnabled flag — on unless explicitly turned off).
-    let userCss = '';
-    if (rootPath) {
-      const projectState = loadProjectState(rootPath);
-      const cssEnabled = projectState.cssEnabled !== undefined ? projectState.cssEnabled : true;
-      if (cssEnabled) userCss = loadProjectCss(rootPath);
-    }
-    const fullHtml =
-      '<!DOCTYPE html><html><head><meta charset="utf-8">' +
-      `<style>${defaultCss}</style><style>${hljsCss}</style><style>${userCss}</style>` +
-      '</head><body class="markdown-body">' + html + '</body></html>';
+    const fullHtml = buildStandaloneHtml(await renderMarkdownFile(filePath), rootPath);
 
     exportWin = new BrowserWindow({ show: false, webPreferences: { sandbox: true } });
     await exportWin.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(fullHtml)}`);
@@ -2412,6 +2427,237 @@ async function exportMarkdownToPdf(filePath, parentWindow, rootPath) {
   } finally {
     nativeTheme.themeSource = previousThemeSource;
     if (exportWin) exportWin.destroy();
+  }
+}
+
+const IMAGE_MIME_BY_EXT = {
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif',
+  '.webp': 'image/webp',
+  '.bmp': 'image/bmp',
+  '.svg': 'image/svg+xml',
+};
+
+// Whatever the HTML is pasted into can't reach files on this disk (a mail
+// client, a web editor), so local images travel inside the HTML itself.
+async function inlineLocalImages(html) {
+  const pattern = /(<img\b[^>]*?\ssrc=")(file:\/\/[^"]+)(")/gi;
+  const sources = [...new Set([...html.matchAll(pattern)].map((m) => m[2]))];
+  const dataUrls = new Map();
+  await Promise.all(
+    sources.map(async (src) => {
+      try {
+        const filePath = filePathFromUrl(src.replace(/&amp;/g, '&')).replace(/%23/g, '#');
+        const mime = IMAGE_MIME_BY_EXT[path.extname(filePath).toLowerCase()];
+        if (!mime) return;
+        const bytes = await fs.promises.readFile(filePath);
+        dataUrls.set(src, `data:${mime};base64,${bytes.toString('base64')}`);
+      } catch {
+        // A missing image stays a broken link, as it is in the preview.
+      }
+    })
+  );
+  return html.replace(pattern, (all, before, src, after) =>
+    dataUrls.has(src) ? before + dataUrls.get(src) + after : all
+  );
+}
+
+// Runs inside the hidden copy window. Paste targets (Word, Outlook, web
+// editors) drop or ignore <style> sheets, so every rule that matters is
+// written onto the elements themselves; SVG images, which most of them
+// can't show, are rasterised to PNG. Returns the finished HTML fragment.
+async function htmlForClipboardInPage() {
+  const INHERITED = [
+    'color', 'font-family', 'font-size', 'font-weight', 'font-style',
+    'line-height', 'text-align', 'white-space', 'list-style-type', 'border-collapse',
+  ];
+  const OWN = [
+    'background-color', 'text-decoration-line', 'vertical-align',
+    'margin-top', 'margin-right', 'margin-bottom', 'margin-left',
+    'padding-top', 'padding-right', 'padding-bottom', 'padding-left',
+    'border-radius',
+  ];
+  const SIDES = ['top', 'right', 'bottom', 'left'];
+
+  const images = [...document.images];
+  await Promise.all(images.map((img) => img.decode().catch(() => {})));
+  for (const img of images) {
+    const width = img.width;
+    const height = img.height;
+    if (!width || !height) continue;
+    if (/^data:image\/svg\+xml/i.test(img.src)) {
+      try {
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.round(width * 2);
+        canvas.height = Math.round(height * 2);
+        const ctx = canvas.getContext('2d');
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+        img.src = canvas.toDataURL('image/png');
+      } catch {
+        // Left as SVG: still fine wherever SVG is supported.
+      }
+    }
+    // The rendered size, so the paste target doesn't fall back to the
+    // image's natural (often much larger, or 2x rasterised) size.
+    img.setAttribute('width', String(Math.round(width)));
+    img.setAttribute('height', String(Math.round(height)));
+  }
+
+  // What an element looks like with no stylesheet at all, per tag: only
+  // values that differ from it are worth writing down.
+  const blank = document.createElement('iframe');
+  document.body.appendChild(blank);
+  const blankDoc = blank.contentDocument;
+  const defaults = new Map();
+  const defaultsFor = (tag) => {
+    if (!defaults.has(tag)) {
+      const probe = blankDoc.createElement(tag);
+      blankDoc.body.appendChild(probe);
+      const cs = blankDoc.defaultView.getComputedStyle(probe);
+      defaults.set(tag, Object.fromEntries(OWN.map((p) => [p, cs.getPropertyValue(p)])));
+      probe.remove();
+    }
+    return defaults.get(tag);
+  };
+
+  const root = document.body;
+  const styles = new Map();
+  for (const node of root.querySelectorAll('*')) {
+    if (node.closest('iframe, style, script')) continue;
+    const cs = getComputedStyle(node);
+    const parentCs = getComputedStyle(node.parentElement);
+    const own = defaultsFor(node.tagName.toLowerCase());
+    const decls = [];
+    for (const p of INHERITED) {
+      const v = cs.getPropertyValue(p);
+      if (v !== parentCs.getPropertyValue(p)) decls.push(`${p}: ${v}`);
+    }
+    // A centred block image's auto margins come back as this layout's pixel
+    // widths, which would push it off-centre anywhere narrower or wider.
+    const centred =
+      node.tagName === 'IMG' && cs.display === 'block' &&
+      parseFloat(cs.marginLeft) > 0 && cs.marginLeft === cs.marginRight;
+    if (centred) decls.push('display: block', 'margin-left: auto', 'margin-right: auto');
+    for (const p of OWN) {
+      if (centred && (p === 'margin-left' || p === 'margin-right')) continue;
+      const v = cs.getPropertyValue(p);
+      if (v !== own[p]) decls.push(`${p}: ${v}`);
+    }
+    // Only the sides that actually draw a line: an unset border's colour
+    // is still reported (as the text colour) and would be pure noise.
+    for (const side of SIDES) {
+      const style = cs.getPropertyValue(`border-${side}-style`);
+      const width = cs.getPropertyValue(`border-${side}-width`);
+      if (style === 'none' || style === 'hidden' || parseFloat(width) === 0) continue;
+      decls.push(`border-${side}: ${width} ${style} ${cs.getPropertyValue(`border-${side}-color`)}`);
+    }
+    styles.set(node, decls.join('; '));
+  }
+  blank.remove();
+
+  const bodyCs = getComputedStyle(root);
+  const rootDecls = INHERITED.map((p) => `${p}: ${bodyCs.getPropertyValue(p)}`).join('; ');
+  for (const [node, decls] of styles) {
+    if (decls) node.setAttribute('style', decls);
+    // Preview-only hooks (classes, data-source-line, ...) mean nothing
+    // where this is pasted.
+    for (const attr of [...node.attributes]) {
+      if (attr.name === 'class' || attr.name.startsWith('data-')) node.removeAttribute(attr.name);
+    }
+  }
+  return `<div style="${rootDecls.replace(/"/g, "'")}">${root.innerHTML}</div>`;
+}
+
+const HTML_FRAGMENT_WIDTH = 680;
+
+// The document as one self-styled HTML fragment: every rule written onto
+// the elements, images embedded, diagrams as PNG. Clipboard copy and HTML
+// export both use it, so what is pasted and what is saved look the same.
+// Always light-themed, like the PDF.
+async function renderStandaloneFragment(raw, filePath, rootPath) {
+  let renderWin;
+  const previousThemeSource = nativeTheme.themeSource;
+  try {
+    nativeTheme.themeSource = 'light';
+    const html = await inlineLocalImages(await renderMarkdownText(raw, path.dirname(filePath)));
+    // Laid out at roughly a printed page's text width rather than the
+    // preview's, so images keep a size that fits where they are pasted.
+    const fullHtml = buildStandaloneHtml(
+      html,
+      rootPath,
+      'body.markdown-body { max-width: none; margin: 0; padding: 0; overflow: hidden; }'
+    );
+    renderWin = new BrowserWindow({
+      show: false,
+      width: HTML_FRAGMENT_WIDTH,
+      height: 800,
+      useContentSize: true,
+      webPreferences: { sandbox: true },
+    });
+    await renderWin.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(fullHtml)}`);
+    return await renderWin.webContents.executeJavaScript(`(${htmlForClipboardInPage.toString()})()`);
+  } finally {
+    nativeTheme.themeSource = previousThemeSource;
+    if (renderWin) renderWin.destroy();
+  }
+}
+
+// Puts the document on the clipboard as formatted HTML (with its markdown
+// source as the plain-text alternative), for pasting into a mail, a Word
+// document or a wiki editor.
+async function copyMarkdownAsHtml(filePath, parentWindow, rootPath) {
+  try {
+    const raw = fs.readFileSync(filePath, 'utf-8');
+    const fragment = await renderStandaloneFragment(raw, filePath, rootPath);
+    clipboard.write({ html: fragment, text: raw });
+    if (parentWindow && !parentWindow.isDestroyed()) {
+      parentWindow.webContents.send('viewer:html-copied', { name: path.basename(filePath) });
+    }
+  } catch (err) {
+    dialog.showErrorBox(
+      t('export.htmlCopyFailedTitle'),
+      t('export.htmlCopyFailedMessage', { name: path.basename(filePath), error: err.message })
+    );
+  }
+}
+
+// Saves the document as one self-contained .html page holding the same
+// fragment the clipboard copy produces, on a plain white page of the same
+// width, so the file still shows correctly after it is moved or sent.
+async function exportMarkdownToHtml(filePath, parentWindow, rootPath) {
+  const defaultName = `${path.basename(filePath, path.extname(filePath))}.html`;
+  const saveResult = await dialog.showSaveDialog(parentWindow, {
+    defaultPath: path.join(path.dirname(filePath), defaultName),
+    filters: [{ name: 'HTML', extensions: ['html', 'htm'] }],
+  });
+  if (saveResult.canceled || !saveResult.filePath) return;
+
+  try {
+    const raw = fs.readFileSync(filePath, 'utf-8');
+    const fragment = await renderStandaloneFragment(raw, filePath, rootPath);
+    const title = escapeHtmlText(path.basename(filePath, path.extname(filePath)));
+    const fullHtml =
+      '<!DOCTYPE html><html><head><meta charset="utf-8">' +
+      '<meta name="viewport" content="width=device-width, initial-scale=1">' +
+      `<title>${title}</title></head>` +
+      '<body style="margin: 0; background: #ffffff; color-scheme: light">' +
+      `<div style="box-sizing: content-box; max-width: ${HTML_FRAGMENT_WIDTH}px; margin: 0 auto; padding: 32px 24px 80px">` +
+      fragment +
+      '</div></body></html>';
+    fs.writeFileSync(saveResult.filePath, fullHtml, 'utf-8');
+    if (parentWindow && !parentWindow.isDestroyed()) {
+      parentWindow.webContents.send('tree:refresh-dir', { targetDir: path.dirname(saveResult.filePath) });
+    }
+    shell.showItemInFolder(saveResult.filePath);
+  } catch (err) {
+    dialog.showErrorBox(
+      t('export.htmlFailedTitle'),
+      t('export.htmlFailedMessage', { name: path.basename(filePath), error: err.message })
+    );
   }
 }
 
