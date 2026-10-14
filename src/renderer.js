@@ -382,7 +382,11 @@
     // diagram under the cursor gets first refusal on the event.
     doc.addEventListener('wheel', onPreviewWheel, { passive: false });
     doc.addEventListener('keydown', onPreviewZoomKey);
+    // Ahead of onFullscreenEscape so Esc closes the popup before it would
+    // leave fullscreen.
+    doc.addEventListener('keydown', onFootnotePopupEscape);
     doc.addEventListener('keydown', onFullscreenEscape);
+    el.frame.contentWindow.addEventListener('resize', closeFootnotePopup);
     // Mirrors a selection dragged out in the viewer onto the split-view
     // editor (see updateEditorMirror). 'selectionchange' covers dragging,
     // double-click-to-select and keyboard selection alike.
@@ -786,9 +790,104 @@
     if (!isFullscreen) exitDocFullscreen();
   });
 
+  // Footnote popup: clicking a footnote number shows the note in a small
+  // floating box next to it instead of jumping to the list at the bottom.
+  // It lives inside the preview document (so it scrolls with the text and
+  // picks up the preview's styles) and goes away with the body on the next
+  // render.
+  let footnotePopup = null;
+  let footnotePopupRef = null;
+
+  function closeFootnotePopup() {
+    if (footnotePopup) footnotePopup.remove();
+    footnotePopup = null;
+    footnotePopupRef = null;
+  }
+
+  // Position in the document's own layout pixels. The preview zoom is CSS
+  // zoom on the root element, which client rects are measured across but
+  // offsets are not, so offsets keep the popup aligned at any zoom level.
+  function documentOffset(node) {
+    let left = 0;
+    let top = 0;
+    for (let n = node; n; n = n.offsetParent) {
+      left += n.offsetLeft;
+      top += n.offsetTop;
+    }
+    return { left, top };
+  }
+
+  function showFootnotePopup(anchor) {
+    const doc = el.frame.contentDocument;
+    const win = el.frame.contentWindow;
+    if (footnotePopup && footnotePopupRef === anchor) {
+      closeFootnotePopup();
+      return;
+    }
+    closeFootnotePopup();
+    const note = doc.getElementById(decodeAnchor(anchor.getAttribute('href').slice(1)));
+    if (!note) return;
+
+    const popup = doc.createElement('div');
+    popup.className = 'footnote-popup';
+    for (const child of note.childNodes) popup.appendChild(child.cloneNode(true));
+    popup.querySelectorAll('.footnote-backref').forEach((a) => a.remove());
+    // A copy must not answer for the original: ids would duplicate the
+    // targets, and source-line tags would pull find/scroll sync to it.
+    popup.querySelectorAll('[id], [data-source-line]').forEach((n) => {
+      n.removeAttribute('id');
+      n.removeAttribute('data-source-line');
+      n.removeAttribute('data-source-endline');
+    });
+    // Measured at the origin, so its shrink-to-fit width is not squeezed by
+    // wherever it would have landed on its own.
+    popup.style.left = '0px';
+    popup.style.top = '0px';
+    doc.body.appendChild(popup);
+
+    const body = doc.body;
+    const ref = documentOffset(anchor);
+    const bodyLeft = documentOffset(body).left;
+    const minLeft = bodyLeft + 8;
+    const maxLeft = bodyLeft + body.offsetWidth - popup.offsetWidth - 8;
+    popup.style.left = Math.max(minLeft, Math.min(ref.left - 12, maxLeft)) + 'px';
+    popup.style.top = ref.top + anchor.offsetHeight + 6 + 'px';
+
+    // Flip above the reference when there is no room below it on screen.
+    const rect = popup.getBoundingClientRect();
+    const refRect = anchor.getBoundingClientRect();
+    if (rect.bottom > win.innerHeight && refRect.top - rect.height - 6 >= 0) {
+      popup.style.top = ref.top - popup.offsetHeight - 6 + 'px';
+    }
+
+    footnotePopup = popup;
+    footnotePopupRef = anchor;
+  }
+
+  function onFootnotePopupEscape(e) {
+    // The body swap of a re-render takes a popup with it without telling us.
+    if (e.key !== 'Escape' || e.defaultPrevented || !footnotePopup || !footnotePopup.isConnected) return;
+    e.preventDefault();
+    closeFootnotePopup();
+  }
+
+  // Capture phase, to get ahead of the fullscreen Esc bound earlier.
+  document.addEventListener('keydown', onFootnotePopupEscape, true);
+
   function onPreviewClick(e) {
+    if (footnotePopup && !footnotePopup.contains(e.target) && !e.target.closest('.footnote-ref')) {
+      closeFootnotePopup();
+    }
     const anchor = e.target.closest('a');
     if (!anchor) return;
+
+    if (anchor.closest('.footnote-ref') && (anchor.getAttribute('href') || '').startsWith('#')) {
+      e.preventDefault();
+      showFootnotePopup(anchor);
+      return;
+    }
+    // A link followed from inside the popup leaves it behind.
+    if (footnotePopup && footnotePopup.contains(anchor)) closeFootnotePopup();
 
     const internal = anchor.getAttribute('data-internal-href');
     if (internal) {
@@ -4744,6 +4843,9 @@
     const seen = new Set();
     const entries = [];
     for (const anchor of anchors) {
+      // Footnote numbers and their ↩︎ back-links are in-page jumps labelled
+      // "1", "↩︎" — noise in a list of where the document links to.
+      if (anchor.closest('.footnote-ref, .footnote-backref')) continue;
       const info = classifyAnchor(anchor);
       if (!info || seen.has(info.key)) continue;
       seen.add(info.key);

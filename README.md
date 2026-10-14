@@ -5,7 +5,7 @@
 ## 주요 기능
 
 - **프로젝트 트리뷰**: 루트 폴더를 지정하면 좌측에 폴더/파일 트리가 표시되고, `.md` 파일을 클릭해 미리보기
-- **마크다운 렌더링**: `markdown-it` + `highlight.js` 기반, GFM 스타일 표·체크박스·코드 하이라이팅 지원. 기본 스타일은 VS Code 에디터(Dark+/Light+) 톤에 맞춰져 있음
+- **마크다운 렌더링**: `markdown-it` + `highlight.js` 기반, GFM 스타일 표·체크박스·각주(`[^1]`)·코드 하이라이팅 지원. 기본 스타일은 VS Code 에디터(Dark+/Light+) 톤에 맞춰져 있음
 - **커스텀 CSS 편집**
   - 우측 패널에서 CSS를 입력하면 미리보기에 즉시 반영
   - 프로젝트별로 `.mdviewer/custom.css`에 저장
@@ -24,7 +24,7 @@
 ## 기술 스택
 
 - [Electron](https://www.electronjs.org/) — 데스크톱 앱 셸 (Chromium 렌더링 엔진)
-- [markdown-it](https://github.com/markdown-it/markdown-it) + `markdown-it-task-lists` — 마크다운 파싱
+- [markdown-it](https://github.com/markdown-it/markdown-it) + `markdown-it-task-lists` + `markdown-it-footnote` — 마크다운 파싱
 - [highlight.js](https://highlightjs.org/) (`vs2015` 테마) — 코드 하이라이팅
 - [sanitize-html](https://github.com/apostrophecms/sanitize-html) — 렌더링된 HTML 새니타이징
 

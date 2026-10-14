@@ -594,6 +594,42 @@ body.markdown-body.wide-view {
 .markdown-body .task-list-item { list-style: none; margin-left: -1.5em; }
 .markdown-body .task-list-item input { margin-right: 0.5em; }
 
+.markdown-body .footnote-ref a { text-decoration: none; }
+.markdown-body hr.footnotes-sep { margin-top: 40px; }
+.markdown-body .footnotes { font-size: 0.875em; color: #a0a0a0; }
+.markdown-body .footnotes-list { padding-left: 1.5em; }
+.markdown-body .footnote-backref { text-decoration: none; }
+
+/* Floating box a clicked footnote number opens (see showFootnotePopup in
+   src/renderer.js); positioned by script in document coordinates. */
+.markdown-body .footnote-popup {
+  position: absolute;
+  z-index: 50;
+  max-width: min(480px, calc(100% - 16px));
+  max-height: 320px;
+  overflow: auto;
+  padding: 10px 14px;
+  font-size: 0.9em;
+  line-height: 1.55;
+  color: #d4d4d4;
+  background: #252526;
+  border: 1px solid #454545;
+  border-radius: 6px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.45);
+}
+.markdown-body .footnote-popup > :first-child { margin-top: 0; }
+.markdown-body .footnote-popup > :last-child { margin-bottom: 0; }
+
+@media (prefers-color-scheme: light) {
+  .markdown-body .footnotes { color: #5a6672; }
+  .markdown-body .footnote-popup {
+    color: #1f2328;
+    background: #ffffff;
+    border-color: #d0d7de;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15);
+  }
+}
+
 .mdviewer-empty-state {
   display: flex;
   align-items: center;

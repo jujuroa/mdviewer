@@ -7,6 +7,7 @@ const { spawn } = require('child_process');
 const pty = require('node-pty');
 const MarkdownIt = require('markdown-it');
 const taskLists = require('markdown-it-task-lists');
+const footnote = require('markdown-it-footnote');
 const hljs = require('highlight.js');
 const sanitizeHtml = require('sanitize-html');
 const { DEFAULT_LANGUAGE, SUPPORTED_LANGUAGES, STRINGS, translate } = require('./assets/i18n.js');
@@ -723,7 +724,14 @@ function createMarkdownRenderer(baseDir) {
       }
       return md.utils.escapeHtml(str);
     },
-  }).use(taskLists, { enabled: true, label: true });
+  })
+    .use(taskLists, { enabled: true, label: true })
+    // GitLab/GitHub wiki footnotes: `[^1]` in the text, `[^1]: ...` anywhere
+    // in the document, collected into a numbered list at the end.
+    .use(footnote);
+  // Show the reference as a bare superscript number like GitLab does, not
+  // the plugin's default "[1]" ("[1:1]" for a repeated reference).
+  md.renderer.rules.footnote_caption = (tokens, idx) => String(tokens[idx].meta.id + 1);
   useCjkFriendlyEmphasis(md);
 
   // Tags block-level elements with their originating source line range, so
