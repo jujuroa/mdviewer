@@ -205,6 +205,7 @@ const STRINGS = {
     'terminal.shellExited': 'Shell exited (code {code})',
 
     'preview.emptyState': 'Open a folder and select a markdown file',
+    'preview.footnoteJump': 'Go to the footnote at the end of the document',
     'preview.rendering': 'Rendering diagram(s)... this can take a few seconds for large PlantUML files',
     'folder.openFailed': 'Cannot open folder: {error}',
     'recent.none': 'No recently opened projects',
@@ -440,6 +441,7 @@ const STRINGS = {
     'terminal.shellExited': '셸이 종료되었습니다 (code {code})',
 
     'preview.emptyState': '폴더를 열고 마크다운 파일을 선택하세요',
+    'preview.footnoteJump': '문서 끝의 각주로 이동',
     'preview.rendering': '다이어그램 렌더링 중... 큰 PlantUML 파일은 몇 초 정도 걸릴 수 있습니다',
     'folder.openFailed': '폴더를 열 수 없습니다: {error}',
     'recent.none': '최근에 연 프로젝트가 없습니다',

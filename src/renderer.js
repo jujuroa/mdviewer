@@ -839,6 +839,17 @@
       n.removeAttribute('data-source-line');
       n.removeAttribute('data-source-endline');
     });
+    // "[n]" in front of the note jumps to it in the list at the bottom. It is
+    // a plain "#fn.." link, so onPreviewClick closes the popup and scrolls
+    // there with the usual back-navigation history.
+    const jump = doc.createElement('a');
+    jump.className = 'footnote-popup-jump';
+    jump.href = anchor.getAttribute('href');
+    jump.textContent = `[${anchor.textContent}]`;
+    jump.title = t('preview.footnoteJump');
+    const first = popup.firstElementChild;
+    if (first && first.tagName === 'P') first.prepend(jump, ' ');
+    else popup.prepend(jump);
     // Measured at the origin, so its shrink-to-fit width is not squeezed by
     // wherever it would have landed on its own.
     popup.style.left = '0px';

@@ -619,6 +619,7 @@ body.markdown-body.wide-view {
 }
 .markdown-body .footnote-popup > :first-child { margin-top: 0; }
 .markdown-body .footnote-popup > :last-child { margin-bottom: 0; }
+.markdown-body .footnote-popup-jump { text-decoration: none; font-weight: 600; }
 
 @media (prefers-color-scheme: light) {
   .markdown-body .footnotes { color: #5a6672; }
