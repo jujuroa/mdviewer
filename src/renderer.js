@@ -2516,8 +2516,17 @@
     setTimeout(() => row.classList.remove('tree-row-flash'), 1200);
   }
 
+  // The app rewrites a project's .mdviewer/state.json itself on every
+  // document load (persistProjectState), and each write carries a fresh
+  // scroll timestamp. Auto-reloading it would load -> persist -> watch ->
+  // load forever, cancelling whatever navigation the user starts in between.
+  function isProjectStateFile(filePath) {
+    return /\/\.mdviewer\/state\.json$/.test(normalizePath(filePath));
+  }
+
   window.mdviewer.onFileChanged((changedPath) => {
     if (changedPath !== state.currentFilePath) return;
+    if (isProjectStateFile(changedPath)) return;
     markTreeRowFresh(changedPath);
     if (state.suppressNextWatch) {
       state.suppressNextWatch = false;
