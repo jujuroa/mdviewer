@@ -1110,6 +1110,7 @@
     row.appendChild(label);
 
     node.appendChild(row);
+    node.appendChild(buildProjectSearchBox(rootPath, node));
 
     const childrenContainer = document.createElement('div');
     childrenContainer.className = 'tree-children expanded';
@@ -1771,6 +1772,9 @@
   // is already implemented per-row in buildTreeNodes, so this reuses it by
   // simulating the same click/dblclick rather than duplicating that logic.
   el.tree.addEventListener('keydown', (e) => {
+    // Text boxes inside the tree (a project's search box, a new-entry name)
+    // need their arrows, Enter and Space for themselves.
+    if (e.target instanceof HTMLInputElement) return;
     if (!['ArrowDown', 'ArrowUp', 'ArrowRight', 'ArrowLeft', 'Enter', ' '].includes(e.key)) return;
     const rows = getVisibleTreeRows();
     if (!rows.length) return;
@@ -4114,97 +4118,114 @@
   const SEARCH_MIN_AUTO_CHARS = 2;
 
   let searchSeq = 0;
-  let activeSearchId = null;
-  let searchDebounceTimer = null;
-  let selectedSearchRow = null;
 
-  function searchPanelOpen() {
-    return !el.searchPanel.classList.contains('hidden');
-  }
-
-  function searchOptionsFromUI() {
+  // A search box and the results it lists. The sidebar's search panel is
+  // one (it searches the active project); every project row in the explorer
+  // also has its own inline one, scoped to that project. Each view keeps its
+  // own options, debounce, in-flight search and selected row, so typing in
+  // one never disturbs another.
+  function createSearchView({ input, status, results, optCase, optWord, optRegex, rootPath, isShown, onQueryChange }) {
     return {
-      caseSensitive: el.searchOptCase.classList.contains('active'),
-      wholeWord: el.searchOptWord.classList.contains('active'),
-      useRegex: el.searchOptRegex.classList.contains('active'),
+      input,
+      status,
+      results,
+      optCase,
+      optWord,
+      optRegex,
+      rootPath, // () => the folder this view searches, or null
+      isShown, // () => whether the box is on screen (to hand the caret back)
+      onQueryChange: onQueryChange || null,
+      activeSearchId: null,
+      debounceTimer: null,
+      selectedRow: null,
     };
   }
 
-  function setSearchStatus(text, isError = false) {
-    el.searchStatus.textContent = text;
-    el.searchStatus.classList.toggle('error', isError && !!text);
+  function searchOptionsFromUI(view) {
+    return {
+      caseSensitive: view.optCase.classList.contains('active'),
+      wholeWord: view.optWord.classList.contains('active'),
+      useRegex: view.optRegex.classList.contains('active'),
+    };
   }
 
-  function clearSearchResults() {
-    el.searchResults.innerHTML = '';
-    selectedSearchRow = null;
+  function setSearchStatus(view, text, isError = false) {
+    view.status.textContent = text;
+    view.status.classList.toggle('error', isError && !!text);
   }
 
-  // Tells the main process to stop walking for the in-flight search. Its
-  // IPC promise still resolves, but runProjectSearch ignores any result
-  // that isn't from the newest search it issued.
-  function cancelActiveSearch() {
-    if (!activeSearchId) return;
-    window.mdviewer.cancelSearch(activeSearchId);
-    activeSearchId = null;
+  function clearSearchResults(view) {
+    view.results.innerHTML = '';
+    view.selectedRow = null;
   }
 
-  function resetProjectSearch() {
-    cancelActiveSearch();
-    clearTimeout(searchDebounceTimer);
-    clearSearchResults();
-    setSearchStatus('');
+  // Tells the main process to stop walking for the view's in-flight search.
+  // Its IPC promise still resolves, but runProjectSearch ignores any result
+  // that isn't from the newest search the view issued.
+  function cancelActiveSearch(view) {
+    if (!view.activeSearchId) return;
+    window.mdviewer.cancelSearch(view.activeSearchId);
+    view.activeSearchId = null;
   }
 
-  function scheduleProjectSearch({ immediate = false } = {}) {
-    clearTimeout(searchDebounceTimer);
-    const query = el.searchInput.value;
+  function resetSearchView(view) {
+    cancelActiveSearch(view);
+    clearTimeout(view.debounceTimer);
+    clearSearchResults(view);
+    setSearchStatus(view, '');
+  }
+
+  function scheduleProjectSearch(view, { immediate = false } = {}) {
+    clearTimeout(view.debounceTimer);
+    const query = view.input.value;
     if (!query || (!immediate && query.length < SEARCH_MIN_AUTO_CHARS)) {
-      cancelActiveSearch();
-      clearSearchResults();
-      setSearchStatus('');
+      cancelActiveSearch(view);
+      clearSearchResults(view);
+      setSearchStatus(view, '');
       return;
     }
     if (immediate) {
-      runProjectSearch();
+      runProjectSearch(view);
     } else {
-      searchDebounceTimer = setTimeout(runProjectSearch, SEARCH_DEBOUNCE_MS);
+      view.debounceTimer = setTimeout(() => runProjectSearch(view), SEARCH_DEBOUNCE_MS);
     }
   }
 
-  async function runProjectSearch() {
-    const query = el.searchInput.value;
+  async function runProjectSearch(view) {
+    const query = view.input.value;
     if (!query) return;
-    if (!state.rootPath) {
-      clearSearchResults();
-      setSearchStatus(t('search.openFolderFirst'), true);
+    const rootPath = view.rootPath();
+    if (!rootPath) {
+      clearSearchResults(view);
+      setSearchStatus(view, t('search.openFolderFirst'), true);
       return;
     }
 
-    cancelActiveSearch();
+    cancelActiveSearch(view);
     const searchId = 'search-' + ++searchSeq;
-    activeSearchId = searchId;
-    setSearchStatus(t('search.searching'));
+    view.activeSearchId = searchId;
+    setSearchStatus(view, t('search.searching'));
 
-    const result = await window.mdviewer.searchProject(state.rootPath, query, {
-      ...searchOptionsFromUI(),
+    const result = await window.mdviewer.searchProject(rootPath, query, {
+      ...searchOptionsFromUI(view),
       searchId,
     });
 
     // Superseded by a newer search while this one was running.
-    if (activeSearchId !== searchId) return;
-    activeSearchId = null;
+    if (view.activeSearchId !== searchId) return;
+    view.activeSearchId = null;
 
     if (!result.ok) {
-      clearSearchResults();
+      clearSearchResults(view);
       setSearchStatus(
+        view,
         result.invalidPattern ? t('search.invalidPattern') : t('search.failed', { error: result.error }),
         true
       );
       return;
     }
     if (result.canceled) return;
-    renderSearchResults(result);
+    renderSearchResults(view, result);
   }
 
   // Rebuilds `container`'s children as text with the matched spans wrapped
@@ -4222,7 +4243,7 @@
     if (cursor < text.length) container.appendChild(document.createTextNode(text.slice(cursor)));
   }
 
-  function buildSearchFileGroup(file) {
+  function buildSearchFileGroup(view, file) {
     const group = document.createElement('div');
     group.className = 'search-file';
 
@@ -4265,7 +4286,7 @@
       appendHighlightedText(text, match.text, match.ranges);
       matchRow.append(lineNo, text);
 
-      matchRow.addEventListener('click', () => openSearchMatch(file, match, matchRow));
+      matchRow.addEventListener('click', () => openSearchMatch(view, file, match, matchRow));
       matchesEl.appendChild(matchRow);
     }
 
@@ -4280,14 +4301,15 @@
     return group;
   }
 
-  function renderSearchResults(result) {
-    clearSearchResults();
+  function renderSearchResults(view, result) {
+    clearSearchResults(view);
 
     if (!result.files.length) {
-      setSearchStatus(t('search.noResults'));
+      setSearchStatus(view, t('search.noResults'));
       return;
     }
     setSearchStatus(
+      view,
       t(result.truncated ? 'search.summaryTruncated' : 'search.summary', {
         matches: result.totalMatches,
         files: result.files.length,
@@ -4295,36 +4317,36 @@
     );
 
     const frag = document.createDocumentFragment();
-    for (const file of result.files) frag.appendChild(buildSearchFileGroup(file));
-    el.searchResults.appendChild(frag);
+    for (const file of result.files) frag.appendChild(buildSearchFileGroup(view, file));
+    view.results.appendChild(frag);
   }
 
-  function visibleSearchMatchRows() {
+  function visibleSearchMatchRows(view) {
     // Rows inside a collapsed file group stay in the DOM but have no
     // offsetParent, the same trick getVisibleTreeRows uses.
-    return Array.from(el.searchResults.querySelectorAll('.search-match')).filter(
+    return Array.from(view.results.querySelectorAll('.search-match')).filter(
       (row) => row.offsetParent !== null
     );
   }
 
-  function selectSearchRow(row) {
-    if (selectedSearchRow) selectedSearchRow.classList.remove('selected');
-    selectedSearchRow = row || null;
+  function selectSearchRow(view, row) {
+    if (view.selectedRow) view.selectedRow.classList.remove('selected');
+    view.selectedRow = row || null;
     if (row) {
       row.classList.add('selected');
       row.scrollIntoView({ block: 'nearest' });
     }
   }
 
-  function stepSearchSelection(delta) {
-    const rows = visibleSearchMatchRows();
+  function stepSearchSelection(view, delta) {
+    const rows = visibleSearchMatchRows(view);
     if (!rows.length) return;
-    const current = selectedSearchRow ? rows.indexOf(selectedSearchRow) : -1;
+    const current = view.selectedRow ? rows.indexOf(view.selectedRow) : -1;
     if (current === -1) {
-      selectSearchRow(delta > 0 ? rows[0] : rows[rows.length - 1]);
+      selectSearchRow(view, delta > 0 ? rows[0] : rows[rows.length - 1]);
       return;
     }
-    selectSearchRow(rows[Math.min(Math.max(current + delta, 0), rows.length - 1)]);
+    selectSearchRow(view, rows[Math.min(Math.max(current + delta, 0), rows.length - 1)]);
   }
 
   // Which of the find bar's in-document hits corresponds to the result row
@@ -4379,21 +4401,81 @@
     if (block) block.scrollIntoView({ block: 'center' });
   }
 
-  async function openSearchMatch(file, match, rowEl) {
+  async function openSearchMatch(view, file, match, rowEl) {
     const alreadyOpen =
       state.currentFilePath && normalizePath(state.currentFilePath) === normalizePath(file.path);
 
     if (!alreadyOpen) {
       if (!(await guardNavigation())) return;
       await loadAndRenderByPath(file.path);
-      await revealPathInTree(file.path, { select: true });
-      // revealPathInTree focuses the tree when it selects a row; the search
-      // box needs to keep the caret so the user can keep typing/arrowing.
-      if (searchPanelOpen()) el.searchInput.focus({ preventScroll: true });
+      // A project's inline results stand in for its tree, so there is no
+      // row on screen to reveal there; the panel hides the whole tree but
+      // keeps it in sync for when it closes.
+      if (view === panelSearch) await revealPathInTree(file.path, { select: true });
     }
 
-    selectSearchRow(rowEl);
+    // Clicking a result (or revealPathInTree selecting a row) moves focus to
+    // the tree; the search box keeps the caret so the user can keep
+    // typing/arrowing.
+    if (view.isShown()) view.input.focus({ preventScroll: true });
+    selectSearchRow(view, rowEl);
     jumpToSearchMatchInDocument(match);
+  }
+
+  function toggleSearchOption(view, button) {
+    button.classList.toggle('active');
+    scheduleProjectSearch(view, { immediate: true });
+  }
+
+  // Typing, the option toggles and the result-list keys, shared by every
+  // search box. Escape is the box's own business (close vs. clear).
+  function bindSearchView(view, { onEscape }) {
+    view.optCase.addEventListener('click', () => toggleSearchOption(view, view.optCase));
+    view.optWord.addEventListener('click', () => toggleSearchOption(view, view.optWord));
+    view.optRegex.addEventListener('click', () => toggleSearchOption(view, view.optRegex));
+
+    view.input.addEventListener('input', () => {
+      selectSearchRow(view, null);
+      scheduleProjectSearch(view);
+      if (view.onQueryChange) view.onQueryChange();
+    });
+
+    view.input.addEventListener('keydown', (e) => {
+      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+        e.preventDefault();
+        stepSearchSelection(view, e.key === 'ArrowDown' ? 1 : -1);
+      } else if (e.key === 'Enter') {
+        e.preventDefault();
+        // Once a result is picked, Enter opens it; before that it's the
+        // "search now" key (which also covers queries too short to auto-run).
+        if (view.selectedRow) view.selectedRow.click();
+        else scheduleProjectSearch(view, { immediate: true });
+      } else if (e.key === 'Escape') {
+        e.preventDefault();
+        onEscape();
+      }
+    });
+  }
+
+  // --- The sidebar's search panel (Ctrl+Shift+F): replaces the tree ---
+
+  const panelSearch = createSearchView({
+    input: el.searchInput,
+    status: el.searchStatus,
+    results: el.searchResults,
+    optCase: el.searchOptCase,
+    optWord: el.searchOptWord,
+    optRegex: el.searchOptRegex,
+    rootPath: () => state.rootPath,
+    isShown: () => searchPanelOpen(),
+  });
+
+  function searchPanelOpen() {
+    return !el.searchPanel.classList.contains('hidden');
+  }
+
+  function resetProjectSearch() {
+    resetSearchView(panelSearch);
   }
 
   function openSearchPanel() {
@@ -4403,12 +4485,12 @@
     el.btnToggleSearch.classList.add('active');
     el.searchInput.focus();
     el.searchInput.select();
-    if (!state.rootPath) setSearchStatus(t('search.openFolderFirst'), true);
+    if (!state.rootPath) setSearchStatus(panelSearch, t('search.openFolderFirst'), true);
   }
 
   function closeSearchPanel() {
-    cancelActiveSearch();
-    clearTimeout(searchDebounceTimer);
+    cancelActiveSearch(panelSearch);
+    clearTimeout(panelSearch.debounceTimer);
     el.searchPanel.classList.add('hidden');
     el.tree.classList.remove('hidden');
     el.btnToggleSearch.classList.remove('active');
@@ -4420,39 +4502,97 @@
     else openSearchPanel();
   }
 
-  function toggleSearchOption(button) {
-    button.classList.toggle('active');
-    scheduleProjectSearch({ immediate: true });
-  }
-
   el.btnToggleSearch.addEventListener('click', toggleSearchPanel);
   el.searchClose.addEventListener('click', closeSearchPanel);
-  el.searchOptCase.addEventListener('click', () => toggleSearchOption(el.searchOptCase));
-  el.searchOptWord.addEventListener('click', () => toggleSearchOption(el.searchOptWord));
-  el.searchOptRegex.addEventListener('click', () => toggleSearchOption(el.searchOptRegex));
-
-  el.searchInput.addEventListener('input', () => {
-    selectSearchRow(null);
-    scheduleProjectSearch();
-  });
-
-  el.searchInput.addEventListener('keydown', (e) => {
-    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
-      e.preventDefault();
-      stepSearchSelection(e.key === 'ArrowDown' ? 1 : -1);
-    } else if (e.key === 'Enter') {
-      e.preventDefault();
-      // Once a result is picked, Enter opens it; before that it's the
-      // "search now" key (which also covers queries too short to auto-run).
-      if (selectedSearchRow) selectedSearchRow.click();
-      else scheduleProjectSearch({ immediate: true });
-    } else if (e.key === 'Escape') {
-      e.preventDefault();
-      closeSearchPanel();
-    }
-  });
+  bindSearchView(panelSearch, { onEscape: closeSearchPanel });
 
   window.mdviewer.onMenuSearchProject(openSearchPanel);
+
+  // --- A project's inline search box, right under its row in the tree ---
+  //
+  // Searches just that project. While it holds a query the project's file
+  // tree is swapped for the results (the .searching class); clearing the
+  // box brings the tree back.
+
+  function buildProjectSearchBox(rootPath, projectNode) {
+    const wrap = document.createElement('div');
+    wrap.className = 'project-search';
+
+    const box = document.createElement('div');
+    box.className = 'project-search-box';
+
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.className = 'project-search-input';
+    input.spellcheck = false;
+    input.placeholder = t('search.projectPlaceholder');
+
+    const makeOpt = (label, titleKey, extraClass) => {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'search-opt' + (extraClass ? ' ' + extraClass : '');
+      btn.textContent = label;
+      btn.title = t(titleKey);
+      return btn;
+    };
+    const optCase = makeOpt('Aa', 'search.caseTitle');
+    const optWord = makeOpt('ab', 'search.wordTitle', 'search-opt-word');
+    const optRegex = makeOpt('.*', 'search.regexTitle');
+
+    const clear = document.createElement('button');
+    clear.type = 'button';
+    clear.className = 'search-close hidden';
+    clear.textContent = '✕';
+    clear.title = t('search.clearTitle');
+
+    box.append(input, optCase, optWord, optRegex, clear);
+
+    const status = document.createElement('div');
+    status.className = 'search-status';
+    const results = document.createElement('div');
+    results.className = 'search-results';
+
+    wrap.append(box, status, results);
+
+    const syncSearching = () => {
+      const searching = !!input.value;
+      projectNode.classList.toggle('searching', searching);
+      clear.classList.toggle('hidden', !searching);
+    };
+
+    const view = createSearchView({
+      input,
+      status,
+      results,
+      optCase,
+      optWord,
+      optRegex,
+      rootPath: () => rootPath,
+      isShown: () => input.isConnected && input.offsetParent !== null,
+      onQueryChange: syncSearching,
+    });
+
+    const clearQuery = () => {
+      input.value = '';
+      resetSearchView(view);
+      syncSearching();
+    };
+
+    clear.addEventListener('click', () => {
+      clearQuery();
+      input.focus();
+    });
+    bindSearchView(view, {
+      // First Escape clears the query; on an empty box it hands the
+      // keyboard back to the tree.
+      onEscape: () => {
+        if (input.value) clearQuery();
+        else el.tree.focus({ preventScroll: true });
+      },
+    });
+
+    return wrap;
+  }
 
   // ---------------------------------------------------------------------
   // Floating table of contents / sibling pages
@@ -5486,7 +5626,7 @@
   // Row-level contextmenu handlers (see buildTreeNodes) don't call
   // stopPropagation, so this only fires when the click didn't land on a row.
   el.tree.addEventListener('contextmenu', (e) => {
-    if (e.target.closest('.tree-row')) return;
+    if (e.target.closest('.tree-row, .project-search')) return;
     e.preventDefault();
     window.mdviewer.showTreeEmptyContextMenu({ hasProjects: state.projects.length > 0 });
   });

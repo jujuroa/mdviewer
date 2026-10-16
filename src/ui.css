@@ -456,6 +456,62 @@ html, body {
   color: var(--text-dim);
 }
 
+/* A project's own search box, under its row in the explorer. It folds with
+   the project, and while it holds a query its results take the place of
+   the project's file tree. */
+.project-search {
+  padding: 2px 8px 4px 22px;
+}
+.project-node:has(> .tree-children:not(.expanded)) > .project-search { display: none; }
+.project-node.searching > .tree-children { display: none; }
+
+.project-search-box {
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  border: 1px solid var(--border);
+  background: var(--bg-app);
+  border-radius: 4px;
+  padding: 1px 2px 1px 0;
+}
+.project-search-box:focus-within { border-color: var(--accent); }
+
+.project-search-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: var(--text);
+  padding: 3px 6px;
+  font-size: 12px;
+  font-family: inherit;
+}
+
+.project-search-box .search-opt {
+  width: 20px;
+  height: 18px;
+  font-size: 10px;
+}
+.project-search-box .search-close {
+  width: 18px;
+  height: 18px;
+  font-size: 10px;
+}
+.project-search-box .search-close.hidden { display: none; }
+
+.project-search .search-status { padding: 4px 2px 0; }
+.project-search .search-status:empty { display: none; }
+/* Results flow in the tree's own scroll, edge to edge like tree rows. */
+.project-search .search-results {
+  overflow: visible;
+  margin: 4px -8px 0 -22px;
+  padding-bottom: 0;
+}
+.project-search .search-file-row { padding-left: 22px; }
+.project-search .search-match,
+.project-search .search-file-truncated { padding-left: 38px; }
+
 /* ---- Resizers ---- */
 
 .resizer {
