@@ -135,6 +135,8 @@
     zoomIndicator: document.getElementById('zoom-indicator'),
     appShell: document.getElementById('app-shell'),
     btnFullscreen: document.getElementById('btn-fullscreen'),
+    btnNavBack: document.getElementById('btn-nav-back'),
+    btnNavForward: document.getElementById('btn-nav-forward'),
     btnExitFullscreen: document.getElementById('btn-exit-fullscreen'),
     fullscreenHint: document.getElementById('fullscreen-hint'),
     editStatus: document.getElementById('edit-status'),
@@ -781,6 +783,8 @@
 
   document.addEventListener('keydown', onFullscreenEscape);
   el.btnFullscreen.addEventListener('click', toggleDocFullscreen);
+  el.btnNavBack.addEventListener('click', () => navigateBack());
+  el.btnNavForward.addEventListener('click', () => navigateForward());
   el.btnExitFullscreen.addEventListener('click', exitDocFullscreen);
   window.mdviewer.onMenuToggleDocumentFullscreen(toggleDocFullscreen);
   // The window can also leave fullscreen without going through
@@ -1197,6 +1201,7 @@
     state.instantViewPath = null;
     state.scrollJumpStack = [];
     state.scrollForwardStack = [];
+    updateNavButtons();
     clearJsonPath();
     updateFileKindUI();
     markActiveDocRow();
@@ -1287,6 +1292,7 @@
     // Back/forward must not lead into a project that is no longer open.
     state.docHistoryStack = state.docHistoryStack.filter((p) => !isPathUnder(p, root));
     state.docForwardStack = state.docForwardStack.filter((p) => !isPathUnder(p, root));
+    updateNavButtons();
 
     if (closingActive) {
       const next = state.projects[Math.min(index, state.projects.length - 1)];
@@ -1317,6 +1323,7 @@
 
     state.docHistoryStack = state.docHistoryStack.filter((p) => !projectRootFor(p));
     state.docForwardStack = state.docForwardStack.filter((p) => !projectRootFor(p));
+    updateNavButtons();
     state.projects = [];
     for (const node of el.tree.querySelectorAll(':scope > .project-node')) node.remove();
     selectedRow = null;
@@ -1334,6 +1341,7 @@
     state.currentFileKind = 'markdown';
     state.scrollJumpStack = [];
     state.scrollForwardStack = [];
+    updateNavButtons();
     clearJsonPath();
     updateFileKindUI();
   }
@@ -1889,6 +1897,7 @@
     }
     state.scrollJumpStack = [];
     state.scrollForwardStack = [];
+    updateNavButtons();
   }
 
   // Toggles toolbar/preview affordances that only make sense for one file
@@ -2050,6 +2059,7 @@
       const y = state.scrollJumpStack.pop();
       if (win) state.scrollForwardStack.push(win.scrollY);
       el.frame.contentWindow.scrollTo(0, y);
+      updateNavButtons();
       return;
     }
     if (state.docHistoryStack.length === 0) return;
@@ -2062,6 +2072,7 @@
       await revealPathInTree(prevPath, { select: true });
     } finally {
       state.navigatingBack = false;
+      updateNavButtons();
     }
   }
 
@@ -2076,6 +2087,7 @@
       const y = state.scrollForwardStack.pop();
       if (win) state.scrollJumpStack.push(win.scrollY);
       el.frame.contentWindow.scrollTo(0, y);
+      updateNavButtons();
       return;
     }
     if (state.docForwardStack.length === 0) return;
@@ -2087,7 +2099,17 @@
       await revealPathInTree(nextPath, { select: true });
     } finally {
       state.navigatingForward = false;
+      updateNavButtons();
     }
+  }
+
+  // Enables the toolbar back/forward buttons only while navigateBack /
+  // navigateForward would actually do something. The stacks change in many
+  // places, so this is also called from beginDocumentNavigation,
+  // pushScrollJumpHistory, renderBreadcrumb and the project open/close paths.
+  function updateNavButtons() {
+    el.btnNavBack.disabled = !state.scrollJumpStack.length && !state.docHistoryStack.length;
+    el.btnNavForward.disabled = !state.scrollForwardStack.length && !state.docForwardStack.length;
   }
 
   // Records where the viewer was scrolled to before an in-document anchor
@@ -2099,6 +2121,7 @@
     if (win) state.scrollJumpStack.push(win.scrollY);
     state.scrollForwardStack = [];
     state.docForwardStack = [];
+    updateNavButtons();
   }
 
   // Re-renders the current PlantUML diagram from the given source text
@@ -2386,6 +2409,7 @@
   // ---------------------------------------------------------------------
 
   function renderBreadcrumb(filePath) {
+    updateNavButtons();
     el.fileName.innerHTML = '';
     el.fileName.title = filePath;
 

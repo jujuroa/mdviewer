@@ -551,6 +551,25 @@ html, body {
   color: var(--text-dim);
 }
 
+/* Back/forward buttons in front of the breadcrumb; they mirror the mouse
+   XButton1/XButton2 navigation (see updateNavButtons). */
+.toolbar-nav {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+  margin-right: 8px;
+}
+.preview-toolbar .toolbar-nav button.toolbar-icon-btn {
+  padding: 3px 6px !important;
+}
+.preview-toolbar .toolbar-nav button:disabled {
+  opacity: 0.35;
+  cursor: default;
+  background: var(--bg-sidebar);
+  color: var(--text-dim);
+}
+
 #current-file-name {
   display: flex;
   align-items: center;

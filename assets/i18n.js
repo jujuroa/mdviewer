@@ -107,6 +107,8 @@ const STRINGS = {
     'toolbar.terminalTitle': 'Open/close terminal (Ctrl+`)',
     'toolbar.zoomResetTitle': 'Reset viewer zoom to 100% (Ctrl+0)',
     'toolbar.fullscreenTitle': 'View this document fullscreen (F11)',
+    'toolbar.navBackTitle': 'Back (mouse back button)',
+    'toolbar.navForwardTitle': 'Forward (mouse forward button)',
 
     'fullscreen.exitTitle': 'Exit fullscreen (Esc)',
     'fullscreen.hint': 'Press Esc or F11 to exit fullscreen',
@@ -345,6 +347,8 @@ const STRINGS = {
     'toolbar.terminalTitle': '터미널 열기/닫기 (Ctrl+`)',
     'toolbar.zoomResetTitle': '뷰어 확대/축소를 100%로 되돌리기 (Ctrl+0)',
     'toolbar.fullscreenTitle': '현재 문서 전체화면으로 보기 (F11)',
+    'toolbar.navBackTitle': '뒤로 (마우스 뒤로 버튼)',
+    'toolbar.navForwardTitle': '앞으로 (마우스 앞으로 버튼)',
 
     'fullscreen.exitTitle': '전체화면 종료 (Esc)',
     'fullscreen.hint': 'Esc 또는 F11을 누르면 전체화면이 종료됩니다',
