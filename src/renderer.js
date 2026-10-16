@@ -3196,6 +3196,35 @@
     }
     el.btnToggleEdit.classList.toggle('active', enabled);
     el.btnSaveSource.classList.toggle('hidden', !enabled);
+    if (enabled) sizeEditorPaneForViewer();
+  }
+
+  // Opening the editor shouldn't squeeze the document: the viewer keeps the
+  // width its prose column (body max-width) needs, and the editor gets the
+  // rest. Only when that would leave the editor narrower than
+  // EDITOR_OPEN_MIN_WIDTH does the editor take that much and the viewer
+  // shrink. Views without a max-width (JSON, text, .puml) have no natural
+  // width to keep, so they leave the pane at its current/default width.
+  const EDITOR_OPEN_MIN_WIDTH = 400;
+
+  function sizeEditorPaneForViewer() {
+    if (el.frame.classList.contains('hidden')) return;
+    const doc = el.frame.contentDocument;
+    if (!doc || !doc.body) return;
+    const cs = doc.defaultView.getComputedStyle(doc.body);
+    let viewerWidth = parseFloat(cs.maxWidth);
+    if (Number.isNaN(viewerWidth)) return;
+    if (cs.boxSizing !== 'border-box') {
+      viewerWidth +=
+        parseFloat(cs.paddingLeft) + parseFloat(cs.paddingRight) +
+        parseFloat(cs.borderLeftWidth) + parseFloat(cs.borderRightWidth);
+    }
+    // Room for the frame's vertical scrollbar.
+    viewerWidth += el.frame.clientWidth - doc.documentElement.clientWidth;
+    const total =
+      el.editorPane.getBoundingClientRect().width + el.frame.getBoundingClientRect().width;
+    const editorWidth = Math.max(EDITOR_OPEN_MIN_WIDTH, total - viewerWidth);
+    el.editorPane.style.width = Math.round(editorWidth) + 'px';
   }
 
   async function enterEditMode() {
