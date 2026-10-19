@@ -2236,6 +2236,10 @@ ipcMain.handle('tree:show-context-menu', (event, itemPath, rootPath, options = {
       label: t('context.openInExplorer'),
       click: () => shell.showItemInFolder(itemPath),
     },
+    {
+      label: t('context.openInTerminal'),
+      click: () => win.webContents.send('terminal:open-in', { dir: targetDir }),
+    },
     { type: 'separator' },
     {
       label: t('context.copyAbsolutePath'),
@@ -2873,11 +2877,66 @@ ipcMain.handle('viewer:show-context-menu', (event, payload) => {
   }
   if (payload && payload.hasSelection) {
     items.push({ type: 'separator' }, ...sendToTerminalItems(win, 'viewer', payload.hasLocation));
+  } else if (payload) {
+    if (items.length) items.push({ type: 'separator' });
+    items.push(...viewerDocumentItems(win, payload));
   }
   if (items.length === 0) return { ok: false };
   Menu.buildFromTemplate(items).popup({ window: win });
   return { ok: true };
 });
+
+// The viewer's menu when nothing is selected: the document's history, its
+// file and folder, and the view. Items the renderer has to carry out go
+// back to it as 'viewer:context-action' with the action's name.
+function viewerDocumentItems(win, payload) {
+  const action = (name) => () => win.webContents.send('viewer:context-action', { action: name });
+  const { filePath, rootPath } = payload;
+  const items = [
+    { label: t('context.back'), enabled: !!payload.canGoBack, click: action('back') },
+    { label: t('context.forward'), enabled: !!payload.canGoForward, click: action('forward') },
+    { type: 'separator' },
+    { label: t('context.selectAll'), click: action('selectAll') },
+    { type: 'separator' },
+    { label: t('context.openInTerminal'), click: action('openInTerminal') },
+  ];
+  if (filePath) {
+    items.push(
+      { label: t('context.openInExplorer'), click: () => shell.showItemInFolder(filePath) },
+      { type: 'separator' },
+      { label: t('context.copyAbsolutePath'), click: () => clipboard.writeText(filePath) },
+      {
+        label: t('context.copyRelativePath'),
+        enabled: !!rootPath,
+        click: () => clipboard.writeText(projectRelativePath(filePath, rootPath)),
+      },
+      { type: 'separator' },
+      {
+        label: t('context.editMode'),
+        type: 'checkbox',
+        checked: !!payload.editMode,
+        click: action('toggleEditMode'),
+      },
+      { label: t('context.refresh'), click: action('refresh') }
+    );
+    if (payload.isMarkdown) {
+      items.push({
+        label: t('context.exportPdf'),
+        click: () => exportMarkdownToPdf(filePath, win, rootPath || path.dirname(filePath)),
+      });
+    }
+  }
+  items.push(
+    { type: 'separator' },
+    {
+      label: t('menu.fullscreenDocument'),
+      type: 'checkbox',
+      checked: !!payload.docFullscreen,
+      click: action('toggleFullscreen'),
+    }
+  );
+  return items;
+}
 
 // "Send to terminal" types a reference to the selection (@path#Lstart-end)
 // into the terminal panel's shell, without Enter, so a prompt can follow

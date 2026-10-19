@@ -143,7 +143,8 @@
     btnToggleTerminal: document.getElementById('btn-toggle-terminal'),
     terminalPanel: document.getElementById('terminal-panel'),
     resizerTerminal: document.getElementById('resizer-terminal'),
-    terminalCwd: document.getElementById('terminal-cwd'),
+    terminalTabs: document.getElementById('terminal-tabs'),
+    btnTerminalNewTab: document.getElementById('btn-terminal-new-tab'),
     terminalXterm: document.getElementById('terminal-xterm'),
     btnTerminalClear: document.getElementById('btn-terminal-clear'),
     btnTerminalRestart: document.getElementById('btn-terminal-restart'),
@@ -997,6 +998,11 @@
   function dirnameOf(p) {
     const idx = Math.max(p.lastIndexOf('/'), p.lastIndexOf('\\'));
     return idx >= 0 ? p.substring(0, idx) : '';
+  }
+
+  function basenameOf(p) {
+    const trimmed = p.replace(/[\\/]+$/, '');
+    return trimmed.substring(Math.max(trimmed.lastIndexOf('/'), trimmed.lastIndexOf('\\')) + 1);
   }
 
   function basenameNoExt(p) {
@@ -3859,7 +3865,6 @@
 
     contextMenuSelection = selectedText.trim() ? selectedText : '';
     contextMenuImageSrc = image ? image.src : '';
-    if (!contextMenuSelection && !contextMenuImageSrc) return;
 
     // Taken now, while the selection is certainly still there, for "send
     // to terminal" (see sendSelectionToTerminal).
@@ -3872,12 +3877,45 @@
       : null;
 
     e.preventDefault();
+    // Without a selection the menu is about the document itself: history,
+    // its file and folder, and the view (see viewer:show-context-menu).
+    const filePath = state.currentFilePath || '';
     window.mdviewer.showViewerContextMenu({
       hasSelection: !!contextMenuSelection,
       hasImage: !!contextMenuImageSrc,
-      hasLocation: !!state.currentFilePath,
+      hasLocation: !!filePath,
+      filePath,
+      rootPath: projectRootFor(filePath) || state.rootPath || '',
+      canGoBack: !el.btnNavBack.disabled,
+      canGoForward: !el.btnNavForward.disabled,
+      isMarkdown: !!filePath && state.currentFileKind === 'markdown',
+      editMode: !!state.editMode,
+      docFullscreen: !!state.docFullscreen,
     });
   }
+
+  // The document menu's items that act on this window rather than on the
+  // file, sent back from main.js by name.
+  const VIEWER_CONTEXT_ACTIONS = {
+    back: () => navigateBack(),
+    forward: () => navigateForward(),
+    selectAll: () => {
+      const doc = el.frame.contentDocument;
+      if (doc && doc.body) doc.getSelection().selectAllChildren(doc.body);
+    },
+    openInTerminal: () =>
+      state.currentFilePath
+        ? openTerminalAt(dirnameOf(state.currentFilePath), {
+            insertText: shellQuote(basenameOf(state.currentFilePath)),
+          })
+        : openTerminalAt(state.rootPath || ''),
+    toggleEditMode: () => toggleEditMode(),
+    refresh: () => refreshCurrentFile(),
+    toggleFullscreen: () => toggleDocFullscreen(),
+  };
+  window.mdviewer.onViewerContextAction(({ action }) => {
+    if (VIEWER_CONTEXT_ACTIONS[action]) VIEWER_CONTEXT_ACTIONS[action]();
+  });
 
   // Draws an SVG into a canvas and puts the resulting PNG on the clipboard:
   // an SVG on the clipboard is useless to most applications, and
@@ -4037,7 +4075,7 @@
 
     const { fragment, sourceText } = await resolveSelectionLocation(pending);
     const reference = pending.filePath
-      ? `@${terminalPathFor(pending.filePath, session.key)}${fragment}`
+      ? `@${terminalPathFor(pending.filePath, session.cwd)}${fragment}`
       : '';
     const body = (sourceText || pending.text).replace(/\r\n/g, '\n').replace(/\n+$/, '');
 
@@ -6429,9 +6467,11 @@
   }
 
   // The shell's working directory isn't visible to the app, so paths are
-  // resolved against the project root, falling back to any project file
-  // whose path ends with what was printed (see resolveLinkPath in main.js).
-  function registerTerminalFileLinks(term, key, container) {
+  // resolved against the folder the tab was opened in and its project,
+  // falling back to any project file whose path ends with what was printed
+  // (see resolveLinkPath in main.js).
+  function registerTerminalFileLinks(term, cwd, rootPath, container) {
+    const baseDirs = [cwd, rootPath].filter((dir, i, all) => dir && all.indexOf(dir) === i);
     term.registerLinkProvider({
       provideLinks(y, callback) {
         const row = readTerminalLogicalLine(term, y - 1);
@@ -6440,7 +6480,7 @@
           callback(undefined);
           return;
         }
-        resolveLinkCandidates(candidates, key ? [key] : [], key).then(
+        resolveLinkCandidates(candidates, baseDirs, rootPath).then(
           (links) => {
             callback(
               links.map((link) => ({
@@ -6469,22 +6509,32 @@
   // Bottom terminal panel
   // ---------------------------------------------------------------------
 
-  // One shell per open project, all started together when the panel opens,
-  // each with its own xterm; the panel shows only the active project's.
-  // With no project open there is a single shell in the home folder.
-  // Sessions are keyed by project root ('' for that home shell) — the same
-  // key main.js files the PTY under.
-  const terminalSessions = new Map(); // key -> { key, term, fitAddon, container, started }
+  // Every shell is a tab. Each open project gets one of its own, started
+  // together when the panel opens; more come from the "+" button and from
+  // "Open in Terminal", and each can be closed on its own. A tab belongs to
+  // a project (projectKey: its root, '' for the home-folder shell used
+  // while no project is open) and goes when that project is closed.
+  // Switching projects brings up the tab last used in that project. The
+  // tab's id is the key main.js files its PTY under.
+  const terminalSessions = new Map(); // id -> { id, cwd, projectKey, term, fitAddon, container, tab, started }
+  const lastTerminalByProject = new Map(); // projectKey -> id
+  let activeTerminalId = null;
+  let terminalSeq = 0;
+  // The projects and the active one as of the last sync, so a sync can tell
+  // a newly opened project, and a project switch, from a plain refresh.
+  let terminalProjectsSeen = [];
+  let terminalShownRoot = null;
 
   function activeTerminalKey() {
     return state.rootPath || '';
   }
 
   function activeTerminal() {
-    return terminalSessions.get(activeTerminalKey()) || null;
+    return terminalSessions.get(activeTerminalId) || null;
   }
 
-  function createTerminalSession(key) {
+  function createTerminalSession({ cwd, projectKey }) {
+    const id = `term-${++terminalSeq}`;
     const container = document.createElement('div');
     container.className = 'terminal-session hidden';
     el.terminalXterm.appendChild(container);
@@ -6501,12 +6551,12 @@
     const fitAddon = new window.FitAddon.FitAddon();
     term.loadAddon(fitAddon);
     term.open(container);
-    registerTerminalFileLinks(term, key, container);
+    registerTerminalFileLinks(term, cwd, projectKey || cwd, container);
     term.onData((data) => {
-      window.mdviewer.sendTerminalInput(key, data);
+      window.mdviewer.sendTerminalInput(id, data);
     });
     term.onResize(({ cols, rows }) => {
-      window.mdviewer.resizeTerminal(key, cols, rows);
+      window.mdviewer.resizeTerminal(id, cols, rows);
     });
     // Right-click is this app's copy/paste gesture in the terminal (the
     // contextmenu handler below), so the right button must never reach
@@ -6542,15 +6592,61 @@
       }
     });
 
-    const session = { key, term, fitAddon, container, started: false };
-    terminalSessions.set(key, session);
+    const session = { id, cwd, projectKey, term, fitAddon, container, tab: null, started: false };
+    session.tab = createTerminalTab(session);
+    terminalSessions.set(id, session);
     return session;
+  }
+
+  function createTerminalTab(session) {
+    const tab = document.createElement('div');
+    tab.className = 'terminal-tab';
+    tab.setAttribute('role', 'tab');
+    tab.title = session.cwd || '~';
+    const label = document.createElement('span');
+    label.className = 'terminal-tab-label';
+    const close = document.createElement('button');
+    close.className = 'terminal-tab-close';
+    close.textContent = '×';
+    close.title = t('terminal.closeTabTitle');
+    tab.append(label, close);
+
+    tab.addEventListener('click', (e) => {
+      if (e.target === close) return;
+      activateTerminal(session.id);
+    });
+    close.addEventListener('click', () => closeTerminalTab(session.id));
+    // Middle-click closes, as on browser tabs.
+    tab.addEventListener('mousedown', (e) => {
+      if (e.button === 1) e.preventDefault();
+    });
+    tab.addEventListener('auxclick', (e) => {
+      if (e.button === 1) closeTerminalTab(session.id);
+    });
+    el.terminalTabs.appendChild(tab);
+    return tab;
+  }
+
+  // Tabs are named after their folder; two tabs on the same folder are
+  // told apart by a number.
+  function renderTerminalTabLabels() {
+    const seen = new Map();
+    for (const session of terminalSessions.values()) {
+      const name = session.cwd ? basenameOf(session.cwd) || session.cwd : '~';
+      const count = (seen.get(name) || 0) + 1;
+      seen.set(name, count);
+      session.tab.querySelector('.terminal-tab-label').textContent = count > 1 ? `${name} (${count})` : name;
+      session.tab.classList.toggle('active', session.id === activeTerminalId);
+      session.tab.classList.toggle('exited', !session.started);
+      session.tab.setAttribute('aria-selected', String(session.id === activeTerminalId));
+    }
   }
 
   async function startTerminalSession(session) {
     // Marked before the await so a second sync running meanwhile doesn't
     // start the same shell twice.
     session.started = true;
+    renderTerminalTabLabels();
     // A hidden xterm has no size of its own to fit to, so it takes the
     // shown one's: they all sit in the same panel. Starting at the default
     // 80 columns instead and resizing on first show leaves ConPTY wrapping
@@ -6561,19 +6657,66 @@
       matchTerminalSize(session);
     }
     const result = await window.mdviewer.startTerminal(
-      session.key,
-      session.key || undefined,
+      session.id,
+      session.cwd || undefined,
       session.term.cols,
       session.term.rows
     );
-    if (!result || !result.ok) session.started = false;
+    if (!result || !result.ok) {
+      session.started = false;
+      renderTerminalTabLabels();
+    }
   }
 
   function disposeTerminalSession(session) {
-    window.mdviewer.stopTerminal(session.key);
+    window.mdviewer.stopTerminal(session.id);
     session.term.dispose();
     session.container.remove();
-    terminalSessions.delete(session.key);
+    session.tab.remove();
+    terminalSessions.delete(session.id);
+    if (lastTerminalByProject.get(session.projectKey) === session.id) {
+      lastTerminalByProject.delete(session.projectKey);
+    }
+    if (activeTerminalId === session.id) activeTerminalId = null;
+  }
+
+  // The tab to show for a project: the one last used there, else its first.
+  function terminalForProject(projectKey) {
+    const last = terminalSessions.get(lastTerminalByProject.get(projectKey));
+    if (last) return last;
+    for (const session of terminalSessions.values()) {
+      if (session.projectKey === projectKey) return session;
+    }
+    return null;
+  }
+
+  function activateTerminal(id) {
+    const session = terminalSessions.get(id);
+    if (!session) return;
+    activeTerminalId = id;
+    lastTerminalByProject.set(session.projectKey, id);
+    showActiveTerminal();
+    session.tab.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    session.term.focus();
+  }
+
+  // Closing the last tab closes the panel; opening the panel again starts
+  // a fresh shell for each project.
+  function closeTerminalTab(id) {
+    const session = terminalSessions.get(id);
+    if (!session) return;
+    const wasActive = activeTerminalId === id;
+    disposeTerminalSession(session);
+    if (!terminalSessions.size) {
+      closeTerminalPanel();
+      return;
+    }
+    if (wasActive) {
+      const next = terminalForProject(session.projectKey) || [...terminalSessions.values()].pop();
+      activateTerminal(next.id);
+    } else {
+      renderTerminalTabLabels();
+    }
   }
 
   // Sizes a hidden session like the one on screen.
@@ -6586,7 +6729,7 @@
   }
 
   // Fits the session on screen to the panel and keeps the hidden ones the
-  // same size, so switching projects never resizes a shell (see
+  // same size, so switching tabs never resizes a shell (see
   // startTerminalSession for why that matters).
   function fitActiveTerminal() {
     // Fullscreen hides the terminal panel; fitting it at zero size there
@@ -6599,38 +6742,50 @@
   }
 
   function showActiveTerminal() {
-    const key = activeTerminalKey();
     for (const session of terminalSessions.values()) {
-      session.container.classList.toggle('hidden', session.key !== key);
+      session.container.classList.toggle('hidden', session.id !== activeTerminalId);
     }
-    el.terminalCwd.textContent = key;
-    el.terminalCwd.title = key;
+    renderTerminalTabLabels();
     fitActiveTerminal();
   }
 
-  // Brings the sessions in line with the open projects: a closed project's
-  // shell is stopped right away, while shells for newly opened projects
-  // only start once the panel is (or gets) open. startExited also restarts
-  // shells that exited on their own — the panel being opened, which has
-  // always started a fresh shell when the old one was gone.
+  // Brings the tabs in line with the open projects: a closed project's
+  // tabs are stopped right away, while a newly opened project only gets its
+  // shell once the panel is (or gets) open. startExited — the panel being
+  // opened — also gives every project without a tab a fresh one and
+  // restarts shells that exited on their own, as opening the panel has
+  // always done.
   async function syncTerminalSessions({ startExited = false } = {}) {
     const wanted = state.projects.length ? [...state.projects] : [''];
     for (const session of [...terminalSessions.values()]) {
-      if (!wanted.includes(session.key)) disposeTerminalSession(session);
+      if (!wanted.includes(session.projectKey)) disposeTerminalSession(session);
     }
     const toStart = [];
     if (state.terminalOpen) {
       for (const key of wanted) {
-        let session = terminalSessions.get(key);
-        if (!session) {
-          session = createTerminalSession(key);
-          toStart.push(session);
-        } else if (startExited && !session.started) {
-          session.term.reset();
-          toStart.push(session);
+        const isNew = !terminalProjectsSeen.includes(key);
+        if ((startExited || isNew) && !terminalForProject(key)) {
+          toStart.push(createTerminalSession({ cwd: key, projectKey: key }));
+        }
+      }
+      if (startExited) {
+        for (const session of terminalSessions.values()) {
+          if (!session.started && !toStart.includes(session)) {
+            session.term.reset();
+            toStart.push(session);
+          }
         }
       }
     }
+    terminalProjectsSeen = wanted;
+
+    const root = activeTerminalKey();
+    if (root !== terminalShownRoot || !activeTerminal()) {
+      const session = terminalForProject(root) || [...terminalSessions.values()][0];
+      activeTerminalId = session ? session.id : null;
+      if (session) lastTerminalByProject.set(session.projectKey, session.id);
+    }
+    terminalShownRoot = root;
     showActiveTerminal();
     await Promise.all(toStart.map(startTerminalSession));
   }
@@ -6661,11 +6816,79 @@
     }
   }
 
-  // Restarts only the shell on screen; the other projects' keep running.
+  // A new tab in the given folder, in the project the folder lies in (the
+  // active one for a folder outside every project). Opening the panel for
+  // it already starts a shell in each project's root, so a folder that is
+  // such a root just brings that tab up instead of starting a second one.
+  //
+  // insertText is typed at the new shell's prompt, without Enter, once the
+  // shell has settled (see waitForTerminalIdle).
+  async function openTerminalAt(dir, { insertText = '' } = {}) {
+    const projectKey = projectRootFor(dir) || activeTerminalKey();
+    let session = null;
+    if (!state.terminalOpen) {
+      await openTerminalPanel();
+      session = [...terminalSessions.values()].find(
+        (s) => s.cwd && normalizePath(s.cwd) === normalizePath(dir)
+      );
+      if (session) activateTerminal(session.id);
+    }
+    if (!session) {
+      session = createTerminalSession({ cwd: dir, projectKey });
+      activateTerminal(session.id);
+      await startTerminalSession(session);
+    }
+    if (!insertText) return;
+    await waitForTerminalIdle(session);
+    if (!terminalSessions.has(session.id) || !session.started) return;
+    session.term.paste(insertText);
+    session.term.focus();
+  }
+
+  // A shell that is still starting up drops or garbles what is typed at
+  // it (PowerShell's line editor redraws the prompt over it), so input is
+  // held until the shell has printed something and then gone quiet.
+  function waitForTerminalIdle(session, { quietMs = 400, timeoutMs = 8000 } = {}) {
+    const startedAt = Date.now();
+    return new Promise((resolve) => {
+      const check = () => {
+        const now = Date.now();
+        const settled = session.lastOutputAt && now - session.lastOutputAt >= quietMs;
+        if (settled || now - startedAt >= timeoutMs) resolve();
+        else setTimeout(check, 100);
+      };
+      check();
+    });
+  }
+
+  // A file name as one shell word: quoted when it holds a space or a
+  // character the shell would read as syntax. Windows runs PowerShell (see
+  // spawnTerminalFor in main.js), where a quote inside quotes is doubled;
+  // POSIX shells close, escape and reopen.
+  function shellQuote(name) {
+    if (/^[\p{L}\p{N}_.,+@%=:/-]+$/u.test(name)) return name;
+    const isWin = /Windows/i.test(navigator.userAgent);
+    return `'${name.replace(/'/g, isWin ? "''" : "'\\''")}'`;
+  }
+
+  // "+": another shell in the folder of the tab on screen.
+  async function newTerminalTab() {
+    const current = activeTerminal();
+    if (!state.terminalOpen) {
+      await openTerminalPanel();
+      return;
+    }
+    const cwd = current ? current.cwd : activeTerminalKey();
+    const session = createTerminalSession({ cwd, projectKey: current ? current.projectKey : activeTerminalKey() });
+    activateTerminal(session.id);
+    await startTerminalSession(session);
+  }
+
+  // Restarts only the shell on screen; the other tabs keep running.
   async function restartTerminal() {
     const session = activeTerminal();
     if (!session) return;
-    await window.mdviewer.stopTerminal(session.key);
+    await window.mdviewer.stopTerminal(session.id);
     session.term.reset();
     await startTerminalSession(session);
     session.term.focus();
@@ -6674,22 +6897,27 @@
   el.btnToggleTerminal.addEventListener('click', toggleTerminalPanel);
   window.mdviewer.onMenuToggleTerminal(toggleTerminalPanel);
   el.btnTerminalClose.addEventListener('click', closeTerminalPanel);
+  el.btnTerminalNewTab.addEventListener('click', newTerminalTab);
   el.btnTerminalClear.addEventListener('click', () => {
     const session = activeTerminal();
     if (session) session.term.clear();
   });
   el.btnTerminalRestart.addEventListener('click', restartTerminal);
+  window.mdviewer.onOpenInTerminal(({ dir }) => openTerminalAt(dir));
 
-  window.mdviewer.onTerminalData((key, data) => {
-    const session = terminalSessions.get(key);
-    if (session) session.term.write(data);
+  window.mdviewer.onTerminalData((id, data) => {
+    const session = terminalSessions.get(id);
+    if (!session) return;
+    session.lastOutputAt = Date.now();
+    session.term.write(data);
   });
 
-  window.mdviewer.onTerminalExit((key, code) => {
-    const session = terminalSessions.get(key);
+  window.mdviewer.onTerminalExit((id, code) => {
+    const session = terminalSessions.get(id);
     if (!session) return;
     session.term.write(`\r\n\x1b[31m[${t('terminal.shellExited', { code })}]\x1b[0m\r\n`);
     session.started = false;
+    renderTerminalTabLabels();
   });
 
   window.addEventListener('resize', fitActiveTerminal);
