@@ -116,6 +116,11 @@ const STRINGS = {
     'toolbar.fullscreenTitle': 'View this document fullscreen (F11)',
     'toolbar.navBackTitle': 'Back (mouse back button)',
     'toolbar.navForwardTitle': 'Forward (mouse forward button)',
+    'gesture.back': 'Back',
+    'gesture.forward': 'Forward',
+    'gesture.top': 'Top',
+    'gesture.bottom': 'Bottom',
+    'gesture.none': 'No action',
 
     'fullscreen.exitTitle': 'Exit fullscreen (Esc)',
     'fullscreen.hint': 'Press Esc or F11 to exit fullscreen',
@@ -363,6 +368,11 @@ const STRINGS = {
     'toolbar.fullscreenTitle': '현재 문서 전체화면으로 보기 (F11)',
     'toolbar.navBackTitle': '뒤로 (마우스 뒤로 버튼)',
     'toolbar.navForwardTitle': '앞으로 (마우스 앞으로 버튼)',
+    'gesture.back': '뒤로',
+    'gesture.forward': '앞으로',
+    'gesture.top': '맨 위로',
+    'gesture.bottom': '맨 아래로',
+    'gesture.none': '동작 없음',
 
     'fullscreen.exitTitle': '전체화면 종료 (Esc)',
     'fullscreen.hint': 'Esc 또는 F11을 누르면 전체화면이 종료됩니다',

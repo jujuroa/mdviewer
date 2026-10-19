@@ -393,6 +393,13 @@
     // editor (see updateEditorMirror). 'selectionchange' covers dragging,
     // double-click-to-select and keyboard selection alike.
     doc.addEventListener('selectionchange', updateEditorMirror);
+    // Right-drag gestures (see onGestureStart). The capturing contextmenu
+    // listener runs ahead of onPreviewContextMenu so a finished gesture
+    // never pops the menu up.
+    doc.addEventListener('mousedown', onGestureStart);
+    doc.addEventListener('mousemove', onGestureMove);
+    doc.addEventListener('mouseup', onGestureEnd);
+    doc.addEventListener('contextmenu', onGestureContextMenu, true);
     doc.addEventListener('contextmenu', onPreviewContextMenu);
     doc.addEventListener('mousedown', onPumlPanStart);
     doc.addEventListener('mousemove', onPumlPanMove);
@@ -3696,6 +3703,124 @@
     else navigateForward();
   }
   window.addEventListener('mouseup', onMouseNavButton);
+
+  // ---------------------------------------------------------------------
+  // Right-button mouse gestures in the viewer
+  //
+  // Hold the right button over the preview and drag: ← back, → forward,
+  // ↑ / ↓ to the top / bottom of the document. A drag shorter than GESTURE_MIN_STROKE is an
+  // ordinary right-click and still opens the context menu; a longer one
+  // draws a trail with the action it will take, and swallows the
+  // contextmenu event that follows the button's release (Windows fires it
+  // on mouseup). A drag that turns a corner matches nothing and does nothing.
+  // ---------------------------------------------------------------------
+
+  const GESTURE_MIN_STROKE = 30;
+  const GESTURES = {
+    L: { label: 'gesture.back', run: () => navigateBack() },
+    R: { label: 'gesture.forward', run: () => navigateForward() },
+    U: { label: 'gesture.top', run: () => scrollViewerToEnd(false) },
+    D: { label: 'gesture.bottom', run: () => scrollViewerToEnd(true) },
+  };
+
+  let gesture = null;
+  let suppressGestureContextMenu = false;
+
+  function scrollViewerToEnd(bottom) {
+    const win = el.frame.contentWindow;
+    if (!win) return;
+    const top = bottom ? win.document.documentElement.scrollHeight : 0;
+    win.scrollTo({ top, behavior: 'smooth' });
+  }
+
+  function onGestureStart(e) {
+    suppressGestureContextMenu = false;
+    if (e.button !== 2) return;
+    endGesture();
+    gesture = {
+      doc: e.currentTarget,
+      anchorX: e.clientX,
+      anchorY: e.clientY,
+      points: [`${e.clientX},${e.clientY}`],
+      dirs: '',
+      overlay: null,
+    };
+  }
+
+  function onGestureMove(e) {
+    if (!gesture) return;
+    if (!(e.buttons & 2)) {
+      endGesture();
+      return;
+    }
+    gesture.points.push(`${e.clientX},${e.clientY}`);
+    const dx = e.clientX - gesture.anchorX;
+    const dy = e.clientY - gesture.anchorY;
+    if (Math.hypot(dx, dy) >= GESTURE_MIN_STROKE) {
+      const dir = Math.abs(dx) > Math.abs(dy) ? (dx < 0 ? 'L' : 'R') : dy < 0 ? 'U' : 'D';
+      if (!gesture.dirs.endsWith(dir)) gesture.dirs += dir;
+      gesture.anchorX = e.clientX;
+      gesture.anchorY = e.clientY;
+    }
+    if (gesture.dirs) drawGestureTrail();
+  }
+
+  function onGestureEnd(e) {
+    if (e.button !== 2 || !gesture) return;
+    const { dirs } = gesture;
+    endGesture();
+    if (!dirs) return;
+    suppressGestureContextMenu = true;
+    const match = GESTURES[dirs];
+    if (match) match.run();
+  }
+
+  function onGestureContextMenu(e) {
+    if (!suppressGestureContextMenu) return;
+    suppressGestureContextMenu = false;
+    e.preventDefault();
+    e.stopImmediatePropagation();
+  }
+
+  function drawGestureTrail() {
+    const { doc } = gesture;
+    if (!gesture.overlay) {
+      const svgNs = 'http://www.w3.org/2000/svg';
+      const svg = doc.createElementNS(svgNs, 'svg');
+      svg.setAttribute(
+        'style',
+        'position:fixed;inset:0;width:100vw;height:100vh;pointer-events:none;z-index:2147483647'
+      );
+      const line = doc.createElementNS(svgNs, 'polyline');
+      line.setAttribute(
+        'style',
+        'fill:none;stroke:rgba(37,99,235,0.75);stroke-width:4;stroke-linecap:round;stroke-linejoin:round'
+      );
+      svg.appendChild(line);
+      const label = doc.createElement('div');
+      label.setAttribute(
+        'style',
+        'position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);padding:8px 16px;' +
+          'border-radius:8px;background:rgba(0,0,0,0.7);color:#fff;font:600 15px/1.4 system-ui,sans-serif;' +
+          'pointer-events:none;z-index:2147483647;white-space:nowrap'
+      );
+      doc.documentElement.append(svg, label);
+      gesture.overlay = { svg, line, label };
+    }
+    const { line, label } = gesture.overlay;
+    line.setAttribute('points', gesture.points.join(' '));
+    const match = GESTURES[gesture.dirs];
+    const arrows = gesture.dirs.replace(/[LRUD]/g, (d) => ({ L: '←', R: '→', U: '↑', D: '↓' })[d]);
+    label.textContent = `${arrows}  ${match ? t(match.label) : t('gesture.none')}`;
+  }
+
+  function endGesture() {
+    if (gesture && gesture.overlay) {
+      gesture.overlay.svg.remove();
+      gesture.overlay.label.remove();
+    }
+    gesture = null;
+  }
 
 
   // ---------------------------------------------------------------------
