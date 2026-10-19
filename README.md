@@ -51,6 +51,24 @@ npm run dist        # dist/MD Viewer Setup <version>.exe 생성
 - 빌드 관련 설정은 `package.json`의 `"build"` 필드(아이콘, 파일 연결, NSIS 옵션)와 `build/icon.ico`에 있습니다.
 - 빌드 중 `EPERM ... rename win-unpacked.tmp` 오류가 뜨면, 방금 압축 해제된 `electron.exe`를 백신(Windows Defender 등)이 스캔하며 잠깐 잠그기 때문인 경우가 많습니다. `dist/win-unpacked`(및 `.tmp`) 폴더를 지우고 `npm run dist`를 다시 실행하면 보통 해결됩니다.
 
+### 프리뷰(사전 배포판) 설치 파일 만들기
+
+릴리스 전의 작업분을 실제로 설치해서 써 보려면 프리뷰 빌드를 만듭니다. `package.json`의 버전은 그대로 두고, 빌드된 앱에만 **다음 버전의 프리릴리스 번호**(예: `1.4.0-preview.1`)를 붙입니다. 버전과 출력 폴더 외에는 `npm run dist`와 같은 설정으로 빌드되므로, 시험한 것이 그대로 배포될 결과물입니다.
+
+```bash
+npm run dist:preview                          # <다음 마이너 버전>-preview.N (N은 자동 증가)
+npm run dist:preview -- --base=2.0.0          # 대상 버전 지정 → 2.0.0-preview.N
+npm run dist:preview -- 1.4.0-preview.7       # 전체 버전을 직접 지정
+npm run dist:preview -- --dry-run             # 붙을 버전만 출력하고 빌드하지 않음
+```
+
+- 결과물은 `dist/preview/MD Viewer Setup <version>.exe`에 생성되어, `dist/`의 릴리스 설치 파일이나 `latest.yml`을 덮어쓰지 않습니다.
+- 기본 대상 버전은 `package.json` 버전의 다음 마이너 버전입니다(예: `1.3.0` → `1.4.0`). 메이저/패치 릴리스를 준비할 때는 `--base`로 지정합니다.
+- 프리뷰 번호 `N`은 `dist/preview/`에 이미 있는 같은 대상 버전의 설치 파일 중 가장 큰 번호 + 1로 정해집니다(폴더를 비우면 1부터 다시 시작).
+- 프리뷰 버전은 설치 파일 이름, **About MD Viewer** 대화상자, 창 제목 표시줄에 표시됩니다.
+- 릴리스와 같은 appId/제품명을 쓰므로, 설치하면 기존 MD Viewer를 덮어써 업그레이드하고 설정도 그대로 이어집니다. 릴리스 버전으로 되돌리려면 `dist/`의 마지막 릴리스 설치 파일을 다시 실행합니다.
+- 버전에 프리릴리스 태그(`-`)가 없으면 실수로 정식 릴리스를 만드는 것을 막기 위해 빌드를 거부합니다.
+
 ## 프로젝트 구조
 
 ```text
