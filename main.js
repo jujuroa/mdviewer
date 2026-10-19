@@ -562,7 +562,7 @@ function plainTextExtensionPattern() {
   return new RegExp('\\.(' + all.join('|') + ')$', 'i');
 }
 
-function reloadWindowRestoringProject() {
+function reloadWindowRestoringProject({ ignoreCache = false } = {}) {
   if (!mainWindow) return;
   // The fresh page comes up with all its chrome visible and no memory of
   // the fullscreen document view, so leave fullscreen here rather than
@@ -579,7 +579,80 @@ function reloadWindowRestoringProject() {
       mainWindow.webContents.send('projects:restore', payload);
     });
   }
-  mainWindow.reload();
+  if (ignoreCache) mainWindow.webContents.reloadIgnoringCache();
+  else mainWindow.reload();
+}
+
+// ---- Help > Reload Program (unpackaged runs only) ----
+// The renderer, preload.js and everything the page loads are read from disk
+// again by a window reload, so edits to those apply in this same window. The
+// main process can't swap its own code, though: when one of its own source
+// files (main.js and the app modules it required) changed since startup,
+// the app relaunches instead and reopens the same projects. Packages in
+// node_modules are left out — they change only with an npm install.
+const PROCESS_STARTED_AT = Date.now();
+const RESTORE_PROJECTS_ARG = '--restore-projects=';
+let relaunchArgsOnQuit = null;
+
+function mainProcessSourcesChanged() {
+  const appDir = path.resolve(__dirname) + path.sep;
+  const nodeModules = path.join(appDir, 'node_modules') + path.sep;
+  return Object.keys(require.cache).some((file) => {
+    if (!file.startsWith(appDir) || file.startsWith(nodeModules)) return false;
+    try {
+      return fs.statSync(file).mtimeMs > PROCESS_STARTED_AT;
+    } catch (err) {
+      return false;
+    }
+  });
+}
+
+function reloadProgram() {
+  if (!mainWindow || app.isPackaged) return;
+  if (!mainProcessSourcesChanged()) {
+    reloadWindowRestoringProject({ ignoreCache: true });
+    return;
+  }
+  // argv[1] is the app path (`electron .`). Switches carry over (a
+  // --user-data-dir especially: without it the new process would join
+  // another instance), but an open target from the original command line
+  // is dropped: the restore list already holds every project that was
+  // open, and reopening it would steal the active one.
+  const args = [
+    process.argv[1],
+    ...process.argv.slice(2).filter((a) => a.startsWith('-') && !a.startsWith(RESTORE_PROJECTS_ARG)),
+  ];
+  if (openProjectRoots.length) {
+    const payload = { roots: [...openProjectRoots], active: activeProjectRoot };
+    args.push(RESTORE_PROJECTS_ARG + Buffer.from(JSON.stringify(payload), 'utf-8').toString('base64'));
+  }
+  // Registered for 'will-quit' rather than with app.relaunch() right away:
+  // closing can still be cancelled at the unsaved-changes prompt, and a
+  // relaunch registered up front would fire whenever the app quits later.
+  relaunchArgsOnQuit = args;
+  mainWindow.close();
+}
+
+app.on('will-quit', () => {
+  if (relaunchArgsOnQuit) app.relaunch({ args: relaunchArgsOnQuit });
+});
+
+function restoreProjectsFromArgv(argv) {
+  const arg = argv.find((a) => a.startsWith(RESTORE_PROJECTS_ARG));
+  if (!arg || !mainWindow) return;
+  let payload;
+  try {
+    payload = JSON.parse(Buffer.from(arg.slice(RESTORE_PROJECTS_ARG.length), 'base64').toString('utf-8'));
+  } catch (err) {
+    return;
+  }
+  if (!payload || !Array.isArray(payload.roots) || !payload.roots.length) return;
+  const send = () => mainWindow.webContents.send('projects:restore', payload);
+  if (mainWindow.webContents.isLoadingMainFrame()) {
+    mainWindow.webContents.once('did-finish-load', send);
+  } else {
+    send();
+  }
 }
 
 function setLanguage(lang) {
@@ -1474,6 +1547,18 @@ function buildAppMenu() {
     {
       label: t('menu.help'),
       submenu: [
+        // Only when run from source (npm start): picks up edits to the
+        // program without closing and restarting it by hand.
+        ...(app.isPackaged
+          ? []
+          : [
+              {
+                label: t('menu.reloadProgram'),
+                accelerator: 'CmdOrCtrl+Shift+F5',
+                click: () => reloadProgram(),
+              },
+              { type: 'separator' },
+            ]),
         {
           label: t('menu.about'),
           click: () => showAboutDialog(),
@@ -1568,6 +1653,8 @@ function createWindow() {
       noLink: true,
     });
     if (choice === 0) event.preventDefault();
+    // Cancelled: the window stays, so a pending Reload Program is off.
+    else relaunchArgsOnQuit = null;
   });
 
   const webContentsId = mainWindow.webContents.id;
@@ -1688,6 +1775,7 @@ if (!gotSingleInstanceLock) {
     createWindow();
     const target = extractOpenTargetFromArgv(process.argv);
     if (target) openTargetInWindow(target);
+    restoreProjectsFromArgv(process.argv);
 
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) createWindow();

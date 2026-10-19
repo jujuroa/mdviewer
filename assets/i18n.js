@@ -35,6 +35,7 @@ const STRINGS = {
     'menu.customExtensions': 'Custom Extensions...',
     'menu.help': 'Help',
     'menu.about': 'About MD Viewer',
+    'menu.reloadProgram': 'Reload Program (Dev)',
 
     'about.title': 'About MD Viewer',
     'about.detail': 'Version {version}\n\nElectron {electron}\nChromium {chrome}\nNode.js {node}\n\nCopyright © {year} MD Viewer',
@@ -294,6 +295,7 @@ const STRINGS = {
     'menu.customExtensions': '사용자 지정 확장자...',
     'menu.help': '도움말',
     'menu.about': 'MD Viewer 정보',
+    'menu.reloadProgram': '프로그램 다시 불러오기 (개발용)',
 
     'about.title': 'MD Viewer 정보',
     'about.detail': '버전 {version}\n\nElectron {electron}\nChromium {chrome}\nNode.js {node}\n\nCopyright © {year} MD Viewer',
