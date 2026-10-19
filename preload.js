@@ -1,6 +1,13 @@
 const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
-contextBridge.exposeInMainWorld('mdviewer', {
+// This runs in every frame of a program window (its tabs are iframes, see
+// the tab host in main.js), but only the app's own two pages get the
+// bridge: the window page and the tab page. The rendered documents inside
+// a tab, and the tab windows the window page fills itself, get nothing.
+const PAGE = location.protocol === 'file:' ? location.pathname.split('/').pop() : '';
+const TAB_ID = PAGE === 'doc.html' ? Number(new URLSearchParams(location.search).get('tab')) || 0 : 0;
+
+if (PAGE === 'index.html' || TAB_ID) contextBridge.exposeInMainWorld('mdviewer', {
   openFolderDialog: () => ipcRenderer.invoke('dialog:open-folder'),
   openFileDialog: () => ipcRenderer.invoke('dialog:open-file'),
   saveFileDialog: (defaultDir, defaultName) => ipcRenderer.invoke('dialog:save-file', defaultDir, defaultName),
@@ -55,6 +62,46 @@ contextBridge.exposeInMainWorld('mdviewer', {
   listRecentProjects: () => ipcRenderer.invoke('recent:list'),
   addRecentProject: (rootPath) => ipcRenderer.invoke('recent:add', rootPath),
   setOpenProjects: (roots, active) => ipcRenderer.invoke('project:set-open', roots, active),
+
+  // ---- Document tabs: the window page's side (see the tab host in main.js) ----
+  openTab: (filePath, options) => ipcRenderer.invoke('tabs:open', filePath, options),
+  newDraftTab: (container) => ipcRenderer.invoke('tabs:new-draft', container),
+  activateTab: (id) => ipcRenderer.invoke('tabs:activate', id),
+  closeTab: (id) => ipcRenderer.invoke('tabs:close', id),
+  pinTab: (id) => ipcRenderer.invoke('tabs:pin', id),
+  moveTabHere: (id, index, container) => ipcRenderer.invoke('tabs:move-here', id, index, container),
+  detachTab: (id, screenPoint) => ipcRenderer.invoke('tabs:detach', id, screenPoint),
+  showTabContextMenu: (id) => ipcRenderer.invoke('tabs:show-context-menu', id),
+  restoreTabs: (tabs, activeIndex) => ipcRenderer.invoke('tabs:restore', tabs, activeIndex),
+  closeTabsUnder: (roots) => ipcRenderer.invoke('tabs:close-under', roots),
+  broadcastLiveCss: (rootPath, css, enabled) => ipcRenderer.send('css:live', rootPath, css, enabled),
+  focusWindowPage: () => ipcRenderer.invoke('window:focus-page'),
+  onTabsChanged: (callback) => ipcRenderer.on('tabs:changed', (event, payload) => callback(payload)),
+  onShellRequest: (callback) => ipcRenderer.on('shell:request', (event, payload) => callback(payload)),
+  onDocFullscreen: (callback) => ipcRenderer.on('shell:doc-fullscreen', (event, payload) => callback(payload)),
+  onTabsFocus: (callback) => ipcRenderer.on('tabs:focus', (event, payload) => callback(payload)),
+  onOpenTabWindow: (callback) => ipcRenderer.on('shell:open-tab-window', (event, payload) => callback(payload)),
+  onTabWindowClosed: (callback) => ipcRenderer.on('shell:tab-window-closed', (event, payload) => callback(payload)),
+
+  // ---- Document tabs: the tab page's side (doc.js) ----
+  // The page is ready for its document (doc:init answers).
+  docReady: () => ipcRenderer.send('doc:hello', TAB_ID),
+  onDocAsk: (callback) => ipcRenderer.on('doc:ask', (event, payload) => callback(payload)),
+  answerDoc: (id, value) => ipcRenderer.send('doc:answer', id, value),
+  confirmDiscard: () => ipcRenderer.invoke('doc:confirm-discard'),
+  requestWindow: (action, payload) => ipcRenderer.send('doc:shell-request', action, payload),
+  reportDocState: (docState) => ipcRenderer.send('doc:state', docState),
+  openDocument: (filePath, target) => ipcRenderer.invoke('doc:open', filePath, target),
+  closeThisTab: () => ipcRenderer.invoke('doc:close-self'),
+  getLiveCss: (rootPath) => ipcRenderer.invoke('css:get-live', rootPath),
+  onDocInit: (callback) => ipcRenderer.on('doc:init', (event, init) => callback(init)),
+  onDocNavigate: (callback) => ipcRenderer.on('doc:navigate', (event, payload) => callback(payload)),
+  onDocContext: (callback) => ipcRenderer.on('doc:context', (event, context) => callback(context)),
+  onDocActivated: (callback) => ipcRenderer.on('doc:activated', (event, active) => callback(active)),
+  onDocPathMoved: (callback) => ipcRenderer.on('doc:path-moved', (event, payload) => callback(payload)),
+  onLiveCss: (callback) => ipcRenderer.on('css:live', (event, payload) => callback(payload)),
+  onCustomExtensionsChanged: (callback) =>
+    ipcRenderer.on('settings:custom-extensions-changed', (event, extensions) => callback(extensions)),
   removeRecentProject: (rootPath) => ipcRenderer.invoke('recent:remove', rootPath),
 
   getI18n: () => ipcRenderer.invoke('i18n:get'),
@@ -87,8 +134,6 @@ contextBridge.exposeInMainWorld('mdviewer', {
   },
   onMenuOpenFolder: (callback) => ipcRenderer.on('menu:open-folder', callback),
   onMenuOpenFile: (callback) => ipcRenderer.on('menu:open-file', callback),
-  onMenuNewDocument: (callback) => ipcRenderer.on('menu:new-document', callback),
-  onMenuCloseDocument: (callback) => ipcRenderer.on('menu:close-document', callback),
   onOpenPathFromOS: (callback) => {
     const listener = (event, filePath) => callback(filePath);
     ipcRenderer.on('file:open-path', listener);

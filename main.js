@@ -1,5 +1,5 @@
 const {
-  app, BrowserWindow, ipcMain, dialog, shell, Menu, clipboard, nativeImage, nativeTheme, net, screen,
+  app, BrowserWindow, webContents, ipcMain, dialog, shell, Menu, clipboard, nativeImage, nativeTheme, net, screen,
 } = require('electron');
 const path = require('path');
 const fs = require('fs');
@@ -454,6 +454,8 @@ const appWindows = new Set();
 let lastFocusedWindow = null;
 
 function targetWindow(win) {
+  // A tab window stands for the program window it belongs to.
+  if (win && !win.isDestroyed()) win = ownerOf(win);
   if (win && appWindows.has(win) && !win.isDestroyed()) return win;
   if (lastFocusedWindow && !lastFocusedWindow.isDestroyed()) return lastFocusedWindow;
   return appWindows.values().next().value || null;
@@ -481,9 +483,20 @@ function sendToWindowWhenLoaded(win, channel, ...args) {
 // file, scroll offset and panel layout.
 const windowProjects = new Map();
 
-function openProjectsOf(win) {
+// withTabs: also the window's document tabs ({ path, pinned } in order, and
+// which one is on screen), for a relaunch, after which they are gone too.
+function openProjectsOf(win, { withTabs = false } = {}) {
   const entry = windowProjects.get(win.webContents.id);
-  return entry && entry.roots.length ? { roots: [...entry.roots], active: entry.active } : null;
+  if (!entry || !entry.roots.length) return null;
+  const payload = { roots: [...entry.roots], active: entry.active };
+  const host = withTabs ? hostOf(win) : null;
+  if (host) {
+    // Tabs in tab windows come back in the program window.
+    const kept = tabsOwnedBy(win).filter((tab) => tab.meta.path && !tab.meta.instantView);
+    payload.tabs = kept.map((tab) => ({ path: tab.meta.path, pinned: tab.pinned }));
+    payload.activeTab = kept.findIndex((tab) => tab.id === host.activeId);
+  }
+  return payload;
 }
 const fileWatchers = new Map(); // webContents.id -> fs.FSWatcher
 // webContents.id -> Map(session key -> pty). The renderer runs a shell per
@@ -642,6 +655,7 @@ function getAutoSave() {
 function setAutoSave(enabled) {
   saveSettings({ ...loadSettings(), autoSave: !!enabled });
   for (const win of appWindows) win.webContents.send('settings:auto-save-changed', !!enabled);
+  sendToAllTabs('settings:auto-save-changed', !!enabled);
 }
 
 function plainTextExtensionPattern() {
@@ -649,7 +663,11 @@ function plainTextExtensionPattern() {
   return new RegExp('\\.(' + all.join('|') + ')$', 'i');
 }
 
-function reloadWindowRestoringProject(win, { ignoreCache = false } = {}) {
+async function reloadWindowRestoringProject(win, { ignoreCache = false } = {}) {
+  // The tabs' pages go with the window page; each hands over what it holds
+  // first and comes back as it was (see resetTabsAfterPageLoad).
+  await snapshotTabsOf(win);
+  if (win.isDestroyed()) return;
   // The fresh page comes up with all its chrome visible and no memory of
   // the fullscreen document view, so leave fullscreen here rather than
   // leaving the window stuck in it with nothing left to exit.
@@ -710,7 +728,7 @@ function reloadProgram() {
   ];
   // One entry per window, null for a window with no project open, so the
   // relaunch comes back with as many windows as there were.
-  const payload = [...appWindows].map(openProjectsOf);
+  const payload = [...appWindows].map((win) => openProjectsOf(win, { withTabs: true }));
   if (payload.length > 1 || payload[0]) {
     args.push(RESTORE_PROJECTS_ARG + Buffer.from(JSON.stringify(payload), 'utf-8').toString('base64'));
   }
@@ -1480,10 +1498,37 @@ function findProjectRootForFile(filePath) {
   }
 }
 
-function saveProjectState(rootPath, projectState) {
+// How long a document's remembered scroll offset is kept (the tabs drop
+// older ones when they read them, see restoreScrollPosition in doc.js).
+const SCROLL_POSITION_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+
+// Per file, the newer of two remembered scroll offsets.
+function mergeScrollPositions(saved, incoming) {
+  const merged = {};
+  const cutoff = Date.now() - SCROLL_POSITION_MAX_AGE_MS;
+  for (const source of [saved, incoming]) {
+    if (!source || typeof source !== 'object') continue;
+    for (const [file, entry] of Object.entries(source)) {
+      if (!entry || !(entry.savedAt >= cutoff)) continue;
+      if (!merged[file] || merged[file].savedAt < entry.savedAt) merged[file] = entry;
+    }
+  }
+  return merged;
+}
+
+// Several pages write a project's state, each its own keys: the window page
+// (the CSS editor's switch and pane) and every tab of the project (open
+// file, scroll offsets, zoom). Each write is merged into what is on disk,
+// so none of them overwrites another's part.
+function saveProjectState(rootPath, patch) {
+  const current = loadProjectState(rootPath);
+  const merged = { ...current, ...patch };
+  if (patch && patch.scrollPositions) {
+    merged.scrollPositions = mergeScrollPositions(current.scrollPositions, patch.scrollPositions);
+  }
   const dir = path.join(rootPath, CONFIG_DIR_NAME);
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(projectStatePath(rootPath), JSON.stringify(projectState, null, 2), 'utf-8');
+  fs.writeFileSync(projectStatePath(rootPath), JSON.stringify(merged, null, 2), 'utf-8');
 }
 
 const MAX_RECENT_MENU_ITEMS = 5;
@@ -1511,7 +1556,10 @@ function buildAppMenu() {
         {
           label: t('menu.newDocument'),
           accelerator: 'CmdOrCtrl+N',
-          click: (item, win) => sendToWindow(win, 'menu:new-document'),
+          click: (item, win) => {
+            const host = docHostFor(win);
+            if (host) createTab(host, { draft: true }, { pinned: true });
+          },
         },
         { type: 'separator' },
         {
@@ -1528,7 +1576,7 @@ function buildAppMenu() {
         {
           label: t('menu.save'),
           accelerator: 'CmdOrCtrl+S',
-          click: (item, win) => sendToWindow(win, 'menu:save-file'),
+          click: (item, win) => sendToActiveDoc(win, 'menu:save-file'),
         },
         {
           label: t('menu.autoSave'),
@@ -1539,12 +1587,19 @@ function buildAppMenu() {
         {
           label: t('menu.closeDocument'),
           accelerator: 'CmdOrCtrl+W',
-          click: (item, win) => sendToWindow(win, 'menu:close-document'),
+          click: (item, win) => closeTab(activeTabOf(docHostFor(win))),
+        },
+        {
+          label: t('menu.moveTabToNewWindow'),
+          click: (item, win) => {
+            const tab = activeTabOf(docHostFor(win));
+            if (tab) detachTab(tab);
+          },
         },
         { type: 'separator' },
         {
           label: t('menu.exportPdf'),
-          click: (item, win) => sendToWindow(win, 'menu:export-pdf'),
+          click: (item, win) => sendToActiveDoc(win, 'menu:export-pdf'),
         },
         { type: 'separator' },
         {
@@ -1561,7 +1616,7 @@ function buildAppMenu() {
         {
           label: t('menu.find'),
           accelerator: 'CmdOrCtrl+F',
-          click: (item, win) => sendToWindow(win, 'menu:toggle-find'),
+          click: (item, win) => sendToActiveDoc(win, 'menu:toggle-find', undefined, { focus: true }),
         },
         {
           label: t('menu.searchProject'),
@@ -1577,7 +1632,7 @@ function buildAppMenu() {
         {
           label: t('menu.toggleEditMode'),
           accelerator: 'CmdOrCtrl+Shift+E',
-          click: (item, win) => sendToWindow(win, 'menu:toggle-edit-mode'),
+          click: (item, win) => sendToActiveDoc(win, 'menu:toggle-edit-mode', undefined, { focus: true }),
         },
         {
           label: t('menu.toggleTerminal'),
@@ -1586,13 +1641,40 @@ function buildAppMenu() {
         },
         { type: 'separator' },
         {
-          label: t('menu.fullscreenDocument'),
-          accelerator: 'F11',
-          click: (item, win) => sendToWindow(win, 'menu:toggle-document-fullscreen'),
+          label: t('menu.nextTab'),
+          accelerator: 'Ctrl+Tab',
+          click: (item, win) => cycleTab(win, 1),
+        },
+        {
+          label: t('menu.prevTab'),
+          accelerator: 'Ctrl+Shift+Tab',
+          click: (item, win) => cycleTab(win, -1),
         },
         { type: 'separator' },
-        { label: t('menu.reload'), role: 'reload' },
-        { label: t('menu.toggleDevTools'), role: 'toggledevtools' },
+        {
+          label: t('menu.fullscreenDocument'),
+          accelerator: 'F11',
+          click: (item, win) => sendToActiveDoc(win, 'menu:toggle-document-fullscreen'),
+        },
+        { type: 'separator' },
+        {
+          label: t('menu.reload'),
+          accelerator: 'CmdOrCtrl+R',
+          click: (item, win) => {
+            const target = targetWindow(win);
+            if (target) reloadWindowRestoringProject(target);
+          },
+        },
+        {
+          // The page with the keyboard: a program window's (its tabs are
+          // frames in it) or a tab window's.
+          label: t('menu.toggleDevTools'),
+          accelerator: 'Ctrl+Shift+I',
+          click: () => {
+            const contents = webContents.getFocusedWebContents();
+            if (contents) contents.toggleDevTools();
+          },
+        },
       ],
     },
     {
@@ -1738,7 +1820,9 @@ function cascadedWindowBounds() {
   });
 }
 
-function createWindow() {
+// bounds: where to put a window opened for a purpose of its own (a tab
+// dragged out of another window); kept only if enough of it is on screen.
+function createWindow({ bounds: requestedBounds = null } = {}) {
   const savedSettings = loadSettings();
   if (SUPPORTED_LANGUAGES.includes(savedSettings.language)) currentLanguage = savedSettings.language;
   if (THEME_SOURCES.includes(savedSettings.themeSource)) nativeTheme.themeSource = savedSettings.themeSource;
@@ -1747,7 +1831,9 @@ function createWindow() {
   // one cascades from the window the user is in and starts unmaximized.
   const isFirstWindow = appWindows.size === 0;
   const windowState = isFirstWindow ? savedSettings.windowState : null;
-  const bounds = isFirstWindow ? savedWindowBounds(windowState) : cascadedWindowBounds();
+  const bounds =
+    (requestedBounds && savedWindowBounds({ bounds: requestedBounds })) ||
+    (isFirstWindow ? savedWindowBounds(windowState) : cascadedWindowBounds());
   const win = new BrowserWindow({
     ...(bounds || DEFAULT_WINDOW_SIZE),
     backgroundColor: '#1e1e1e',
@@ -1757,6 +1843,9 @@ function createWindow() {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
+      // The tabs are iframes of the page (src/doc.html), each with the
+      // same bridge (see preload.js).
+      nodeIntegrationInSubFrames: true,
     },
   });
 
@@ -1771,31 +1860,23 @@ function createWindow() {
 
   if (windowState && windowState.maximized) win.maximize();
 
+  const host = createTabHost(win);
   win.loadFile(path.join(__dirname, 'src', 'index.html'));
   buildAppMenu();
 
-  // Mouse "back"/"forward" buttons (Windows: XButton1/XButton2) — the app
-  // has no real browser-style navigation for webContents.goBack() to operate
-  // on (every document switch is a same-page innerHTML swap, not a page
-  // load), so intercept the OS-level commands here and hand them to the
-  // renderer's own navigation history instead of leaving them unhandled.
-  win.on('app-command', (event, cmd) => {
-    if (cmd === 'browser-backward') {
-      event.preventDefault();
-      win.webContents.send('mdviewer:nav-back');
-    } else if (cmd === 'browser-forward') {
-      event.preventDefault();
-      win.webContents.send('mdviewer:nav-forward');
-    }
+  // A reload of the window page (Ctrl+R, a language change) keeps the
+  // tabs; the fresh page draws them again.
+  win.webContents.on('did-finish-load', () => {
+    resetTabsAfterPageLoad(win);
+    win.webContents.send('shell:doc-fullscreen', { container: 'main', enabled: win.isFullScreen() });
   });
+  win.webContents.on('render-process-gone', () => settleDocAsksOf(win));
 
-  // The window can also leave fullscreen without the renderer asking (the
-  // OS window controls, a shortcut the platform handles itself), which
-  // would strand the fullscreen document view with its chrome still hidden.
-  win.on('leave-full-screen', () => {
-    win.setMenuBarVisibility(true);
-    win.webContents.send('window:fullscreen-changed', false);
-  });
+  // Tab windows (see detachTab) are opened by this window's page.
+  win.webContents.setWindowOpenHandler((details) => handleWindowOpen(win, details));
+  win.webContents.on('did-create-window', (child, details) => onTabWindowCreated(win, child, details.frameName));
+
+  wireDocWindowEvents(win, host);
 
   // The renderer blocks unload (beforeunload) while the editor holds unsaved
   // text — an untitled draft exists nowhere else — and Electron leaves the
@@ -1817,18 +1898,43 @@ function createWindow() {
 
   // 'close' still has the window to read; it fires again if closing is
   // cancelled at the unsaved-changes prompt and retried, which only saves
-  // the same state twice.
-  win.on('close', () => saveWindowState(win));
+  // the same state twice. Tabs holding unsaved text close first, each
+  // saving it (auto save) or asking; the window only goes once they have.
+  win.on('close', (event) => {
+    saveWindowState(win);
+    if (host.closingApproved) return;
+    const unsaved = tabsOwnedBy(win).filter((tab) => tab.meta.dirty);
+    if (!unsaved.length) return;
+    event.preventDefault();
+    closeTabs(unsaved).then((closed) => {
+      if (!closed || win.isDestroyed()) return;
+      host.closingApproved = true;
+      win.close();
+    });
+  });
 
   win.on('focus', () => {
     lastFocusedWindow = win;
   });
 
   const webContentsId = win.webContents.id;
+  const windowId = win.id;
   win.on('closed', () => {
     stopWatching(webContentsId);
     killTerminal(webContentsId);
     windowProjects.delete(webContentsId);
+    settleDocAsksOf(win);
+    // Its tab windows' contents belong to its page, which is gone.
+    for (const tabHost of hostsOwnedBy(win)) {
+      if (tabHost === host) continue;
+      tabHost.closingApproved = true;
+      if (!tabHost.win.isDestroyed()) tabHost.win.close();
+    }
+    for (const tab of [...host.tabs]) {
+      stopWatching(tabWatchKey(tab));
+      tabsById.delete(tab.id);
+    }
+    tabHosts.delete(windowId);
     appWindows.delete(win);
     if (lastFocusedWindow === win) lastFocusedWindow = null;
     if (appWindows.size) return;
@@ -1850,6 +1956,852 @@ function stopWatching(webContentsId) {
     fileWatchers.delete(webContentsId);
   }
 }
+
+// ---- Document tabs ----
+// Each tab is one document — the viewer and, in edit mode, the source
+// editor beside it — shown by a page of its own (src/doc.html) in an
+// iframe. Every tab of a program window lives in that window's renderer:
+// in its tab area, or in a window of its own the tab was moved out to (a
+// "tab window", opened by the window page with window.open, which keeps it
+// in the same renderer as the page that opened it, the way VS Code's
+// editor windows are). The tabs' order, the one on screen and what each
+// shows are kept here; the window page draws the strips and the iframes
+// from that (tabs:changed).
+//
+// An iframe cannot change documents without loading again, so a tab that
+// moves to another window hands over what it holds first (doc:ask
+// 'snapshot': its document, unsaved text, caret, scroll offsets, history)
+// and the new iframe opens on that. Only the editor's undo history stays
+// behind.
+
+const DEFAULT_TAB_META = {
+  path: null,
+  kind: 'markdown',
+  dirty: false,
+  editMode: false,
+  draft: false,
+  instantView: false,
+};
+
+// BrowserWindow.id -> { key, win, owner, aux, tabs, activeId, closingApproved }.
+// One per program window (key 'main', owner = the window itself) and one
+// per tab window (key 'aux-N', owner = the program window that opened it).
+const tabHosts = new Map();
+const tabsById = new Map(); // tab id -> { id, host, pinned, meta, init, frame }
+let nextTabId = 1;
+let nextTabWindowId = 1;
+// The CSS editor's unsaved text per project (normalized root -> { css,
+// enabled }), so a tab opened while it is being edited shows it too.
+const liveCssByRoot = new Map();
+
+// How long a tab's page gets to hand over its state before it moves
+// without it (a page that hangs shouldn't hold the tab hostage).
+const TAB_SNAPSHOT_TIMEOUT_MS = 5000;
+const TAB_WINDOW_OPEN_TIMEOUT_MS = 5000;
+
+function createTabHost(win, { owner = win, key = 'main' } = {}) {
+  const host = { key, win, owner, aux: owner !== win, tabs: [], activeId: null, closingApproved: false };
+  tabHosts.set(win.id, host);
+  return host;
+}
+
+function hostOf(win) {
+  return win ? tabHosts.get(win.id) || null : null;
+}
+
+function hostsOwnedBy(owner) {
+  return [...tabHosts.values()].filter((host) => host.owner === owner);
+}
+
+function tabsOwnedBy(owner) {
+  return hostsOwnedBy(owner).flatMap((host) => host.tabs);
+}
+
+function activeTabOf(host) {
+  return host ? host.tabs.find((tab) => tab.id === host.activeId) || null : null;
+}
+
+// The program window behind a window: itself, or for a tab window the one
+// whose page opened it, which has the explorer, the terminal and the open
+// projects.
+function ownerOf(win) {
+  const host = hostOf(win);
+  return host ? host.owner : win;
+}
+
+function windowFor(contents) {
+  return contents ? BrowserWindow.fromWebContents(contents) : null;
+}
+
+// The tab area of the window the sender is in — its own, or, from the
+// window page, the one named by `key` (a tab window it draws).
+function senderHost(event, key) {
+  const owner = ownerOf(windowFor(event.sender));
+  if (!owner) return null;
+  return hostsOwnedBy(owner).find((host) => host.key === (key || 'main')) || hostOf(owner);
+}
+
+function sameFrame(a, b) {
+  return !!a && !!b && a.processId === b.processId && a.routingId === b.routingId;
+}
+
+// The tab whose page sent an IPC message, if a tab's page sent it.
+function senderTab(event) {
+  const frame = event.senderFrame;
+  if (!frame) return null;
+  for (const tab of tabsById.values()) {
+    if (sameFrame(tab.frame, frame)) return tab;
+  }
+  return null;
+}
+
+function sendToFrame(frame, channel, ...args) {
+  if (!frame) return;
+  try {
+    if (!frame.detached) frame.send(channel, ...args);
+  } catch (err) {
+    /* the frame went away */
+  }
+}
+
+function sendToTab(tab, channel, ...args) {
+  if (tab) sendToFrame(tab.frame, channel, ...args);
+}
+
+// The tab area a command given in `win` is about: a tab window's own, or
+// the program window's.
+function docHostFor(win) {
+  return (win && !win.isDestroyed() && hostOf(win)) || hostOf(targetWindow(win));
+}
+
+// Sends to the document on screen in the window — what menu commands about
+// "the document" (save, edit mode, find, back/forward) mean. focus: the
+// command needs the keyboard there (the find bar's input, the editor).
+function sendToActiveDoc(win, channel, payload, { focus = false } = {}) {
+  const tab = activeTabOf(docHostFor(win));
+  if (!tab) return;
+  if (focus) focusTab(tab);
+  sendToTab(tab, channel, payload);
+}
+
+// Gives the tab's iframe the keyboard (the window page does that).
+function focusTab(tab) {
+  const host = tab.host;
+  if (host.owner.isDestroyed()) return;
+  host.owner.webContents.send('tabs:focus', { container: host.key, id: tab.id });
+}
+
+// View > Next/Previous Tab (Ctrl+Tab, Ctrl+Shift+Tab).
+function cycleTab(win, delta) {
+  const host = docHostFor(win);
+  if (!host || host.tabs.length < 2) return;
+  const index = host.tabs.indexOf(activeTabOf(host));
+  const next = host.tabs[(index + delta + host.tabs.length) % host.tabs.length];
+  activateTab(host, next.id);
+}
+
+function sendToHostTabs(host, channel, ...args) {
+  for (const tab of host.tabs) sendToTab(tab, channel, ...args);
+}
+
+function sendToAllTabs(channel, ...args) {
+  for (const tab of tabsById.values()) sendToTab(tab, channel, ...args);
+}
+
+function fileKindOf(filePath) {
+  if (/\.puml$/i.test(filePath)) return 'puml';
+  if (/\.json$/i.test(filePath)) return 'json';
+  if (plainTextExtensionPattern().test(filePath)) return 'text';
+  return 'markdown';
+}
+
+function samePath(a, b) {
+  return !!a && !!b && path.resolve(a).toLowerCase() === path.resolve(b).toLowerCase();
+}
+
+function isPathInside(filePath, rootPath) {
+  const rel = path.relative(rootPath, filePath);
+  return rel === '' || (!!rel && !rel.startsWith('..') && !path.isAbsolute(rel));
+}
+
+// The program window's open projects, which decide what project a tab's
+// document belongs to (see doc:context in doc.js).
+function tabContextFor(host) {
+  const entry = windowProjects.get(host.owner.webContents.id);
+  return { roots: entry && entry.roots ? [...entry.roots] : [], active: (entry && entry.active) || null };
+}
+
+// What a tab's page opens on when nothing more was handed over: the
+// document it shows.
+function initFromMeta(tab) {
+  return { filePath: tab.meta.path, draft: tab.meta.draft, instantView: tab.meta.instantView };
+}
+
+// focusId: the tab whose iframe should take the keyboard.
+function notifyTabsChanged(host, { focusId = null } = {}) {
+  if (!host || host.owner.isDestroyed()) return;
+  host.owner.webContents.send('tabs:changed', {
+    container: host.key,
+    tabs: host.tabs.map((tab) => ({ id: tab.id, pinned: tab.pinned, ...tab.meta })),
+    activeId: host.activeId,
+    focusId,
+  });
+}
+
+function activateTab(host, id, { focus = true } = {}) {
+  const tab = host.tabs.find((t) => t.id === id);
+  if (!tab) return;
+  const previous = activeTabOf(host);
+  host.activeId = id;
+  if (previous && previous !== tab) sendToTab(previous, 'doc:activated', false);
+  sendToTab(tab, 'doc:activated', true);
+  // A tab in another window than the one in use (a link to a document
+  // open in a tab window) brings that window forward.
+  if (focus && !host.win.isDestroyed() && !host.win.isFocused()) host.win.focus();
+  notifyTabsChanged(host, { focusId: focus ? id : null });
+}
+
+// The tab to show once the active one leaves: the one that took its place
+// in the strip, else the one before it.
+function activateNeighbour(host, index) {
+  const next = host.tabs[Math.min(index, host.tabs.length - 1)];
+  host.activeId = null;
+  if (next) activateTab(host, next.id, { focus: false });
+  else notifyTabsChanged(host);
+}
+
+// init: what the page opens with (doc:init) — { filePath } or { draft },
+// plus instantView, editMode and target (a spot to show, see applyDocTarget
+// in doc.js), or a moved tab's snapshot.
+function createTab(host, init, { index, pinned = false, activate = true, focus = true } = {}) {
+  const tab = {
+    id: nextTabId++,
+    host,
+    pinned: !!pinned,
+    meta: {
+      ...DEFAULT_TAB_META,
+      path: init.filePath || null,
+      kind: init.filePath ? fileKindOf(init.filePath) : 'markdown',
+      draft: !!init.draft,
+      instantView: !!init.instantView,
+    },
+    init,
+    // The tab's page once it has loaded (doc:hello); null while it loads.
+    frame: null,
+  };
+  tabsById.set(tab.id, tab);
+  const activeIndex = host.tabs.indexOf(activeTabOf(host));
+  const at = Number.isInteger(index)
+    ? Math.max(0, Math.min(index, host.tabs.length))
+    : activeIndex === -1
+    ? host.tabs.length
+    : activeIndex + 1;
+  host.tabs.splice(at, 0, tab);
+  if (activate) activateTab(host, tab.id, { focus });
+  else notifyTabsChanged(host);
+  return tab;
+}
+
+function tabWatchKey(tab) {
+  return `tab:${tab.id}`;
+}
+
+function removeTab(tab) {
+  stopWatching(tabWatchKey(tab));
+  tabsById.delete(tab.id);
+  tab.frame = null;
+  const host = tab.host;
+  const index = host.tabs.indexOf(tab);
+  if (index !== -1) host.tabs.splice(index, 1);
+  if (host.activeId === tab.id) activateNeighbour(host, index);
+  else notifyTabsChanged(host);
+  closeTabWindowIfEmpty(host);
+}
+
+// A tab window goes once its last tab has left it.
+function closeTabWindowIfEmpty(host) {
+  if (!host.aux || host.tabs.length || host.win.isDestroyed()) return;
+  host.closingApproved = true;
+  host.win.close();
+}
+
+// ---- Asking a tab's page ----
+// doc:ask { id, kind } → doc:answer (id, value). kind 'close': may it close
+// (unsaved text saved or let go)? kind 'snapshot': what it holds, for the
+// page that takes over from it.
+
+const docAsks = new Map(); // ask id -> { owner, settle }
+let nextDocAskId = 1;
+
+// Resolves to the page's answer, or null when it has none to give (not
+// loaded, gone, or out of time).
+function askDoc(tab, kind, { timeout = 0 } = {}) {
+  if (!tab.frame) return Promise.resolve(null);
+  return new Promise((resolve) => {
+    const id = nextDocAskId++;
+    let timer = null;
+    const settle = (value) => {
+      clearTimeout(timer);
+      docAsks.delete(id);
+      resolve(value);
+    };
+    docAsks.set(id, { owner: tab.host.owner, settle });
+    if (timeout) timer = setTimeout(() => settle(null), timeout);
+    sendToTab(tab, 'doc:ask', { id, kind });
+  });
+}
+
+// The window page went away (reload, crash) and its tabs' pages with it:
+// nothing will answer.
+function settleDocAsksOf(owner) {
+  for (const ask of [...docAsks.values()]) {
+    if (ask.owner === owner) ask.settle(null);
+  }
+}
+
+ipcMain.on('doc:answer', (event, id, value) => {
+  const ask = docAsks.get(id);
+  if (ask) ask.settle(value);
+});
+
+// Closes a tab the way closing a window always has: its page saves
+// unsaved edits (auto save) or the user is asked. Resolves to whether it
+// closed. force: already settled by the page itself — no questions.
+function closeTab(tab, { force = false } = {}) {
+  if (!tab || !tabsById.has(tab.id)) return Promise.resolve(true);
+  if (tab.closing) return tab.closing;
+  tab.closing = (async () => {
+    const answer = force ? true : await askDoc(tab, 'close');
+    tab.closing = null;
+    if (answer === false) {
+      // Kept: so is its window, and a pending Reload Program is off.
+      relaunchArgsOnQuit = null;
+      return false;
+    }
+    if (tabsById.has(tab.id)) removeTab(tab);
+    return true;
+  })();
+  return tab.closing;
+}
+
+// One after another, so the questions come one at a time. Stops at the
+// first the user keeps.
+async function closeTabs(tabs) {
+  for (const tab of tabs) {
+    if (!(await closeTab(tab))) return false;
+  }
+  return true;
+}
+
+// The tab already showing the file in the program window or one of its
+// tab windows, if any.
+function findTabForPath(owner, filePath) {
+  return tabsOwnedBy(owner).find((tab) => samePath(tab.meta.path, filePath)) || null;
+}
+
+// Opens a document in a tab: the one already showing it, else the preview
+// tab (not kept open, nothing being edited in it), else a new one. pin:
+// a tab that stays rather than the preview tab.
+function openDocumentInTab(host, filePath, { pin = false, editMode = false, target = null, focus = true, instantView = false } = {}) {
+  const existing = findTabForPath(host.owner, filePath);
+  if (existing) {
+    if (pin) existing.pinned = true;
+    activateTab(existing.host, existing.id, { focus });
+    if (target || editMode) sendToTab(existing, 'doc:navigate', { target, editMode });
+    return existing;
+  }
+  const preview = pin ? null : host.tabs.find((tab) => !tab.pinned && !tab.meta.editMode && !tab.meta.dirty);
+  if (preview) {
+    preview.meta = { ...preview.meta, path: filePath, kind: fileKindOf(filePath), draft: false };
+    activateTab(host, preview.id, { focus });
+    if (preview.frame) sendToTab(preview, 'doc:navigate', { filePath, target, editMode });
+    else preview.init = { filePath, target, editMode };
+    return preview;
+  }
+  return createTab(host, { filePath, target, editMode, instantView }, { pinned: pin, focus });
+}
+
+// Puts a tab into another window (or another place in its own strip).
+async function moveTab(tab, toHost, index) {
+  const fromHost = tab.host;
+  if (fromHost === toHost) {
+    // Dropped on its own window's document area: already where it goes.
+    if (!Number.isInteger(index)) return;
+    const from = fromHost.tabs.indexOf(tab);
+    fromHost.tabs.splice(from, 1);
+    const at = Math.max(0, Math.min(from < index ? index - 1 : index, fromHost.tabs.length));
+    fromHost.tabs.splice(at, 0, tab);
+    notifyTabsChanged(fromHost);
+    return;
+  }
+  if (tab.moving) return;
+  tab.moving = true;
+  const snapshot = await askDoc(tab, 'snapshot', { timeout: TAB_SNAPSHOT_TIMEOUT_MS });
+  tab.moving = false;
+  // Closed, or the window it was going to closed, while it packed up.
+  if (!tabsById.has(tab.id) || tab.host !== fromHost || toHost.win.isDestroyed()) return;
+  tab.init = snapshot && typeof snapshot === 'object' ? snapshot : initFromMeta(tab);
+  tab.frame = null;
+  stopWatching(tabWatchKey(tab));
+  const from = fromHost.tabs.indexOf(tab);
+  fromHost.tabs.splice(from, 1);
+  if (fromHost.activeId === tab.id) activateNeighbour(fromHost, from);
+  else notifyTabsChanged(fromHost);
+  tab.host = toHost;
+  tab.pinned = true;
+  const at = Number.isInteger(index) ? Math.max(0, Math.min(index, toHost.tabs.length)) : toHost.tabs.length;
+  toHost.tabs.splice(at, 0, tab);
+  activateTab(toHost, tab.id);
+  closeTabWindowIfEmpty(fromHost);
+  // Another program window shows the document's project in its explorer.
+  if (fromHost.owner !== toHost.owner && tab.meta.path && !tab.meta.instantView) {
+    sendToWindowWhenLoaded(toHost.owner, 'shell:request', {
+      action: 'ensure-project',
+      payload: { path: tab.meta.path },
+    });
+  }
+}
+
+// Where, from the pointer, a tab window opened for a dragged-out tab goes:
+// its tab strip ends up roughly under the pointer.
+const TAB_WINDOW_POINTER_OFFSET = { x: 120, y: 16 };
+// A tab window has no explorer; it starts narrower than the program window.
+const TAB_WINDOW_WIDTH_RATIO = 0.7;
+const TAB_WINDOW_MIN_SIZE = { width: 640, height: 480 };
+
+// A tab leaving its window for a tab window of its own — under the pointer
+// when it was dropped outside every window. Already alone in a tab
+// window, it is where it would go.
+async function detachTab(tab, screenPoint) {
+  const fromHost = tab.host;
+  if (fromHost.aux && fromHost.tabs.length === 1) return;
+  const source = fromHost.win.isDestroyed() ? fromHost.owner : fromHost.win;
+  const normal = source.getNormalBounds();
+  const width = Math.max(TAB_WINDOW_MIN_SIZE.width, Math.round(normal.width * TAB_WINDOW_WIDTH_RATIO));
+  const height = Math.max(TAB_WINDOW_MIN_SIZE.height, normal.height);
+  const atPointer = screenPoint && Number.isFinite(screenPoint.x) && Number.isFinite(screenPoint.y);
+  const requested = atPointer
+    ? { x: screenPoint.x - TAB_WINDOW_POINTER_OFFSET.x, y: screenPoint.y - TAB_WINDOW_POINTER_OFFSET.y, width, height }
+    : { x: normal.x + NEW_WINDOW_CASCADE_OFFSET, y: normal.y + NEW_WINDOW_CASCADE_OFFSET, width, height };
+  const bounds = savedWindowBounds({
+    bounds: { ...requested, x: Math.round(requested.x), y: Math.round(requested.y) },
+  });
+  const toHost = await openTabWindow(fromHost.owner, bounds);
+  if (toHost) await moveTab(tab, toHost, 0);
+}
+
+// Tab windows on their way: the window page was asked to open one
+// (shell:open-tab-window) and main.js waits for it here.
+const pendingTabWindows = new Map(); // key -> { owner, bounds, settle }
+
+function openTabWindow(owner, bounds) {
+  if (owner.isDestroyed()) return Promise.resolve(null);
+  const key = `aux-${nextTabWindowId++}`;
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => settle(null), TAB_WINDOW_OPEN_TIMEOUT_MS);
+    const settle = (host) => {
+      clearTimeout(timer);
+      pendingTabWindows.delete(key);
+      resolve(host);
+    };
+    pendingTabWindows.set(key, { owner, bounds, settle });
+    owner.webContents.send('shell:open-tab-window', { key });
+  });
+}
+
+// A tab window is just the document: no title bar (its tab strip is the
+// handle to move it by, see body.tab-window in ui.css) and no menu bar.
+function tabWindowOptions(bounds) {
+  return {
+    ...(bounds || DEFAULT_WINDOW_SIZE),
+    frame: false,
+    backgroundColor: '#1e1e1e',
+    icon: path.join(__dirname, 'assets', 'icon.png'),
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+      nodeIntegrationInSubFrames: true,
+    },
+  };
+}
+
+// window.open from a program window's page: only the tab windows it was
+// asked for. A web link that wants a window of its own opens in the
+// browser instead.
+function handleWindowOpen(owner, { url, frameName }) {
+  const pending = pendingTabWindows.get(frameName);
+  if (pending && pending.owner === owner) {
+    return { action: 'allow', overrideBrowserWindowOptions: tabWindowOptions(pending.bounds) };
+  }
+  if (/^https?:\/\//i.test(url)) shell.openExternal(url);
+  return { action: 'deny' };
+}
+
+function onTabWindowCreated(owner, win, frameName) {
+  const pending = pendingTabWindows.get(frameName);
+  if (!pending || pending.owner !== owner) {
+    win.destroy();
+    return;
+  }
+  pending.settle(setupTabWindow(owner, win, frameName));
+}
+
+function setupTabWindow(owner, win, key) {
+  const host = createTabHost(win, { owner, key });
+  // The menu's shortcuts still work with the bar hidden, as in fullscreen;
+  // Alt doesn't bring it up.
+  win.setAutoHideMenuBar(false);
+  win.setMenuBarVisibility(false);
+  if (PREVIEW_VERSION_SUFFIX) {
+    win.on('page-title-updated', (event, title) => {
+      event.preventDefault();
+      win.setTitle(title + PREVIEW_VERSION_SUFFIX);
+    });
+  }
+  wireDocWindowEvents(win, host);
+  // Menu commands about the program (the explorer, the terminal) go to the
+  // window that has them.
+  win.on('focus', () => {
+    lastFocusedWindow = owner;
+  });
+  // Closing a tab window puts its tabs back in the program window, the way
+  // closing a VS Code editor window does.
+  win.on('close', (event) => {
+    if (host.closingApproved || owner.isDestroyed()) return;
+    event.preventDefault();
+    returnTabsToOwner(host);
+  });
+  win.on('closed', () => {
+    // Gone without 'close' getting its say (its page closed it): the tabs
+    // still come back, as they were last loaded.
+    const mainHost = owner.isDestroyed() ? null : hostOf(owner);
+    for (const tab of [...host.tabs]) {
+      stopWatching(tabWatchKey(tab));
+      if (!mainHost) {
+        tabsById.delete(tab.id);
+        continue;
+      }
+      tab.frame = null;
+      tab.init = initFromMeta(tab);
+      tab.host = mainHost;
+      mainHost.tabs.push(tab);
+    }
+    if (mainHost && host.tabs.length) {
+      host.tabs = [];
+      if (!activeTabOf(mainHost)) mainHost.activeId = mainHost.tabs[0].id;
+      notifyTabsChanged(mainHost);
+    }
+    tabHosts.delete(win.id);
+    if (!owner.isDestroyed()) owner.webContents.send('shell:tab-window-closed', { key });
+  });
+  return host;
+}
+
+async function returnTabsToOwner(host) {
+  const mainHost = hostOf(host.owner);
+  if (!mainHost) return;
+  for (const tab of [...host.tabs]) await moveTab(tab, mainHost);
+}
+
+// What a program window and a tab window both do for the document on
+// screen in them.
+function wireDocWindowEvents(win, host) {
+  // Mouse "back"/"forward" buttons (Windows: XButton1/XButton2) — the app
+  // has no real browser-style navigation for webContents.goBack() to
+  // operate on (every document switch is a same-page innerHTML swap, not a
+  // page load), so intercept the OS-level commands here and hand them to
+  // the tab's own navigation history instead of leaving them unhandled.
+  win.on('app-command', (event, cmd) => {
+    if (cmd === 'browser-backward') {
+      event.preventDefault();
+      sendToActiveDoc(win, 'mdviewer:nav-back');
+    } else if (cmd === 'browser-forward') {
+      event.preventDefault();
+      sendToActiveDoc(win, 'mdviewer:nav-forward');
+    }
+  });
+
+  // The window can also leave fullscreen without the tab asking (the OS
+  // window controls, the window page opening the terminal), which would
+  // strand the fullscreen document view with its chrome still hidden.
+  win.on('leave-full-screen', () => {
+    if (!host.aux) win.setMenuBarVisibility(true);
+    if (!host.owner.isDestroyed()) {
+      host.owner.webContents.send('shell:doc-fullscreen', { container: host.key, enabled: false });
+    }
+    sendToActiveDoc(win, 'window:fullscreen-changed', false);
+  });
+}
+
+// The program window's page has (re)loaded: the tabs' pages went with the
+// old one, the tab windows' contents too (they belong to the page that
+// opened them). Their tabs come back into the program window, each to be
+// loaded again in a new iframe.
+function resetTabsAfterPageLoad(owner) {
+  settleDocAsksOf(owner);
+  const mainHost = hostOf(owner);
+  if (!mainHost) return;
+  for (const host of hostsOwnedBy(owner)) {
+    if (host === mainHost) continue;
+    for (const tab of host.tabs) {
+      tab.host = mainHost;
+      mainHost.tabs.push(tab);
+    }
+    host.tabs = [];
+    host.closingApproved = true;
+    if (!host.win.isDestroyed()) host.win.close();
+  }
+  for (const tab of mainHost.tabs) {
+    tab.frame = null;
+    stopWatching(tabWatchKey(tab));
+  }
+  if (!activeTabOf(mainHost)) mainHost.activeId = mainHost.tabs.length ? mainHost.tabs[0].id : null;
+  notifyTabsChanged(mainHost);
+}
+
+// Before the window page reloads: each tab hands over what it holds, so it
+// comes back as it was (unsaved text included).
+async function snapshotTabsOf(owner) {
+  const tabs = tabsOwnedBy(owner);
+  const snapshots = await Promise.all(
+    tabs.map((tab) => askDoc(tab, 'snapshot', { timeout: TAB_SNAPSHOT_TIMEOUT_MS }))
+  );
+  tabs.forEach((tab, i) => {
+    if (snapshots[i] && typeof snapshots[i] === 'object') tab.init = snapshots[i];
+  });
+}
+
+function tabFromEvent(event, id) {
+  const tab = tabsById.get(id);
+  if (!tab) return null;
+  return tab.host.owner === ownerOf(windowFor(event.sender)) ? tab : null;
+}
+
+// ---- The window page's side ----
+
+ipcMain.handle('tabs:open', (event, filePath, options = {}) => {
+  const host = senderHost(event);
+  if (!host || typeof filePath !== 'string' || !filePath) return { ok: false };
+  const tab = openDocumentInTab(host, filePath, options || {});
+  return { ok: true, id: tab.id };
+});
+
+ipcMain.handle('tabs:new-draft', (event, container) => {
+  const host = senderHost(event, container);
+  if (!host) return { ok: false };
+  createTab(host, { draft: true }, { pinned: true });
+  return { ok: true };
+});
+
+ipcMain.handle('tabs:activate', (event, id) => {
+  const tab = tabFromEvent(event, id);
+  if (tab) activateTab(tab.host, id);
+});
+
+ipcMain.handle('tabs:close', async (event, id) => {
+  const tab = tabFromEvent(event, id);
+  return { closed: tab ? await closeTab(tab) : false };
+});
+
+ipcMain.handle('tabs:pin', (event, id) => {
+  const tab = tabFromEvent(event, id);
+  if (!tab) return;
+  tab.pinned = true;
+  notifyTabsChanged(tab.host);
+});
+
+// A tab dropped on a tab strip (container: which of the window page's) or
+// on a document (into that document's window): from the same window it
+// just changes place, from another one it moves in.
+ipcMain.handle('tabs:move-here', async (event, id, index, container) => {
+  const dropTarget = senderTab(event);
+  const host = dropTarget ? dropTarget.host : senderHost(event, container);
+  const tab = tabsById.get(id);
+  if (!host || !tab) return { ok: false };
+  await moveTab(tab, host, index);
+  return { ok: true };
+});
+
+ipcMain.handle('tabs:detach', async (event, id, screenPoint) => {
+  const tab = tabFromEvent(event, id);
+  if (!tab) return { ok: false };
+  await detachTab(tab, screenPoint);
+  return { ok: true };
+});
+
+ipcMain.handle('tabs:show-context-menu', (event, id) => {
+  const tab = tabFromEvent(event, id);
+  if (!tab) return { ok: false };
+  const host = tab.host;
+  const index = host.tabs.indexOf(tab);
+  const others = host.tabs.filter((t) => t !== tab);
+  const filePath = tab.meta.path;
+  const items = [
+    { label: t('tabs.close'), accelerator: 'CmdOrCtrl+W', click: () => closeTab(tab) },
+    { label: t('tabs.closeOthers'), enabled: others.length > 0, click: () => closeTabs(others) },
+    {
+      label: t('tabs.closeRight'),
+      enabled: index < host.tabs.length - 1,
+      click: () => closeTabs(host.tabs.slice(index + 1)),
+    },
+  ];
+  if (!tab.pinned) {
+    items.push(
+      { type: 'separator' },
+      {
+        label: t('tabs.keepOpen'),
+        click: () => {
+          tab.pinned = true;
+          notifyTabsChanged(host);
+        },
+      }
+    );
+  }
+  items.push({ type: 'separator' });
+  if (host.aux) {
+    items.push({ label: t('tabs.moveToMainWindow'), click: () => moveTab(tab, hostOf(host.owner)) });
+  }
+  items.push({
+    label: t('tabs.moveToNewWindow'),
+    enabled: !(host.aux && host.tabs.length === 1),
+    click: () => detachTab(tab),
+  });
+  if (filePath) {
+    items.push(
+      { type: 'separator' },
+      { label: t('tabs.copyPath'), click: () => clipboard.writeText(filePath) },
+      { label: t('tabs.showInFolder'), click: () => shell.showItemInFolder(filePath) }
+    );
+  }
+  Menu.buildFromTemplate(items).popup({ window: host.win });
+  return { ok: true };
+});
+
+// After a relaunch: the window's tabs as they were. Only the active one
+// is focused; all of them load.
+ipcMain.handle('tabs:restore', (event, tabs, activeIndex) => {
+  const host = senderHost(event);
+  if (!host || !Array.isArray(tabs)) return { ok: false };
+  let activeTab = null;
+  tabs.forEach((entry, i) => {
+    if (!entry || typeof entry.path !== 'string' || findTabForPath(host.owner, entry.path)) return;
+    const tab = createTab(host, { filePath: entry.path }, { pinned: !!entry.pinned, activate: false });
+    if (i === activeIndex) activeTab = tab;
+  });
+  const target = activeTab || host.tabs[0];
+  if (target) activateTab(host, target.id);
+  return { ok: true };
+});
+
+// Closing projects closes their documents' tabs (in tab windows too),
+// unsaved edits asked about one at a time. Resolves to whether they all
+// closed.
+ipcMain.handle('tabs:close-under', async (event, roots) => {
+  const owner = ownerOf(windowFor(event.sender));
+  if (!owner || !Array.isArray(roots)) return false;
+  const inside = tabsOwnedBy(owner).filter(
+    (tab) => tab.meta.path && !tab.meta.instantView && roots.some((root) => isPathInside(tab.meta.path, root))
+  );
+  return closeTabs(inside);
+});
+
+ipcMain.on('css:live', (event, rootPath, css, enabled) => {
+  if (!rootPath) return;
+  liveCssByRoot.set(path.resolve(rootPath).toLowerCase(), { css: String(css || ''), enabled: enabled !== false });
+  sendToAllTabs('css:live', { root: rootPath, css: String(css || ''), enabled: enabled !== false });
+});
+
+ipcMain.handle('css:get-live', (event, rootPath) => {
+  if (!rootPath) return null;
+  return liveCssByRoot.get(path.resolve(rootPath).toLowerCase()) || null;
+});
+
+// Brings the program window forward with the keyboard on its page (the
+// terminal, from a tab in a tab window).
+ipcMain.handle('window:focus-page', (event) => {
+  const owner = ownerOf(windowFor(event.sender));
+  if (!owner || owner.isDestroyed()) return;
+  if (!owner.isFocused()) owner.focus();
+  owner.webContents.focus();
+});
+
+// ---- The tab page's side ----
+
+// A tab's page has loaded — the tab is new, moved, or its window's page
+// reloaded — and asks what to show.
+ipcMain.on('doc:hello', (event, id) => {
+  const tab = tabsById.get(Number(id));
+  if (!tab || !event.senderFrame) return;
+  if (ownerOf(windowFor(event.sender)) !== tab.host.owner) return;
+  tab.frame = event.senderFrame;
+  sendToTab(tab, 'doc:init', {
+    ...tab.init,
+    context: tabContextFor(tab.host),
+    active: tab.id === tab.host.activeId,
+  });
+  // A later load brings back the document it shows by then, without the
+  // one-time extras.
+  tab.init = initFromMeta(tab);
+});
+
+ipcMain.on('doc:state', (event, docState) => {
+  const tab = senderTab(event);
+  if (!tab || !docState) return;
+  tab.meta = {
+    path: typeof docState.path === 'string' ? docState.path : null,
+    kind: docState.kind || 'markdown',
+    dirty: !!docState.dirty,
+    editMode: !!docState.editMode,
+    draft: !!docState.draft,
+    instantView: !!docState.instantView,
+  };
+  // A document being edited stays open: it stops being the preview tab.
+  if (tab.meta.editMode || tab.meta.dirty) tab.pinned = true;
+  notifyTabsChanged(tab.host);
+});
+
+// A link to another document: when another tab of the program window (or
+// its tab windows) already shows it, that tab comes forward (and shows the
+// spot linked to) instead of this one navigating away.
+ipcMain.handle('doc:open', (event, filePath, target) => {
+  const tab = senderTab(event);
+  if (!tab || !filePath) return { handled: false };
+  const other = findTabForPath(tab.host.owner, filePath);
+  if (!other || other === tab) return { handled: false };
+  activateTab(other.host, other.id);
+  if (target && Object.keys(target).length) sendToTab(other, 'doc:navigate', { target });
+  return { handled: true };
+});
+
+// Leaving edit mode on a draft discards it, and its tab with it (the page
+// has settled its text already).
+ipcMain.handle('doc:close-self', (event) => {
+  const tab = senderTab(event);
+  if (tab) closeTab(tab, { force: true });
+});
+
+// A tab closing with unsaved text that auto save couldn't write.
+ipcMain.handle('doc:confirm-discard', (event) => {
+  const win = windowFor(event.sender);
+  const choice = dialog.showMessageBoxSync(win, {
+    type: 'warning',
+    title: t('close.discardTitle'),
+    message: t('close.discardMessage'),
+    buttons: [t('close.discardButton'), t('close.cancelButton')],
+    defaultId: 1,
+    cancelId: 1,
+    noLink: true,
+  });
+  return choice === 0;
+});
+
+ipcMain.on('doc:shell-request', (event, action, payload) => {
+  const owner = ownerOf(windowFor(event.sender));
+  if (!owner || owner.isDestroyed()) return;
+  owner.webContents.send('shell:request', { action, payload });
+});
 
 // ---- Bottom terminal panel: real PTY-backed shells per window ----
 // Uses node-pty (ConPTY on Windows / a real pty on macOS/Linux) so the
@@ -1969,7 +2921,7 @@ if (!gotSingleInstanceLock) {
 // ---- IPC handlers ----
 
 ipcMain.handle('dialog:open-folder', async (event) => {
-  const result = await dialog.showOpenDialog(BrowserWindow.fromWebContents(event.sender), {
+  const result = await dialog.showOpenDialog(windowFor(event.sender), {
     properties: ['openDirectory'],
   });
   if (result.canceled || result.filePaths.length === 0) return null;
@@ -1978,7 +2930,7 @@ ipcMain.handle('dialog:open-folder', async (event) => {
 
 ipcMain.handle('dialog:open-file', async (event) => {
   const customExtensions = getCustomTextExtensions();
-  const result = await dialog.showOpenDialog(BrowserWindow.fromWebContents(event.sender), {
+  const result = await dialog.showOpenDialog(windowFor(event.sender), {
     properties: ['openFile'],
     filters: [
       {
@@ -1998,7 +2950,7 @@ ipcMain.handle('dialog:open-file', async (event) => {
 // Save As for an untitled draft: the draft has no path until the user
 // picks one here.
 ipcMain.handle('dialog:save-file', async (event, defaultDir, defaultName) => {
-  const result = await dialog.showSaveDialog(BrowserWindow.fromWebContents(event.sender), {
+  const result = await dialog.showSaveDialog(windowFor(event.sender), {
     title: t('draft.saveDialogTitle'),
     defaultPath: defaultDir ? path.join(defaultDir, defaultName) : defaultName,
     filters: [
@@ -2246,15 +3198,21 @@ async function moveEntryInto(sourcePath, targetDir) {
 }
 
 ipcMain.handle('fs:move-entry', async (event, sourcePath, targetDir) => {
-  // On Windows the open document's watcher holds a handle on its folder,
-  // which makes renaming that folder (or one above it) fail with EPERM. The
-  // renderer re-watches whatever is open once the move is done.
-  stopWatching(event.sender.id);
+  // On Windows an open document's watcher holds a handle on its folder,
+  // which makes renaming that folder (or one above it) fail with EPERM. Any
+  // tab in any window may have one, so all go; every tab is then told where
+  // the entry went (nowhere, if the move failed) and watches its document
+  // again from there.
+  for (const id of [...fileWatchers.keys()]) stopWatching(id);
+  let result;
   try {
-    return await moveEntryInto(sourcePath, targetDir);
+    result = await moveEntryInto(sourcePath, targetDir);
   } catch (err) {
-    return { ok: false, code: 'error', error: err.message };
+    result = { ok: false, code: 'error', error: err.message };
   }
+  const to = result.ok && !result.unchanged ? result.path : sourcePath;
+  sendToAllTabs('doc:path-moved', { from: sourcePath, to });
+  return result;
 });
 
 ipcMain.handle('fs:stat-path', async (event, targetPath) => {
@@ -2372,7 +3330,7 @@ ipcMain.handle('fs:resolve-link-paths', async (event, candidates, baseDirs, root
 // A popup listing the files a link could mean; resolves with the picked
 // index, or -1 when the menu was dismissed.
 ipcMain.handle('menu:pick-path', (event, labels) => {
-  const win = BrowserWindow.fromWebContents(event.sender);
+  const win = windowFor(event.sender);
   return new Promise((resolve) => {
     let picked = -1;
     const menu = Menu.buildFromTemplate(
@@ -2471,16 +3429,17 @@ ipcMain.handle('fs:save-project-state', (event, rootPath, projectState) => {
 
 ipcMain.handle('fs:get-base-styles', () => getBaseStyles());
 
+// One watched file per tab (the document it shows).
 ipcMain.handle('fs:watch-file', (event, filePath) => {
-  const wcId = event.sender.id;
-  stopWatching(wcId);
+  const tab = senderTab(event);
+  const key = tab ? tabWatchKey(tab) : event.sender.id;
+  const frame = event.senderFrame;
+  stopWatching(key);
   try {
     const watcher = fs.watch(filePath, { persistent: false }, (eventType) => {
-      if (!event.sender.isDestroyed()) {
-        event.sender.send('file-changed', filePath);
-      }
+      sendToFrame(frame, 'file-changed', filePath);
     });
-    fileWatchers.set(wcId, watcher);
+    fileWatchers.set(key, watcher);
     return { ok: true };
   } catch (err) {
     return { ok: false, error: err.message };
@@ -2510,10 +3469,16 @@ ipcMain.handle('shell:show-in-folder', (event, itemPath) => {
 // whose whole point is that nothing surrounds the document. Its
 // accelerators (F11 included) keep working while it is hidden.
 ipcMain.handle('window:set-fullscreen', (event, enabled) => {
-  const win = BrowserWindow.fromWebContents(event.sender);
+  const win = windowFor(event.sender);
   if (!win) return { ok: false, error: 'no window' };
+  const host = hostOf(win);
   win.setFullScreen(!!enabled);
-  win.setMenuBarVisibility(!enabled);
+  // A tab window never shows it.
+  win.setMenuBarVisibility(!enabled && !(host && host.aux));
+  // The window page hides everything around the tab for the duration.
+  if (host && !host.owner.isDestroyed()) {
+    host.owner.webContents.send('shell:doc-fullscreen', { container: host.key, enabled: !!enabled });
+  }
   return { ok: true };
 });
 
@@ -2533,7 +3498,7 @@ function projectRelativePath(itemPath, rootPath) {
 }
 
 ipcMain.handle('tree:show-context-menu', (event, itemPath, rootPath, options = {}) => {
-  const win = BrowserWindow.fromWebContents(event.sender);
+  const win = windowFor(event.sender);
   const isDir = fs.statSync(itemPath).isDirectory();
   // New File/Folder/Refresh act on whatever was right-clicked: inside it for
   // a folder (or empty tree space, whose itemPath is the project root), or
@@ -2614,7 +3579,7 @@ ipcMain.handle('tree:show-context-menu', (event, itemPath, rootPath, options = {
 // Right-click on empty explorer space, below every project: the menu for
 // the explorer as a whole rather than for any one folder in it.
 ipcMain.handle('tree:show-empty-context-menu', (event, { hasProjects }) => {
-  const win = BrowserWindow.fromWebContents(event.sender);
+  const win = windowFor(event.sender);
   const menu = Menu.buildFromTemplate([
     {
       label: t('context.newProject'),
@@ -2698,7 +3663,7 @@ async function convertPumlToSvg(filePath, parentWindow) {
 }
 
 ipcMain.handle('export:pdf', (event, filePath, rootPath) => {
-  const win = BrowserWindow.fromWebContents(event.sender);
+  const win = windowFor(event.sender);
   return exportMarkdownToPdf(filePath, win, rootPath);
 });
 
@@ -3117,7 +4082,9 @@ ipcMain.handle('settings:get-custom-extensions', () => {
 });
 
 ipcMain.handle('settings:set-custom-extensions', (event, list) => {
-  return { ok: true, extensions: setCustomTextExtensions(list) };
+  const extensions = setCustomTextExtensions(list);
+  sendToAllTabs('settings:custom-extensions-changed', extensions);
+  return { ok: true, extensions };
 });
 
 ipcMain.handle('settings:get-hidden-names', () => {
@@ -3141,6 +4108,10 @@ ipcMain.handle('project:set-open', (event, roots, active) => {
     roots: Array.isArray(roots) ? roots : [],
     active: active || null,
   });
+  // The window's tabs judge which project their documents belong to by
+  // these (see doc:context in doc.js).
+  const owner = windowFor(event.sender);
+  for (const host of hostsOwnedBy(owner)) sendToHostTabs(host, 'doc:context', tabContextFor(host));
   return { ok: true };
 });
 
@@ -3193,29 +4164,30 @@ ipcMain.handle('term:stop', (event, key) => {
 
 // The viewer's own context menu: copy the selected text, or copy a diagram
 // as an image. Only the items that apply to what was right-clicked are
-// built, and each one hands the work back to the renderer, which is where
+// built, and each one hands the work back to the tab's page, which is where
 // the selection and the diagram's <img> actually are.
 ipcMain.handle('viewer:show-context-menu', (event, payload) => {
-  const win = BrowserWindow.fromWebContents(event.sender);
+  const win = windowFor(event.sender);
   if (!win) return { ok: false };
+  const page = event.senderFrame;
   const items = [];
   if (payload && payload.hasSelection) {
     items.push({
       label: t('context.copy'),
-      click: () => win.webContents.send('viewer:copy-selection'),
+      click: () => sendToFrame(page, 'viewer:copy-selection'),
     });
   }
   if (payload && payload.hasImage) {
     items.push({
       label: t('context.copyImage'),
-      click: () => win.webContents.send('viewer:copy-image'),
+      click: () => sendToFrame(page, 'viewer:copy-image'),
     });
   }
   if (payload && payload.hasSelection) {
-    items.push({ type: 'separator' }, ...sendToTerminalItems(win, 'viewer', payload.hasLocation));
+    items.push({ type: 'separator' }, ...sendToTerminalItems(page, 'viewer', payload.hasLocation));
   } else if (payload) {
     if (items.length) items.push({ type: 'separator' });
-    items.push(...viewerDocumentItems(win, payload));
+    items.push(...viewerDocumentItems(win, page, payload));
   }
   if (items.length === 0) return { ok: false };
   Menu.buildFromTemplate(items).popup({ window: win });
@@ -3225,8 +4197,8 @@ ipcMain.handle('viewer:show-context-menu', (event, payload) => {
 // The viewer's menu when nothing is selected: the document's history, its
 // file and folder, and the view. Items the renderer has to carry out go
 // back to it as 'viewer:context-action' with the action's name.
-function viewerDocumentItems(win, payload) {
-  const action = (name) => () => win.webContents.send('viewer:context-action', { action: name });
+function viewerDocumentItems(win, page, payload) {
+  const action = (name) => () => sendToFrame(page, 'viewer:context-action', { action: name });
   const { filePath, rootPath } = payload;
   const items = [
     { label: t('context.back'), enabled: !!payload.canGoBack, click: action('back') },
@@ -3278,8 +4250,8 @@ function viewerDocumentItems(win, payload) {
 // into the terminal panel's shell, without Enter, so a prompt can follow
 // it — the form Claude Code reads as a file mention. The renderer works out
 // the reference; source tells it which pane's selection to use.
-function sendToTerminalItems(win, source, hasLocation) {
-  const send = (withText) => win.webContents.send('selection:send-to-terminal', { source, withText });
+function sendToTerminalItems(page, source, hasLocation) {
+  const send = (withText) => sendToFrame(page, 'selection:send-to-terminal', { source, withText });
   const items = [];
   if (hasLocation) {
     items.push({ label: t('context.sendLocationToTerminal'), click: () => send(false) });
@@ -3294,7 +4266,7 @@ function sendToTerminalItems(win, source, hasLocation) {
 // The split-view source editor's menu. A textarea gets no menu of its own
 // in Electron, so cut/copy/paste come along with the terminal items.
 ipcMain.handle('editor:show-context-menu', (event, payload) => {
-  const win = BrowserWindow.fromWebContents(event.sender);
+  const win = windowFor(event.sender);
   if (!win) return { ok: false };
   const hasSelection = !!(payload && payload.hasSelection);
   const items = [
@@ -3303,7 +4275,7 @@ ipcMain.handle('editor:show-context-menu', (event, payload) => {
     { label: t('context.paste'), role: 'paste' },
   ];
   if (hasSelection) {
-    items.push({ type: 'separator' }, ...sendToTerminalItems(win, 'editor', payload.hasLocation));
+    items.push({ type: 'separator' }, ...sendToTerminalItems(event.senderFrame, 'editor', payload.hasLocation));
   }
   Menu.buildFromTemplate(items).popup({ window: win });
   return { ok: true };
