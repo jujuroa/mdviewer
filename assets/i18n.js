@@ -40,6 +40,13 @@ const STRINGS = {
     'about.detail': 'Version {version}\n\nElectron {electron}\nChromium {chrome}\nNode.js {node}\n\nCopyright © {year} MD Viewer',
 
     'context.copy': 'Copy',
+    'context.cut': 'Cut',
+    'context.paste': 'Paste',
+    'context.sendLocationToTerminal': 'Send Location to Terminal',
+    'context.sendLocationAndTextToTerminal': 'Send Location and Text to Terminal',
+    'context.sendTextToTerminal': 'Send Text to Terminal',
+    'context.multilineNeedsBracketedPaste':
+      'Left out the selected lines: the program in the terminal would run each pasted line as a separate command',
     'context.copyImage': 'Copy as Image',
     'context.imageCopied': 'Copied as an image',
     'context.imageCopyFailed': 'Could not copy the image: {error}',
@@ -280,6 +287,13 @@ const STRINGS = {
     'about.detail': '버전 {version}\n\nElectron {electron}\nChromium {chrome}\nNode.js {node}\n\nCopyright © {year} MD Viewer',
 
     'context.copy': '복사',
+    'context.cut': '잘라내기',
+    'context.paste': '붙여넣기',
+    'context.sendLocationToTerminal': '위치를 터미널로 보내기',
+    'context.sendLocationAndTextToTerminal': '위치와 텍스트를 터미널로 보내기',
+    'context.sendTextToTerminal': '텍스트를 터미널로 보내기',
+    'context.multilineNeedsBracketedPaste':
+      '선택한 여러 줄은 보내지 않았습니다: 지금 터미널 프로그램은 붙여넣은 줄마다 명령으로 실행합니다',
     'context.copyImage': '그림으로 복사',
     'context.imageCopied': '그림으로 복사했습니다',
     'context.imageCopyFailed': '그림을 복사하지 못했습니다: {error}',

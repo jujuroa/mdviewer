@@ -2871,7 +2871,45 @@ ipcMain.handle('viewer:show-context-menu', (event, payload) => {
       click: () => win.webContents.send('viewer:copy-image'),
     });
   }
+  if (payload && payload.hasSelection) {
+    items.push({ type: 'separator' }, ...sendToTerminalItems(win, 'viewer', payload.hasLocation));
+  }
   if (items.length === 0) return { ok: false };
+  Menu.buildFromTemplate(items).popup({ window: win });
+  return { ok: true };
+});
+
+// "Send to terminal" types a reference to the selection (@path#Lstart-end)
+// into the terminal panel's shell, without Enter, so a prompt can follow
+// it — the form Claude Code reads as a file mention. The renderer works out
+// the reference; source tells it which pane's selection to use.
+function sendToTerminalItems(win, source, hasLocation) {
+  const send = (withText) => win.webContents.send('selection:send-to-terminal', { source, withText });
+  const items = [];
+  if (hasLocation) {
+    items.push({ label: t('context.sendLocationToTerminal'), click: () => send(false) });
+  }
+  items.push({
+    label: t(hasLocation ? 'context.sendLocationAndTextToTerminal' : 'context.sendTextToTerminal'),
+    click: () => send(true),
+  });
+  return items;
+}
+
+// The split-view source editor's menu. A textarea gets no menu of its own
+// in Electron, so cut/copy/paste come along with the terminal items.
+ipcMain.handle('editor:show-context-menu', (event, payload) => {
+  const win = BrowserWindow.fromWebContents(event.sender);
+  if (!win) return { ok: false };
+  const hasSelection = !!(payload && payload.hasSelection);
+  const items = [
+    { label: t('context.cut'), role: 'cut', enabled: hasSelection },
+    { label: t('context.copy'), role: 'copy', enabled: hasSelection },
+    { label: t('context.paste'), role: 'paste' },
+  ];
+  if (hasSelection) {
+    items.push({ type: 'separator' }, ...sendToTerminalItems(win, 'editor', payload.hasLocation));
+  }
   Menu.buildFromTemplate(items).popup({ window: win });
   return { ok: true };
 });

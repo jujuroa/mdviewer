@@ -72,6 +72,7 @@ contextBridge.exposeInMainWorld('mdviewer', {
   clipboardWriteText: (text) => ipcRenderer.invoke('clipboard:write-text', text),
   clipboardWriteImage: (pngDataUrl) => ipcRenderer.invoke('clipboard:write-image', pngDataUrl),
   showViewerContextMenu: (payload) => ipcRenderer.invoke('viewer:show-context-menu', payload),
+  showEditorContextMenu: (payload) => ipcRenderer.invoke('editor:show-context-menu', payload),
   copyImageSource: (src) => ipcRenderer.invoke('image:copy-source', src),
   clipboardReadText: () => ipcRenderer.invoke('clipboard:read-text'),
   savePastedImage: (targetFilePath) => ipcRenderer.invoke('fs:save-pasted-image', targetFilePath),
@@ -145,6 +146,11 @@ contextBridge.exposeInMainWorld('mdviewer', {
   onNavForward: (callback) => ipcRenderer.on('mdviewer:nav-forward', callback),
   onViewerCopySelection: (callback) => ipcRenderer.on('viewer:copy-selection', callback),
   onViewerCopyImage: (callback) => ipcRenderer.on('viewer:copy-image', callback),
+  onSendSelectionToTerminal: (callback) => {
+    const listener = (event, payload) => callback(payload);
+    ipcRenderer.on('selection:send-to-terminal', listener);
+    return () => ipcRenderer.removeListener('selection:send-to-terminal', listener);
+  },
   onViewerHtmlCopied: (callback) => {
     const listener = (event, payload) => callback(payload);
     ipcRenderer.on('viewer:html-copied', listener);

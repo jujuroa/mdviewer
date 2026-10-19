@@ -3036,6 +3036,14 @@
   // the source carries markdown the rendered text doesn't) the stretch from
   // its first line to its last.
   function sourceRangeForViewerSelection() {
+    const blocks = viewerSelectionBlocks();
+    return blocks ? sourceRangeInBlocks(el.mdSourceEditor.value, blocks) : null;
+  }
+
+  // The selected text and the source lines [startLine, endLine) of the
+  // blocks it starts and ends in, or null when nothing in the viewer is
+  // selected or the render carries no block markers (JSON, plain text).
+  function viewerSelectionBlocks() {
     const doc = el.frame.contentDocument;
     const selection = doc && doc.getSelection();
     if (!selection || selection.isCollapsed || selection.rangeCount === 0) return null;
@@ -3051,8 +3059,11 @@
     if (Number.isNaN(startLine)) return null;
     const endAttr = parseInt(endBlock.getAttribute('data-source-endline'), 10);
     const endLine = Number.isNaN(endAttr) ? startLine + 1 : endAttr;
+    return { selected, startLine, endLine };
+  }
 
-    const value = el.mdSourceEditor.value;
+  // Narrows the blocks' span of value down to the selected text itself.
+  function sourceRangeInBlocks(value, { selected, startLine, endLine }) {
     const offsets = editorLineOffsets(value);
     const spanStart = offsets[Math.min(startLine, offsets.length - 1)];
     const spanEnd = Math.min(offsets[Math.min(endLine, offsets.length - 1)], value.length);
@@ -3725,10 +3736,21 @@
     contextMenuImageSrc = image ? image.src : '';
     if (!contextMenuSelection && !contextMenuImageSrc) return;
 
+    // Taken now, while the selection is certainly still there, for "send
+    // to terminal" (see sendSelectionToTerminal).
+    pendingTerminalSelection = contextMenuSelection
+      ? {
+          filePath: state.currentFilePath,
+          text: contextMenuSelection,
+          blocks: viewerSelectionBlocks(),
+        }
+      : null;
+
     e.preventDefault();
     window.mdviewer.showViewerContextMenu({
       hasSelection: !!contextMenuSelection,
       hasImage: !!contextMenuImageSrc,
+      hasLocation: !!state.currentFilePath,
     });
   }
 
@@ -3799,6 +3821,121 @@
       setToolbarStatus(t('context.imageCopyFailed', { error: err.message }));
     }
   });
+
+  // ---------------------------------------------------------------------
+  // Send selection to terminal
+  //
+  // Right-click > "Send ... to Terminal" in the viewer or the source editor
+  // types a reference to the selection into the terminal panel's shell:
+  // @path#L12-18 (1-based, inclusive), the form Claude Code reads as a file
+  // mention, optionally followed by the selected source text. No Enter is
+  // sent, so a prompt can be typed after it. The path is relative to the
+  // shell's folder (the project root) when the file lies under it.
+  // ---------------------------------------------------------------------
+
+  // What the last menu was opened on: { filePath, text, blocks } for the
+  // viewer (blocks from viewerSelectionBlocks), { filePath, text, range }
+  // for the editor (range as [start, end) offsets into its value).
+  let pendingTerminalSelection = null;
+
+  el.mdSourceEditor.addEventListener('contextmenu', (e) => {
+    e.preventDefault();
+    const editor = el.mdSourceEditor;
+    const { selectionStart: start, selectionEnd: end } = editor;
+    const text = editor.value.slice(start, end);
+    pendingTerminalSelection = text.trim()
+      ? { filePath: state.currentFilePath, text, range: [start, end], source: editor.value }
+      : null;
+    window.mdviewer.showEditorContextMenu({
+      hasSelection: start !== end,
+      hasLocation: !!state.currentFilePath,
+    });
+  });
+
+  function lineNumberAt(value, offset) {
+    let line = 1;
+    for (let i = value.indexOf('\n'); i !== -1 && i < offset; i = value.indexOf('\n', i + 1)) line++;
+    return line;
+  }
+
+  // "#L12" or "#L12-18" for the [start, end) slice of value. A selection
+  // that runs up to and including a line break ends on the line before it.
+  function lineFragment(value, [start, end]) {
+    const first = lineNumberAt(value, start);
+    const last = lineNumberAt(value, end > start && value[end - 1] === '\n' ? end - 1 : end);
+    return last > first ? `#L${first}-${last}` : `#L${first}`;
+  }
+
+  function terminalPathFor(filePath, shellCwd) {
+    const shown =
+      shellCwd && isPathUnder(filePath, shellCwd) && normalizePath(filePath) !== normalizePath(shellCwd)
+        ? filePath.slice(shellCwd.replace(/[\\/]+$/, '').length + 1)
+        : filePath;
+    return shown.replace(/\\/g, '/');
+  }
+
+  // The source the viewer's selection was rendered from: the editor while
+  // it holds this file (it may be ahead of the disk), else the file itself.
+  async function sourceTextFor(filePath) {
+    if (state.editMode && state.currentFilePath === filePath) return el.mdSourceEditor.value;
+    const result = await window.mdviewer.readFile(filePath);
+    return result && result.ok ? result.content : null;
+  }
+
+  // The source slice and the "#L.." fragment for the pending selection;
+  // both empty when it can't be placed (a JSON or plain-text render, which
+  // has no block markers, or a file that can no longer be read).
+  async function resolveSelectionLocation(pending) {
+    if (pending.range) {
+      return {
+        fragment: lineFragment(pending.source, pending.range),
+        sourceText: pending.text,
+      };
+    }
+    if (!pending.blocks || !pending.filePath) return { fragment: '', sourceText: '' };
+    const value = await sourceTextFor(pending.filePath);
+    if (value == null) return { fragment: '', sourceText: '' };
+    const range = sourceRangeInBlocks(value, pending.blocks);
+    if (!range) return { fragment: '', sourceText: '' };
+    return { fragment: lineFragment(value, range), sourceText: value.slice(range[0], range[1]) };
+  }
+
+  async function sendSelectionToTerminal({ withText }) {
+    const pending = pendingTerminalSelection;
+    if (!pending) return;
+
+    if (!state.terminalOpen || !activeTerminal() || !activeTerminal().started) {
+      await openTerminalPanel();
+    }
+    const session = activeTerminal();
+    if (!session) return;
+
+    const { fragment, sourceText } = await resolveSelectionLocation(pending);
+    const reference = pending.filePath
+      ? `@${terminalPathFor(pending.filePath, session.key)}${fragment}`
+      : '';
+    const body = (sourceText || pending.text).replace(/\r\n/g, '\n').replace(/\n+$/, '');
+
+    // A plain shell prompt would run each pasted line as a command; only a
+    // program that asked for bracketed paste (Claude Code, an editor) takes
+    // several lines as one input. Elsewhere everything stays on one line.
+    const multiline = session.term.modes.bracketedPasteMode;
+    let text;
+    if (!withText) {
+      text = `${reference} `;
+    } else if (multiline) {
+      text = reference ? `${reference}\n${body}\n` : `${body} `;
+    } else if (!body.includes('\n')) {
+      text = `${reference ? `${reference} ` : ''}${body} `;
+    } else {
+      setToolbarStatus(t('context.multilineNeedsBracketedPaste'));
+      text = reference ? `${reference} ` : '';
+    }
+    if (text) session.term.paste(text);
+    session.term.focus();
+  }
+
+  window.mdviewer.onSendSelectionToTerminal(sendSelectionToTerminal);
 
   // ---------------------------------------------------------------------
   // Find in document (Ctrl+F)
