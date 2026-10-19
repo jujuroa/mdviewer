@@ -2024,6 +2024,60 @@ ipcMain.handle('fs:copy-entries', async (event, targetDir, sourcePaths) => {
   }
 });
 
+// Moves one tree entry into another folder (tree drag and drop). Unlike a
+// copy, a name clash is refused rather than renamed: the user is relocating
+// a specific file, and quietly turning it into "name (2)" would break every
+// link that points at it.
+async function moveEntryInto(sourcePath, targetDir) {
+  let targetStat;
+  try {
+    targetStat = await fs.promises.stat(targetDir);
+  } catch (err) {
+    return { ok: false, code: 'error', error: err.message };
+  }
+  if (!targetStat.isDirectory()) return { ok: false, code: 'error', error: 'Drop target is not a folder' };
+
+  let sourceStat;
+  try {
+    sourceStat = await fs.promises.stat(sourcePath);
+  } catch (err) {
+    return { ok: false, code: 'missing', error: err.message };
+  }
+  if (sourceStat.isDirectory() && isSameOrInside(sourcePath, targetDir)) {
+    return { ok: false, code: 'intoItself' };
+  }
+
+  const dest = path.join(targetDir, path.basename(sourcePath));
+  if (samePathKey(dest) === samePathKey(sourcePath)) return { ok: true, path: sourcePath, unchanged: true };
+  if (fs.existsSync(dest)) return { ok: false, code: 'exists', name: path.basename(dest) };
+
+  try {
+    await fs.promises.rename(sourcePath, dest);
+  } catch (err) {
+    // rename cannot cross drives; fall back to copy-then-delete there.
+    if (err.code !== 'EXDEV') return { ok: false, code: 'error', error: err.message };
+    try {
+      await fs.promises.cp(sourcePath, dest, { recursive: true, errorOnExist: true, force: false });
+      await fs.promises.rm(sourcePath, { recursive: true, force: true });
+    } catch (copyErr) {
+      return { ok: false, code: 'error', error: copyErr.message };
+    }
+  }
+  return { ok: true, path: dest };
+}
+
+ipcMain.handle('fs:move-entry', async (event, sourcePath, targetDir) => {
+  // On Windows the open document's watcher holds a handle on its folder,
+  // which makes renaming that folder (or one above it) fail with EPERM. The
+  // renderer re-watches whatever is open once the move is done.
+  stopWatching(event.sender.id);
+  try {
+    return await moveEntryInto(sourcePath, targetDir);
+  } catch (err) {
+    return { ok: false, code: 'error', error: err.message };
+  }
+});
+
 ipcMain.handle('fs:stat-path', async (event, targetPath) => {
   try {
     const stat = await fs.promises.stat(targetPath);

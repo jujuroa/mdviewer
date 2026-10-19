@@ -24,6 +24,7 @@ contextBridge.exposeInMainWorld('mdviewer', {
   writeFile: (filePath, content) => ipcRenderer.invoke('fs:write-file', filePath, content),
   createFile: (dirPath, name) => ipcRenderer.invoke('fs:create-file', dirPath, name),
   copyEntries: (targetDir, sourcePaths) => ipcRenderer.invoke('fs:copy-entries', targetDir, sourcePaths),
+  moveEntry: (sourcePath, targetDir) => ipcRenderer.invoke('fs:move-entry', sourcePath, targetDir),
   statPath: (targetPath) => ipcRenderer.invoke('fs:stat-path', targetPath),
   resolveLinkPaths: (candidates, baseDirs, rootPath) =>
     ipcRenderer.invoke('fs:resolve-link-paths', candidates, baseDirs, rootPath),

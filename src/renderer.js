@@ -1576,6 +1576,11 @@
         window.mdviewer.showTreeContextMenu(item.path, projectRootFor(item.path) || state.rootPath);
       });
 
+      // Dragging a row moves the entry to another folder (see the tree's
+      // internal-move handlers next to the external-file drop code).
+      row.draggable = true;
+      row.addEventListener('dragstart', (e) => beginTreeMoveDrag(e, row));
+
       if (item.isDir) {
         const childrenContainer = document.createElement('div');
         childrenContainer.className = 'tree-children';
@@ -6244,6 +6249,168 @@
 
     if (result.copied.length) await revealPathInTree(result.copied[0].path, { select: true });
   });
+
+  // ---- Moving entries inside the tree by drag and drop ----
+  //
+  // A row drag carries its own data type rather than 'Files', so none of the
+  // external-drop handlers above react to it (no copy hint, no viewer
+  // overlay); these handlers only react to it.
+
+  const TREE_MOVE_TYPE = 'application/x-mdviewer-tree-path';
+  const TREE_MOVE_EXPAND_DELAY_MS = 700;
+  let treeMoveSource = null;
+  let treeMoveExpandTimer = null;
+  let treeMoveExpandRow = null;
+
+  function beginTreeMoveDrag(e, row) {
+    treeMoveSource = row.dataset.path;
+    e.dataTransfer.setData(TREE_MOVE_TYPE, treeMoveSource);
+    e.dataTransfer.effectAllowed = 'move';
+    row.classList.add('tree-row-dragging');
+  }
+
+  function isTreeMoveDrag(e) {
+    const types = e.dataTransfer && e.dataTransfer.types;
+    return !!treeMoveSource && !!types && Array.prototype.includes.call(types, TREE_MOVE_TYPE);
+  }
+
+  // Where a move would land, or null when dropping there would do nothing
+  // (its own folder) or is impossible (a folder into itself or below it).
+  function treeMoveTargetDir(e) {
+    const targetDir = treeDropTargetDir(e);
+    if (!targetDir || !treeMoveSource) return null;
+    if (normalizePath(targetDir) === normalizePath(dirnameOf(treeMoveSource))) return null;
+    if (isPathUnder(targetDir, treeMoveSource)) return null;
+    return targetDir;
+  }
+
+  function clearTreeMoveExpand() {
+    clearTimeout(treeMoveExpandTimer);
+    treeMoveExpandTimer = null;
+    treeMoveExpandRow = null;
+  }
+
+  // Hovering a collapsed folder for a moment opens it, so a deep target can
+  // be reached without letting go of the drag.
+  function scheduleTreeMoveExpand(row) {
+    if (row === treeMoveExpandRow) return;
+    clearTreeMoveExpand();
+    if (!row || !row.classList.contains('dir')) return;
+    const childrenContainer = row.parentElement.querySelector(':scope > .tree-children');
+    if (!childrenContainer || childrenContainer.classList.contains('expanded')) return;
+    treeMoveExpandRow = row;
+    treeMoveExpandTimer = setTimeout(async () => {
+      treeMoveExpandTimer = null;
+      childrenContainer.classList.add('expanded');
+      const caret = row.querySelector('.tree-caret');
+      if (caret) caret.classList.add('expanded');
+      if (childrenContainer.dataset.loaded !== '1') {
+        childrenContainer.dataset.loaded = '1';
+        await renderTreeLevel(childrenContainer, row.dataset.path, treeRowDepth(row) + 1, 16);
+      }
+    }, TREE_MOVE_EXPAND_DELAY_MS);
+  }
+
+  function endTreeMoveDrag() {
+    const dragging = el.tree.querySelector('.tree-row-dragging');
+    if (dragging) dragging.classList.remove('tree-row-dragging');
+    treeMoveSource = null;
+    clearTreeMoveExpand();
+    setTreeDropRow(null);
+  }
+
+  el.tree.addEventListener('dragover', (e) => {
+    if (!isTreeMoveDrag(e)) return;
+    e.preventDefault();
+    const row = e.target.closest('.tree-row');
+    scheduleTreeMoveExpand(row);
+    const targetDir = treeMoveTargetDir(e);
+    e.dataTransfer.dropEffect = targetDir ? 'move' : 'none';
+    setTreeDropRow(targetDir ? findTreeRow(targetDir) : null);
+  });
+
+  el.tree.addEventListener('dragleave', (e) => {
+    if (!isTreeMoveDrag(e)) return;
+    if (!el.tree.contains(e.relatedTarget)) {
+      setTreeDropRow(null);
+      clearTreeMoveExpand();
+    }
+  });
+
+  el.tree.addEventListener('dragend', endTreeMoveDrag);
+
+  el.tree.addEventListener('drop', async (e) => {
+    if (!isTreeMoveDrag(e)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const sourcePath = treeMoveSource;
+    const targetDir = treeMoveTargetDir(e);
+    endTreeMoveDrag();
+    if (targetDir) await moveTreeEntry(sourcePath, targetDir);
+  });
+
+  // The path `p` ends up at once `from` has moved to `to`, or null when `p`
+  // is neither `from` nor inside it.
+  function remapMovedPath(p, from, to) {
+    if (!p || !isPathUnder(p, from)) return null;
+    return to + p.substring(from.length);
+  }
+
+  async function moveTreeEntry(sourcePath, targetDir) {
+    const name = pathBasename(sourcePath);
+    // Moving the open document (or a folder holding it) changes the path it
+    // would be saved to, so pending edits are settled first, just as when
+    // leaving the document any other way.
+    const movesCurrent = !!state.currentFilePath && isPathUnder(state.currentFilePath, sourcePath);
+    if (movesCurrent && !(await guardNavigation())) return;
+
+    const result = await window.mdviewer.moveEntry(sourcePath, targetDir);
+    if (!result.ok || result.unchanged) {
+      if (state.currentFilePath) window.mdviewer.watchFile(state.currentFilePath);
+      if (!result.ok) {
+        const dirLabel = pathBasename(targetDir) || targetDir;
+        const key =
+          result.code === 'exists'
+            ? 'move.exists'
+            : result.code === 'intoItself'
+            ? 'move.intoItself'
+            : 'move.failed';
+        setToolbarStatus(t(key, { name, dir: dirLabel, error: result.error || '' }));
+      }
+      return;
+    }
+
+    const newPath = result.path;
+    const remap = (p) => remapMovedPath(p, sourcePath, newPath) || p;
+    state.docHistoryStack = state.docHistoryStack.map(remap);
+    state.docForwardStack = state.docForwardStack.map(remap);
+
+    // Refresh the folder it left and the one it arrived in; when one holds
+    // the other, rebuilding the outer one covers both.
+    const sourceDir = dirnameOf(sourcePath);
+    if (isPathUnder(targetDir, sourceDir)) {
+      await refreshTreeDir(sourceDir);
+    } else if (isPathUnder(sourceDir, targetDir)) {
+      await refreshTreeDir(targetDir);
+    } else {
+      await refreshTreeDir(sourceDir);
+      await refreshTreeDir(targetDir);
+    }
+
+    if (movesCurrent) {
+      // Re-render from the new location so relative links and images
+      // resolve against it. Setting the path first keeps the old one, which
+      // no longer exists, out of the back history.
+      const movedDoc = remap(state.currentFilePath);
+      state.currentFilePath = movedDoc;
+      await loadAndRenderByPath(movedDoc);
+    } else if (state.currentFilePath) {
+      window.mdviewer.watchFile(state.currentFilePath);
+    }
+
+    await revealPathInTree(newPath, { select: true });
+    setToolbarStatus(t('move.moved', { name, dir: pathBasename(targetDir) || targetDir }));
+  }
 
   el.viewerDropOverlay.addEventListener('dragover', (e) => {
     if (!dragHasFiles(e)) return;
