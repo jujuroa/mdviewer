@@ -221,7 +221,15 @@ html, body {
 }
 .tree-caret.expanded { transform: rotate(90deg); }
 
-.tree-icon { width: 16px; flex-shrink: 0; text-align: center; }
+.tree-icon {
+  width: 18px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+/* File-kind badge (see fileBadgeSvg in renderer.js). */
+.file-badge { width: 18px; height: 18px; display: block; }
 
 .tree-row.tree-row-editing { cursor: default; }
 .tree-new-input {
@@ -1503,9 +1511,10 @@ html, body {
   font-size: 12px;
 }
 .toc-panel-body .tree-icon {
-  width: 13px;
+  width: 15px;
   font-size: 11px;
 }
+.toc-panel-body .tree-icon .file-badge { width: 15px; height: 15px; }
 .toc-panel-body .tree-caret {
   width: 9px;
   font-size: 9px;
@@ -1543,6 +1552,14 @@ html, body {
   text-overflow: ellipsis;
 }
 .toc-item:hover { background: var(--hover); }
+.toc-link-icon {
+  display: inline-block;
+  width: 18px;
+  margin-right: 4px;
+  text-align: center;
+  vertical-align: -4px;
+}
+.toc-link-icon .file-badge { width: 18px; height: 18px; }
 /* The section the viewer is scrolled to (see updateTocActive), marked the
    same way the explorer marks the open document. */
 .toc-item.toc-active { box-shadow: inset 2px 0 0 var(--accent); }

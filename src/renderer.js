@@ -953,6 +953,38 @@
     return state.customTextExtensions.includes(m[1].toLowerCase());
   }
 
+  // Page-with-a-label-band icon for the files the app opens, used by the
+  // explorer and the TOC links list. Emoji for these were hard to tell apart
+  // at tree size; the band colour carries the kind, the text confirms it.
+  const FILE_BADGE_COLOR = {
+    md: '#1f6feb',
+    puml: '#8a3ffc',
+    json: '#d48c00',
+    text: '#6e7781',
+  };
+
+  // `kind` is one of the FILE_BADGE_COLOR keys; plain-text files show their
+  // own extension (TXT, LOG or a custom one), clipped to 4 letters.
+  function fileBadgeSvg(kind, filePath) {
+    let label = kind === 'md' ? 'MD' : kind.toUpperCase();
+    if (kind === 'text') {
+      const m = /\.([a-zA-Z0-9]+)$/.exec(filePath || '');
+      label = (m ? m[1] : 'TXT').slice(0, 4).toUpperCase();
+    }
+    const fontSize = label.length <= 2 ? 14 : label.length === 3 ? 13 : 12;
+    const fit = label.length > 2 ? ' textLength="29" lengthAdjust="spacingAndGlyphs"' : '';
+    return (
+      '<svg class="file-badge" viewBox="0 0 32 32" aria-hidden="true">' +
+      '<path d="M7.5 1.5h12L27 9v20a1.5 1.5 0 0 1-1.5 1.5h-18A1.5 1.5 0 0 1 6 29V3a1.5 1.5 0 0 1 1.5-1.5z"' +
+      ' fill="#fff" stroke="#555" stroke-width="2" stroke-linejoin="round"/>' +
+      '<path d="M19.5 1.5V9H27" fill="none" stroke="#555" stroke-width="2" stroke-linejoin="round"/>' +
+      `<rect x="0.5" y="12" width="31" height="16" rx="2" fill="${FILE_BADGE_COLOR[kind]}"/>` +
+      `<text x="16" y="24.8" text-anchor="middle" font-family="Bahnschrift, 'Arial Narrow', 'Segoe UI', sans-serif"` +
+      ` font-weight="700" font-size="${fontSize}" fill="#fff"${fit}>${label}</text>` +
+      '</svg>'
+    );
+  }
+
   // Shared handler for "internal" links (resolved by the main process to an
   // absolute path): navigates in-app for markdown targets, hands off to the
   // OS for anything else, and jumps to same-page anchors. Used both by
@@ -1517,18 +1549,19 @@
 
       const icon = document.createElement('span');
       icon.className = 'tree-icon';
-      icon.textContent =
-        item.isDir
-          ? '📁'
-          : item.isMarkdown
-          ? '📄'
-          : item.isPuml
-          ? '📐'
-          : item.isJson
-          ? '🗂'
-          : item.isPlainText
-          ? '📃'
-          : '·';
+      const badgeKind = item.isDir
+        ? null
+        : item.isMarkdown
+        ? 'md'
+        : item.isPuml
+        ? 'puml'
+        : item.isJson
+        ? 'json'
+        : item.isPlainText
+        ? 'text'
+        : null;
+      if (badgeKind) icon.innerHTML = fileBadgeSvg(badgeKind, item.name);
+      else icon.textContent = item.isDir ? '📁' : '·';
       row.appendChild(icon);
 
       const label = document.createElement('span');
@@ -1684,7 +1717,8 @@
 
     const icon = document.createElement('span');
     icon.className = 'tree-icon';
-    icon.textContent = kind === 'folder' ? '📁' : '📄';
+    if (kind === 'folder') icon.textContent = '📁';
+    else icon.innerHTML = fileBadgeSvg('md');
     row.appendChild(icon);
 
     const input = document.createElement('input');
@@ -5335,11 +5369,15 @@
     return null;
   }
 
+  // Link kinds that point at a file the app opens get the explorer's badge;
+  // the rest keep a text glyph.
+  const LINK_TYPE_BADGE = {
+    'internal-doc': 'md',
+    'internal-puml': 'puml',
+    'internal-json': 'json',
+    'internal-text': 'text',
+  };
   const LINK_TYPE_ICON = {
-    'internal-doc': '📄',
-    'internal-puml': '📐',
-    'internal-json': '🗂',
-    'internal-text': '📃',
     'internal-file': '📎',
     anchor: '#',
     external: '↗',
@@ -5374,8 +5412,14 @@
     for (const entry of entries) {
       const { info, label } = entry;
       const li = document.createElement('li');
-      li.className = 'toc-item';
-      li.textContent = `${LINK_TYPE_ICON[info.type]} ${label}`;
+      li.className = 'toc-item toc-link-item';
+      const icon = document.createElement('span');
+      icon.className = 'toc-link-icon';
+      const badgeKind = LINK_TYPE_BADGE[info.type];
+      if (badgeKind) icon.innerHTML = fileBadgeSvg(badgeKind, info.absPath);
+      else icon.textContent = LINK_TYPE_ICON[info.type];
+      li.appendChild(icon);
+      li.appendChild(document.createTextNode(label));
       li.title =
         info.type === 'external'
           ? info.href
