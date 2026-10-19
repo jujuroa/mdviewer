@@ -64,6 +64,8 @@ contextBridge.exposeInMainWorld('mdviewer', {
   onAutoSaveChanged: (callback) => ipcRenderer.on('settings:auto-save-changed', (event, enabled) => callback(enabled)),
   writeFileSync: (filePath, content) => ipcRenderer.sendSync('fs:write-file-sync', filePath, content),
   setCustomExtensions: (list) => ipcRenderer.invoke('settings:set-custom-extensions', list),
+  getHiddenNames: () => ipcRenderer.invoke('settings:get-hidden-names'),
+  setHiddenNames: (list) => ipcRenderer.invoke('settings:set-hidden-names', list),
 
   startTerminal: (key, cwd, cols, rows) => ipcRenderer.invoke('term:start', key, cwd, cols, rows),
   sendTerminalInput: (key, data) => ipcRenderer.invoke('term:input', key, data),
@@ -133,6 +135,7 @@ contextBridge.exposeInMainWorld('mdviewer', {
   },
   onMenuToggleCssEditor: (callback) => ipcRenderer.on('menu:toggle-css-editor', callback),
   onMenuManageCustomExtensions: (callback) => ipcRenderer.on('menu:manage-custom-extensions', callback),
+  onMenuManageHiddenNames: (callback) => ipcRenderer.on('menu:manage-hidden-names', callback),
   onMenuToggleEditMode: (callback) => ipcRenderer.on('menu:toggle-edit-mode', callback),
   onMenuSaveFile: (callback) => ipcRenderer.on('menu:save-file', callback),
   onMenuToggleTerminal: (callback) => ipcRenderer.on('menu:toggle-terminal', callback),

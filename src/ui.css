@@ -1838,6 +1838,24 @@ html, body {
 }
 .ext-list-remove:hover { background: var(--border); color: var(--text); }
 
+.hidden-settings-footer {
+  display: flex;
+  justify-content: flex-end;
+  padding: 0 14px 14px;
+}
+
+.hidden-reset {
+  background: none;
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 4px 10px;
+  border-radius: 4px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.hidden-reset:hover { background: var(--border); }
+
 .ext-list-empty {
   padding: 6px 10px;
   font-size: 12px;

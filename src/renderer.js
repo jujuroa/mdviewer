@@ -155,6 +155,13 @@
     extList: document.getElementById('ext-list'),
     extError: document.getElementById('ext-error'),
     btnCloseExtSettings: document.getElementById('btn-close-ext-settings'),
+    hiddenOverlay: document.getElementById('hidden-settings-overlay'),
+    hiddenInput: document.getElementById('hidden-input'),
+    btnHiddenAdd: document.getElementById('btn-hidden-add'),
+    hiddenList: document.getElementById('hidden-list'),
+    hiddenError: document.getElementById('hidden-error'),
+    btnHiddenReset: document.getElementById('btn-hidden-reset'),
+    btnCloseHiddenSettings: document.getElementById('btn-close-hidden-settings'),
   };
 
   // ---------------------------------------------------------------------
@@ -310,6 +317,105 @@
     }
   });
   window.mdviewer.onMenuManageCustomExtensions(openExtSettings);
+
+  // ---------------------------------------------------------------------
+  // Hidden items settings
+  // ---------------------------------------------------------------------
+
+  // Names (or `*`/`?` patterns) left out of the tree and project search.
+  // Main owns the list and the matching; this only edits it.
+  const hiddenSettings = { names: [], defaults: [] };
+
+  function renderHiddenList() {
+    el.hiddenList.innerHTML = '';
+    if (hiddenSettings.names.length === 0) {
+      const empty = document.createElement('li');
+      empty.className = 'ext-list-empty';
+      empty.textContent = t('hiddenNames.empty');
+      el.hiddenList.appendChild(empty);
+      return;
+    }
+    for (const name of hiddenSettings.names) {
+      const li = document.createElement('li');
+      li.className = 'ext-list-item';
+      const label = document.createElement('span');
+      label.textContent = name;
+      li.appendChild(label);
+      const removeBtn = document.createElement('button');
+      removeBtn.className = 'ext-list-remove';
+      removeBtn.textContent = '✕';
+      removeBtn.title = t('hiddenNames.removeTitle');
+      removeBtn.addEventListener('click', () => saveHiddenNames(hiddenSettings.names.filter((n) => n !== name)));
+      li.appendChild(removeBtn);
+      el.hiddenList.appendChild(li);
+    }
+  }
+
+  function showHiddenError(key) {
+    el.hiddenError.textContent = t(key);
+    el.hiddenError.classList.remove('hidden');
+  }
+
+  function hideHiddenError() {
+    el.hiddenError.classList.add('hidden');
+    el.hiddenError.textContent = '';
+  }
+
+  async function saveHiddenNames(next) {
+    const result = await window.mdviewer.setHiddenNames(next);
+    hiddenSettings.names = result.ok ? result.names : next;
+    renderHiddenList();
+    await refreshTreeRoot();
+  }
+
+  async function addHiddenName() {
+    const raw = el.hiddenInput.value.trim().replace(/[\\/]+$/, '');
+    if (!raw || /[\\/]/.test(raw)) {
+      showHiddenError('hiddenNames.errorInvalid');
+      return;
+    }
+    if (hiddenSettings.names.some((n) => n.toLowerCase() === raw.toLowerCase())) {
+      showHiddenError('hiddenNames.errorDuplicate');
+      return;
+    }
+    hideHiddenError();
+    el.hiddenInput.value = '';
+    await saveHiddenNames([...hiddenSettings.names, raw]);
+  }
+
+  async function openHiddenSettings() {
+    const result = await window.mdviewer.getHiddenNames();
+    hiddenSettings.names = result.ok ? result.names : [];
+    hiddenSettings.defaults = result.ok ? result.defaults : [];
+    hideHiddenError();
+    el.hiddenInput.value = '';
+    renderHiddenList();
+    el.hiddenOverlay.classList.remove('hidden');
+    el.hiddenInput.focus();
+  }
+
+  function closeHiddenSettings() {
+    el.hiddenOverlay.classList.add('hidden');
+  }
+
+  el.btnCloseHiddenSettings.addEventListener('click', closeHiddenSettings);
+  el.hiddenOverlay.addEventListener('click', (e) => {
+    if (e.target === el.hiddenOverlay) closeHiddenSettings();
+  });
+  el.btnHiddenAdd.addEventListener('click', addHiddenName);
+  el.btnHiddenReset.addEventListener('click', () => {
+    hideHiddenError();
+    saveHiddenNames([...hiddenSettings.defaults]);
+  });
+  el.hiddenInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      addHiddenName();
+    } else if (e.key === 'Escape') {
+      closeHiddenSettings();
+    }
+  });
+  window.mdviewer.onMenuManageHiddenNames(openHiddenSettings);
 
   // ---------------------------------------------------------------------
   // Preview iframe setup

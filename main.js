@@ -545,6 +545,66 @@ function setCustomTextExtensions(list) {
   return normalized;
 }
 
+// Hidden entries (View > Hidden Items...): files and folders whose name
+// matches one of these are left out of the tree, project search and the
+// terminal's link index. Matching ignores case; `*` and `?` are wildcards.
+// The defaults apply until the user saves a list of their own, so removing
+// them sticks.
+const DEFAULT_HIDDEN_NAMES = ['.git', '.mdviewer'];
+
+function normalizeHiddenNameList(list) {
+  if (!Array.isArray(list)) return [];
+  const seen = new Set();
+  const result = [];
+  for (const raw of list) {
+    if (typeof raw !== 'string') continue;
+    const name = raw.trim().replace(/[\\/]+$/, '');
+    if (!name || /[\\/]/.test(name)) continue;
+    const key = name.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push(name);
+  }
+  return result;
+}
+
+function getHiddenNames() {
+  const saved = loadSettings().hiddenNames;
+  return Array.isArray(saved) ? normalizeHiddenNameList(saved) : [...DEFAULT_HIDDEN_NAMES];
+}
+
+let hiddenNameMatcherCache = null; // { key, test }
+
+function hiddenNameMatcher() {
+  const names = getHiddenNames();
+  const key = names.join('\n');
+  if (hiddenNameMatcherCache && hiddenNameMatcherCache.key === key) return hiddenNameMatcherCache.test;
+  const exact = new Set();
+  const patterns = [];
+  for (const name of names) {
+    if (/[*?]/.test(name)) {
+      const source = name
+        .replace(/[.+^${}()|[\]\\]/g, '\\$&')
+        .replace(/\*/g, '.*')
+        .replace(/\?/g, '.');
+      patterns.push(new RegExp(`^${source}$`, 'i'));
+    } else {
+      exact.add(name.toLowerCase());
+    }
+  }
+  const test = (entryName) =>
+    exact.has(entryName.toLowerCase()) || patterns.some((re) => re.test(entryName));
+  hiddenNameMatcherCache = { key, test };
+  return test;
+}
+
+function setHiddenNames(list) {
+  const normalized = normalizeHiddenNameList(list);
+  saveSettings({ ...loadSettings(), hiddenNames: normalized });
+  linkIndexCache.clear();
+  return normalized;
+}
+
 // Auto save (File > Auto Save): on unless turned off. The renderer saves
 // when the editor loses focus and wherever it would otherwise ask about
 // unsaved changes; untitled drafts are left out (see src/renderer.js).
@@ -1086,10 +1146,12 @@ function isHidden(name) {
 function listDir(dirPath) {
   const entries = fs.readdirSync(dirPath, { withFileTypes: true });
   const plainTextPattern = plainTextExtensionPattern();
+  const isUserHidden = hiddenNameMatcher();
   const items = entries
-    // Hidden folders (.git, .mdviewer, ...) are listed so they can be
-    // browsed, and the tree shows them dimmed; hidden files stay out.
-    .filter((e) => !isHidden(e.name) || e.isDirectory())
+    // Hidden folders (.vscode, ...) are listed so they can be browsed, and
+    // the tree shows them dimmed; hidden files stay out, and so does
+    // anything on the user's hidden list (.git, .mdviewer by default).
+    .filter((e) => (!isHidden(e.name) || e.isDirectory()) && !isUserHidden(e.name))
     .map((e) => {
       const full = path.join(dirPath, e.name);
       const isDir = e.isDirectory();
@@ -1255,6 +1317,7 @@ async function searchProjectDocuments(rootPath, query, options = {}) {
   const isSearchableFile = (name) =>
     /\.(md|markdown|puml|json)$/i.test(name) || plainTextPattern.test(name);
   const isCanceled = () => !!searchId && canceledSearches.has(searchId);
+  const isUserHidden = hiddenNameMatcher();
 
   const files = [];
   let totalMatches = 0;
@@ -1274,7 +1337,7 @@ async function searchProjectDocuments(rootPath, query, options = {}) {
     // grouped the same way the tree shows them.
     const subDirs = [];
     for (const entry of entries) {
-      if (isHidden(entry.name)) continue;
+      if (isHidden(entry.name) || isUserHidden(entry.name)) continue;
       if (entry.isDirectory()) {
         if (!SEARCH_SKIP_DIRS.has(entry.name.toLowerCase())) subDirs.push(path.join(dir, entry.name));
         continue;
@@ -1541,6 +1604,10 @@ function buildAppMenu() {
         {
           label: t('menu.customExtensions'),
           click: () => mainWindow.webContents.send('menu:manage-custom-extensions'),
+        },
+        {
+          label: t('menu.hiddenNames'),
+          click: () => mainWindow.webContents.send('menu:manage-hidden-names'),
         },
       ],
     },
@@ -2105,6 +2172,7 @@ const linkIndexCache = new Map(); // rootPath -> { builtAt, promise }
 
 async function buildLinkIndex(rootPath) {
   const byName = new Map();
+  const isUserHidden = hiddenNameMatcher();
   let count = 0;
   async function walk(dir) {
     if (count >= LINK_INDEX_MAX_FILES) return;
@@ -2116,7 +2184,7 @@ async function buildLinkIndex(rootPath) {
     }
     const subDirs = [];
     for (const entry of entries) {
-      if (isHidden(entry.name)) continue;
+      if (isHidden(entry.name) || isUserHidden(entry.name)) continue;
       if (entry.isDirectory()) {
         if (!SEARCH_SKIP_DIRS.has(entry.name.toLowerCase())) subDirs.push(path.join(dir, entry.name));
         continue;
@@ -2934,6 +3002,14 @@ ipcMain.handle('settings:get-custom-extensions', () => {
 
 ipcMain.handle('settings:set-custom-extensions', (event, list) => {
   return { ok: true, extensions: setCustomTextExtensions(list) };
+});
+
+ipcMain.handle('settings:get-hidden-names', () => {
+  return { ok: true, names: getHiddenNames(), defaults: [...DEFAULT_HIDDEN_NAMES] };
+});
+
+ipcMain.handle('settings:set-hidden-names', (event, list) => {
+  return { ok: true, names: setHiddenNames(list) };
 });
 
 ipcMain.handle('recent:list', () => {
