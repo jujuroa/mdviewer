@@ -1,5 +1,5 @@
 const {
-  app, BrowserWindow, ipcMain, dialog, shell, Menu, clipboard, nativeImage, nativeTheme, net,
+  app, BrowserWindow, ipcMain, dialog, shell, Menu, clipboard, nativeImage, nativeTheme, net, screen,
 } = require('electron');
 const path = require('path');
 const fs = require('fs');
@@ -1653,14 +1653,48 @@ function showAboutDialog() {
   });
 }
 
+// ---- Main window size and position ----
+// Saved when the window closes and applied to the next one, so a restart —
+// by hand or through Reload Program — opens where the last window was.
+// Normal (unmaximized) bounds are kept alongside the maximized flag, so
+// un-maximizing after a restore still lands on the user's own size.
+const DEFAULT_WINDOW_SIZE = { width: 1280, height: 840 };
+// How much of the window must still be on some display for saved bounds to
+// be used; less than this (a monitor since unplugged, a resolution change)
+// would leave the window unreachable, so it opens at the default instead.
+const MIN_VISIBLE_WINDOW_PART = { width: 200, height: 100 };
+
+function savedWindowBounds(state) {
+  const b = state && state.bounds;
+  if (!b || ![b.x, b.y, b.width, b.height].every(Number.isFinite)) return null;
+  if (b.width < 200 || b.height < 150) return null;
+  const visible = screen.getAllDisplays().some(({ workArea: a }) => {
+    const w = Math.min(b.x + b.width, a.x + a.width) - Math.max(b.x, a.x);
+    const h = Math.min(b.y + b.height, a.y + a.height) - Math.max(b.y, a.y);
+    return w >= MIN_VISIBLE_WINDOW_PART.width && h >= MIN_VISIBLE_WINDOW_PART.height;
+  });
+  return visible ? { x: b.x, y: b.y, width: b.width, height: b.height } : null;
+}
+
+function saveWindowState(win) {
+  // Fullscreen isn't restored (the renderer's fullscreen document view
+  // starts fresh), but the maximized state under it is.
+  const state = { bounds: win.getNormalBounds(), maximized: win.isMaximized() };
+  try {
+    saveSettings({ ...loadSettings(), windowState: state });
+  } catch (err) {
+    // Not worth failing the close over.
+  }
+}
+
 function createWindow() {
   const savedSettings = loadSettings();
   if (SUPPORTED_LANGUAGES.includes(savedSettings.language)) currentLanguage = savedSettings.language;
   if (THEME_SOURCES.includes(savedSettings.themeSource)) nativeTheme.themeSource = savedSettings.themeSource;
 
+  const windowState = savedSettings.windowState;
   mainWindow = new BrowserWindow({
-    width: 1280,
-    height: 840,
+    ...(savedWindowBounds(windowState) || DEFAULT_WINDOW_SIZE),
     backgroundColor: '#1e1e1e',
     icon: path.join(__dirname, 'assets', 'icon.png'),
     webPreferences: {
@@ -1679,6 +1713,8 @@ function createWindow() {
       mainWindow.setTitle(title + PREVIEW_VERSION_SUFFIX);
     });
   }
+
+  if (windowState && windowState.maximized) mainWindow.maximize();
 
   mainWindow.loadFile(path.join(__dirname, 'src', 'index.html'));
   buildAppMenu();
@@ -1723,6 +1759,11 @@ function createWindow() {
     // Cancelled: the window stays, so a pending Reload Program is off.
     else relaunchArgsOnQuit = null;
   });
+
+  // 'close' still has the window to read; it fires again if closing is
+  // cancelled at the unsaved-changes prompt and retried, which only saves
+  // the same state twice.
+  mainWindow.on('close', () => saveWindowState(mainWindow));
 
   const webContentsId = mainWindow.webContents.id;
   mainWindow.on('closed', () => {
