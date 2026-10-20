@@ -2594,6 +2594,21 @@
     term.onData((data) => {
       window.mdviewer.sendTerminalInput(id, data);
     });
+    // Shift+Enter inserts a line break instead of submitting. xterm sends a
+    // bare CR for it, same as Enter, so programs can't tell the two apart.
+    // ESC+CR (Alt+Enter) is what Claude Code and other line editors take as
+    // "newline", the same mapping VS Code's terminal uses for Shift+Enter.
+    // Every event type is swallowed so xterm never emits its own CR as well.
+    term.attachCustomKeyEventHandler((e) => {
+      if (e.key !== 'Enter' || !e.shiftKey || e.ctrlKey || e.altKey || e.metaKey || e.isComposing) {
+        return true;
+      }
+      if (e.type === 'keydown') {
+        e.preventDefault();
+        window.mdviewer.sendTerminalInput(id, '\x1b\r');
+      }
+      return false;
+    });
     term.onResize(({ cols, rows }) => {
       window.mdviewer.resizeTerminal(id, cols, rows);
     });
