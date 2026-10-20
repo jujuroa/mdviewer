@@ -36,6 +36,12 @@ body.markdown-body.wide-view {
   padding: 16px 24px 60px;
 }
 
+/* The toolbar's width toggle (↔) lifts the prose reading width too, keeping
+   the prose padding. */
+body.markdown-body.full-width {
+  max-width: none;
+}
+
 @media (prefers-color-scheme: light) {
   body.markdown-body {
     color: #3b3b3b;

@@ -760,6 +760,8 @@ html, body {
 }
 .preview-toolbar button.toolbar-icon-btn:hover { color: var(--text); }
 #btn-fullscreen.hidden { display: none; }
+#btn-full-width.hidden { display: none; }
+.preview-toolbar button#btn-full-width.active { color: var(--accent); }
 
 .toolbar-right {
   display: flex;

@@ -76,6 +76,9 @@
     baseCss: '',
     hljsCss: '',
     previewZoom: 100,
+    // The toolbar's width toggle (↔): lifts the prose reading width of the
+    // viewer. Saved with the project, like the TOC fold.
+    previewFullWidth: false,
     // Fullscreen document view (see enterDocFullscreen) — deliberately not
     // part of the saved project state: it's a way to read right now, not a
     // layout the project should reopen in.
@@ -128,6 +131,7 @@
     zoomIndicator: document.getElementById('zoom-indicator'),
     appShell: document.getElementById('app-shell'),
     btnFullscreen: document.getElementById('btn-fullscreen'),
+    btnFullWidth: document.getElementById('btn-full-width'),
     btnNavBack: document.getElementById('btn-nav-back'),
     btnNavForward: document.getElementById('btn-nav-forward'),
     btnExitFullscreen: document.getElementById('btn-exit-fullscreen'),
@@ -931,6 +935,8 @@
     state.cssEnabled = saved.cssEnabled !== undefined ? saved.cssEnabled : true;
     restorePreviewZoom(saved.previewZoom);
     el.tocPanel.classList.toggle('collapsed', !!saved.tocCollapsed);
+    state.previewFullWidth = !!saved.previewFullWidth;
+    applyPreviewFullWidth();
     let css = '';
     if (root) {
       const live = await window.mdviewer.getLiveCss(root);
@@ -968,6 +974,7 @@
       tocCollapsed: el.tocPanel.classList.contains('collapsed'),
       scrollPositions: state.scrollPositions,
       previewZoom: state.previewZoom,
+      previewFullWidth: state.previewFullWidth,
     };
     if (state.isActiveTab) {
       patch.lastOpenFile = state.currentFilePath || null;
@@ -1055,12 +1062,29 @@
       state.currentFileKind === 'text' ||
       state.currentFileKind === 'puml';
     el.frame.contentDocument.body.classList.toggle('wide-view', isWideView);
+    // Non-prose views have no width limit to lift.
+    el.btnFullWidth.classList.toggle('hidden', !state.currentFilePath || isWideView);
+    applyPreviewFullWidth();
     // Reserve the path bar's space for the whole time a JSON file is open
     // (even before any node has been clicked), so clicking the first node
     // doesn't shift the layout by suddenly introducing the bar.
     el.jsonPathBar.classList.toggle('hidden', state.currentFileKind !== 'json');
     reportDocState();
   }
+
+  function applyPreviewFullWidth() {
+    const body = el.frame.contentDocument && el.frame.contentDocument.body;
+    if (body) body.classList.toggle('full-width', state.previewFullWidth);
+    el.btnFullWidth.classList.toggle('active', state.previewFullWidth);
+  }
+
+  function togglePreviewFullWidth() {
+    state.previewFullWidth = !state.previewFullWidth;
+    applyPreviewFullWidth();
+    persistProjectState();
+  }
+
+  el.btnFullWidth.addEventListener('click', togglePreviewFullWidth);
 
   // PlantUML rendering (java, spawned per-diagram — see main.js) can take a
   // few seconds for large/complex diagrams. Rendering itself runs off the
