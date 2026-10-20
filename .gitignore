@@ -158,3 +158,7 @@ vite.config.ts.timestamp-*
 /.testbed/
 /deploy/
 /start-log.txt
+
+# Personal working notes and design/planning material, kept local.
+/.lab/
+/notes.md
