@@ -1,10 +1,11 @@
 // The window page: the explorer and the open projects, project search, the
-// tab strip, the terminal and the CSS editor. The documents themselves are
-// not in this page: each tab is a page of its own (doc.html), shown in a
-// view main.js lays over the tab area (#doc-host) and can move to another
-// window as it is. This page tells main.js where that area is and what to
-// open; main.js reports the tabs back (tabs:changed) and relays what a tab
-// asks of the window (shell:request).
+// tab strip, the terminal and the CSS editor. Each document tab is a page
+// of its own (doc.html) in an iframe this page puts in a tab area (#doc-host
+// here, or the same area in a tab window this page opened with window.open,
+// so both run in this renderer). A tab moving to another window loads anew
+// there from a snapshot of its state. main.js owns the tab list: this page
+// tells it what to open and draws what it reports back (tabs:changed), and
+// main.js relays what a tab asks of the window (shell:request).
 (() => {
   const {
     t,
@@ -620,17 +621,16 @@
       const opened = await openFolder(dir, { openLastFile: false });
       if (!opened) return;
     }
-    await openDocument(filePath, { pin: true, target: line ? { line } : null });
+    await openDocument(filePath, { target: line ? { line } : null });
     await revealPathInTree(filePath, { select: true });
   }
 
   // Opens a document in a tab (main.js picks it: the tab already showing
-  // it, else the preview tab, else a new one). pin: in a tab that stays
-  // rather than the preview tab the next explorer click replaces.
-  // focus: false leaves the keyboard here rather than in the tab.
-  function openDocument(filePath, { pin = false, editMode = false, target = null, focus = true } = {}) {
+  // it, else a new one). focus: false leaves the keyboard here rather than
+  // in the tab.
+  function openDocument(filePath, { editMode = false, target = null, focus = true } = {}) {
     exitDocFullscreen();
-    return window.mdviewer.openTab(filePath, { pin, editMode, target, focus });
+    return window.mdviewer.openTab(filePath, { editMode, target, focus });
   }
 
   async function populateRecentList() {
@@ -794,13 +794,12 @@
           }
         });
       } else if (item.isMarkdown || item.isPuml || item.isJson || item.isHtml || item.isPdf || item.isPlainText) {
-        // A click shows the document in the preview tab, which the next
-        // click replaces; a double-click keeps it open in a tab of its own.
+        // A click opens the document in a tab (or brings forward the tab
+        // already showing it).
         row.addEventListener('click', () => {
           selectTreeRow(row);
           openDocument(item.path);
         });
-        row.addEventListener('dblclick', () => openDocument(item.path, { pin: true }));
       } else {
         // No in-app renderer for this type — a single click just selects it
         // (matching a native file explorer, since there's nothing to
@@ -954,7 +953,7 @@
       node.remove();
       await refreshTreeDir(targetDir);
       await revealPathInTree(result.path, { select: true });
-      if (kind === 'file') await openDocument(result.path, { pin: true });
+      if (kind === 'file') await openDocument(result.path);
     });
 
     input.addEventListener('blur', () => {
@@ -2605,7 +2604,7 @@
       // the nearest project above it.
       await openSingleFile(target, { findProject: true, line });
     } else {
-      await openDocument(target, { pin: true, target: line ? { line } : null });
+      await openDocument(target, { target: line ? { line } : null });
     }
   }
 
@@ -3352,7 +3351,6 @@
       const node = doc.createElement('div');
       node.className = 'doc-tab';
       node.classList.toggle('active', tab.id === area.activeId);
-      node.classList.toggle('preview', !tab.pinned);
       node.classList.toggle('dirty', !!tab.dirty);
       node.dataset.tabId = String(tab.id);
       node.draggable = true;
@@ -3495,9 +3493,7 @@
       if (id != null) window.mdviewer.closeTab(id);
     });
     strip.addEventListener('dblclick', (e) => {
-      const id = tabIdFromEvent(e);
-      if (id != null) window.mdviewer.pinTab(id);
-      else if (e.target === strip) window.mdviewer.newDraftTab(area.key);
+      if (e.target === strip) window.mdviewer.newDraftTab(area.key);
     });
     strip.addEventListener('contextmenu', (e) => {
       const id = tabIdFromEvent(e);
