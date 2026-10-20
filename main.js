@@ -1983,7 +1983,7 @@ function createWindow({ bounds: requestedBounds = null } = {}) {
     resetTabsAfterPageLoad(win);
     win.webContents.send('shell:doc-fullscreen', { container: 'main', enabled: win.isFullScreen() });
   });
-  win.webContents.on('render-process-gone', () => settleDocAsksOf(win));
+  win.webContents.on('render-process-gone', () => settleTabAsksOf(win));
 
   // Tab windows (see detachTab) are opened by this window's page.
   win.webContents.setWindowOpenHandler((details) => handleWindowOpen(win, details));
@@ -2036,7 +2036,7 @@ function createWindow({ bounds: requestedBounds = null } = {}) {
     stopWatching(webContentsId);
     killTerminal(webContentsId);
     windowProjects.delete(webContentsId);
-    settleDocAsksOf(win);
+    settleTabAsksOf(win);
     // Its tab windows' contents belong to its page, which is gone.
     for (const tabHost of hostsOwnedBy(win)) {
       if (tabHost === host) continue;
@@ -2082,7 +2082,7 @@ function stopWatching(webContentsId) {
 // from that (tabs:changed).
 //
 // An iframe cannot change documents without loading again, so a tab that
-// moves to another window hands over what it holds first (doc:ask
+// moves to another window hands over what it holds first (tab:ask
 // 'snapshot': its document, unsaved text, caret, scroll offsets, history)
 // and the new iframe opens on that. Only the editor's undo history stays
 // behind.
@@ -2108,6 +2108,7 @@ const FILE_BADGES = { markdown: 'md', puml: 'puml', json: 'json', html: 'html', 
 //   page: the iframe's address (and sandbox attribute, when it has one).
 //   view: the strip entry — title, tooltip, icon, unsaved mark.
 //   restoreEntry: what brings the tab back after a relaunch, or null.
+//   hello: its page has loaded (tab:hello) and waits for what to show.
 const TAB_KINDS = {
   doc: {
     page: (tab) => ({ url: `${DOC_PAGE_URL}?tab=${tab.id}` }),
@@ -2121,6 +2122,17 @@ const TAB_KINDS = {
       };
     },
     restoreEntry: (tab) => (tab.doc.path && !tab.doc.instantView ? { path: tab.doc.path } : null),
+    // Its page has loaded (tab:hello): what to show, and the window's
+    // projects. A later load brings back the document it shows by then,
+    // without the one-time extras.
+    hello: (tab) => {
+      sendToTab(tab, 'doc:init', {
+        ...tab.init,
+        context: tabContextFor(tab.host),
+        active: tab.id === tab.host.activeId,
+      });
+      tab.init = initFromDoc(tab);
+    },
   },
 };
 
@@ -2305,8 +2317,8 @@ function activateTab(host, id, { focus = true } = {}) {
   if (!tab) return;
   const previous = activeTabOf(host);
   host.activeId = id;
-  if (previous && previous !== tab) sendToTab(previous, 'doc:activated', false);
-  sendToTab(tab, 'doc:activated', true);
+  if (previous && previous !== tab) sendToTab(previous, 'tab:activated', false);
+  sendToTab(tab, 'tab:activated', true);
   // A tab in another window than the one in use (a link to a document
   // open in a tab window) brings that window forward.
   if (focus && !host.win.isDestroyed() && !host.win.isFocused()) host.win.focus();
@@ -2338,7 +2350,7 @@ function createTab(host, init, { index, activate = true, focus = true } = {}) {
       instantView: !!init.instantView,
     },
     init,
-    // The tab's page once it has loaded (doc:hello); null while it loads.
+    // The tab's page once it has loaded (tab:hello); null while it loads.
     frame: null,
   };
   tabsById.set(tab.id, tab);
@@ -2378,42 +2390,43 @@ function closeTabWindowIfEmpty(host) {
 }
 
 // ---- Asking a tab's page ----
-// doc:ask { id, kind } → doc:answer (id, value). kind 'close': may it close
+// tab:ask { id, kind } → tab:answer (id, value). kind 'close': may it close
 // (unsaved text saved or let go)? kind 'snapshot': what it holds, for the
 // page that takes over from it.
 
-const docAsks = new Map(); // ask id -> { owner, settle }
-let nextDocAskId = 1;
+const tabAsks = new Map(); // ask id -> { tab, owner, settle }
+let nextTabAskId = 1;
 
 // Resolves to the page's answer, or null when it has none to give (not
 // loaded, gone, or out of time).
-function askDoc(tab, kind, { timeout = 0 } = {}) {
+function askTab(tab, kind, { timeout = 0 } = {}) {
   if (!tab.frame) return Promise.resolve(null);
   return new Promise((resolve) => {
-    const id = nextDocAskId++;
+    const id = nextTabAskId++;
     let timer = null;
     const settle = (value) => {
       clearTimeout(timer);
-      docAsks.delete(id);
+      tabAsks.delete(id);
       resolve(value);
     };
-    docAsks.set(id, { owner: tab.host.owner, settle });
+    tabAsks.set(id, { tab, owner: tab.host.owner, settle });
     if (timeout) timer = setTimeout(() => settle(null), timeout);
-    sendToTab(tab, 'doc:ask', { id, kind });
+    sendToTab(tab, 'tab:ask', { id, kind });
   });
 }
 
 // The window page went away (reload, crash) and its tabs' pages with it:
 // nothing will answer.
-function settleDocAsksOf(owner) {
-  for (const ask of [...docAsks.values()]) {
+function settleTabAsksOf(owner) {
+  for (const ask of [...tabAsks.values()]) {
     if (ask.owner === owner) ask.settle(null);
   }
 }
 
-ipcMain.on('doc:answer', (event, id, value) => {
-  const ask = docAsks.get(id);
-  if (ask) ask.settle(value);
+// Only the page that was asked answers.
+ipcMain.on('tab:answer', (event, id, value) => {
+  const ask = tabAsks.get(id);
+  if (ask && senderTab(event) === ask.tab) ask.settle(value);
 });
 
 // Closes a tab the way closing a window always has: its page saves
@@ -2423,7 +2436,7 @@ function closeTab(tab, { force = false } = {}) {
   if (!tab || !tabsById.has(tab.id)) return Promise.resolve(true);
   if (tab.closing) return tab.closing;
   tab.closing = (async () => {
-    const answer = force ? true : await askDoc(tab, 'close');
+    const answer = force ? true : await askTab(tab, 'close');
     tab.closing = null;
     if (answer === false) {
       // Kept: so is its window, and a pending Reload Program is off.
@@ -2477,7 +2490,7 @@ async function moveTab(tab, toHost, index) {
   }
   if (tab.moving) return;
   tab.moving = true;
-  const snapshot = await askDoc(tab, 'snapshot', { timeout: TAB_SNAPSHOT_TIMEOUT_MS });
+  const snapshot = await askTab(tab, 'snapshot', { timeout: TAB_SNAPSHOT_TIMEOUT_MS });
   tab.moving = false;
   // Closed, or the window it was going to closed, while it packed up.
   if (!tabsById.has(tab.id) || tab.host !== fromHost || toHost.win.isDestroyed()) return;
@@ -2688,7 +2701,7 @@ function wireDocWindowEvents(win, host) {
 // opened them). Their tabs come back into the program window, each to be
 // loaded again in a new iframe.
 function resetTabsAfterPageLoad(owner) {
-  settleDocAsksOf(owner);
+  settleTabAsksOf(owner);
   const mainHost = hostOf(owner);
   if (!mainHost) return;
   for (const host of hostsOwnedBy(owner)) {
@@ -2714,7 +2727,7 @@ function resetTabsAfterPageLoad(owner) {
 async function snapshotTabsOf(owner) {
   const tabs = tabsOwnedBy(owner);
   const snapshots = await Promise.all(
-    tabs.map((tab) => askDoc(tab, 'snapshot', { timeout: TAB_SNAPSHOT_TIMEOUT_MS }))
+    tabs.map((tab) => askTab(tab, 'snapshot', { timeout: TAB_SNAPSHOT_TIMEOUT_MS }))
   );
   tabs.forEach((tab, i) => {
     if (snapshots[i] && typeof snapshots[i] === 'object') tab.init = snapshots[i];
@@ -2864,19 +2877,12 @@ ipcMain.handle('window:focus-page', (event) => {
 
 // A tab's page has loaded — the tab is new, moved, or its window's page
 // reloaded — and asks what to show.
-ipcMain.on('doc:hello', (event, id) => {
+ipcMain.on('tab:hello', (event, id) => {
   const tab = tabsById.get(Number(id));
   if (!tab || !event.senderFrame) return;
   if (ownerOf(windowFor(event.sender)) !== tab.host.owner) return;
   tab.frame = event.senderFrame;
-  sendToTab(tab, 'doc:init', {
-    ...tab.init,
-    context: tabContextFor(tab.host),
-    active: tab.id === tab.host.activeId,
-  });
-  // A later load brings back the document it shows by then, without the
-  // one-time extras.
-  tab.init = initFromDoc(tab);
+  TAB_KINDS[tab.kind].hello(tab);
 });
 
 ipcMain.on('doc:state', (event, docState) => {

@@ -93,9 +93,9 @@ if (PAGE === 'index.html' || TAB_ID) contextBridge.exposeInMainWorld('mdviewer',
 
   // ---- Document tabs: the tab page's side (doc.js) ----
   // The page is ready for its document (doc:init answers).
-  docReady: () => ipcRenderer.send('doc:hello', TAB_ID),
-  onDocAsk: (callback) => ipcRenderer.on('doc:ask', (event, payload) => callback(payload)),
-  answerDoc: (id, value) => ipcRenderer.send('doc:answer', id, value),
+  docReady: () => ipcRenderer.send('tab:hello', TAB_ID),
+  onDocAsk: (callback) => ipcRenderer.on('tab:ask', (event, payload) => callback(payload)),
+  answerDoc: (id, value) => ipcRenderer.send('tab:answer', id, value),
   confirmDiscard: () => ipcRenderer.invoke('doc:confirm-discard'),
   confirmSaveConflict: (filePath) => ipcRenderer.invoke('doc:confirm-save-conflict', filePath),
   requestWindow: (action, payload) => ipcRenderer.send('doc:shell-request', action, payload),
@@ -106,7 +106,7 @@ if (PAGE === 'index.html' || TAB_ID) contextBridge.exposeInMainWorld('mdviewer',
   onDocInit: (callback) => ipcRenderer.on('doc:init', (event, init) => callback(init)),
   onDocNavigate: (callback) => ipcRenderer.on('doc:navigate', (event, payload) => callback(payload)),
   onDocContext: (callback) => ipcRenderer.on('doc:context', (event, context) => callback(context)),
-  onDocActivated: (callback) => ipcRenderer.on('doc:activated', (event, active) => callback(active)),
+  onDocActivated: (callback) => ipcRenderer.on('tab:activated', (event, active) => callback(active)),
   onDocPathMoved: (callback) => ipcRenderer.on('doc:path-moved', (event, payload) => callback(payload)),
   onLiveCss: (callback) => ipcRenderer.on('css:live', (event, payload) => callback(payload)),
   onCustomExtensionsChanged: (callback) =>
