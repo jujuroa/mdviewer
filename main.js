@@ -1827,6 +1827,10 @@ function buildAppMenu() {
                 accelerator: 'CmdOrCtrl+Shift+F5',
                 click: () => reloadProgram(),
               },
+              {
+                label: t('menu.openTestTab'),
+                click: (item, win) => openTestTabFromDialog(win),
+              },
               { type: 'separator' },
             ]),
         {
@@ -2071,16 +2075,43 @@ const DEFAULT_DOC_STATE = {
 const DOC_PAGE_URL = pathToFileURL(path.join(__dirname, 'src', 'doc.html')).href;
 const FILE_BADGES = { markdown: 'md', puml: 'puml', json: 'json', text: 'text' };
 
-// What differs between kinds of tab. Only document tabs ('doc') so far;
-// add-on tabs come with add-ons (2.x). The window page builds each tab's
-// strip entry and iframe from what this gives (see tabForPage), without
-// knowing the kinds itself.
+// The sandbox of a page that is not the app's own (the test kind now,
+// add-on tabs later): its scripts run, in its own origin, and nothing more
+// — no popups, no navigating the window, no dialogs.
+const FOREIGN_TAB_SANDBOX = 'allow-scripts allow-same-origin allow-forms';
+
+// A page's file name, as a tab title.
+function pageTitleOf(url) {
+  const name = url.replace(/[?#].*$/, '').split('/').pop() || url;
+  try {
+    return decodeURIComponent(name);
+  } catch (err) {
+    return name;
+  }
+}
+
+// What differs between kinds of tab: document tabs ('doc'), and while run
+// from source a 'test' kind that shows any page (for trying out what
+// add-on tabs will need); add-on tabs come with add-ons (2.x). The window
+// page builds each tab's strip entry and iframe from what this gives (see
+// tabForPage), without knowing the kinds itself.
+//   state: the kind's own state for a new tab (tab[kind]), from its init.
+//   reopen: what its page opens on when it loads again with nothing
+//     handed over (moved without a snapshot, its window gone).
 //   page: the iframe's address (and sandbox attribute, when it has one).
 //   view: the strip entry — title, tooltip, icon, unsaved mark.
 //   restoreEntry: what brings the tab back after a relaunch, or null.
 //   hello: its page has loaded (tab:hello) and waits for what to show.
 const TAB_KINDS = {
   doc: {
+    state: (init) => ({
+      ...DEFAULT_DOC_STATE,
+      path: init.filePath || null,
+      fileKind: init.filePath ? fileKindOf(init.filePath) : 'markdown',
+      draft: !!init.draft,
+      instantView: !!init.instantView,
+    }),
+    reopen: (tab) => initFromDoc(tab),
     page: (tab) => ({ url: `${DOC_PAGE_URL}?tab=${tab.id}` }),
     view: (tab) => {
       const { path: filePath, fileKind, draft, dirty } = tab.doc;
@@ -2104,13 +2135,30 @@ const TAB_KINDS = {
       tab.init = initFromDoc(tab);
     },
   },
+  // init: { url } — a file: page for now, which shares the window page's
+  // origin and so is not walled off from it at all; F0-b serves test pages
+  // the way add-on pages will be, each in an origin of its own.
+  test: {
+    state: (init) => ({ url: String(init.url || 'about:blank') }),
+    reopen: (tab) => ({ url: tab.test.url }),
+    page: (tab) => ({ url: tab.test.url, sandbox: FOREIGN_TAB_SANDBOX }),
+    view: (tab) => ({
+      title: pageTitleOf(tab.test.url),
+      tooltip: tab.test.url,
+      icon: { badge: 'text', path: '' },
+      dirty: false,
+    }),
+    restoreEntry: () => null,
+    // Not the app's page: it never says hello.
+    hello: () => {},
+  },
 };
 
 // BrowserWindow.id -> { key, win, owner, aux, tabs, activeId, closingApproved }.
 // One per program window (key 'main', owner = the window itself) and one
 // per tab window (key 'aux-N', owner = the program window that opened it).
 const tabHosts = new Map();
-const tabsById = new Map(); // tab id -> { id, host, kind, doc, init, frame }
+const tabsById = new Map(); // tab id -> { id, host, kind, [kind], init, frame }
 let nextTabId = 1;
 let nextTabWindowId = 1;
 // The CSS editor's unsaved text per project (normalized root -> { css,
@@ -2302,21 +2350,16 @@ function activateNeighbour(host, index) {
   else notifyTabsChanged(host);
 }
 
-// init: what the page opens with (doc:init) — { filePath } or { draft },
-// plus instantView, editMode and target (a spot to show, see applyDocTarget
-// in doc.js), or a moved tab's snapshot.
-function createTab(host, init, { index, activate = true, focus = true } = {}) {
+// init: what the page opens with — for a document tab (doc:init)
+// { filePath } or { draft }, plus instantView, editMode and target (a spot
+// to show, see applyDocTarget in doc.js), or a moved tab's snapshot; for
+// other kinds see TAB_KINDS.
+function createTab(host, init, { kind = 'doc', index, activate = true, focus = true } = {}) {
   const tab = {
     id: nextTabId++,
     host,
-    kind: 'doc',
-    doc: {
-      ...DEFAULT_DOC_STATE,
-      path: init.filePath || null,
-      fileKind: init.filePath ? fileKindOf(init.filePath) : 'markdown',
-      draft: !!init.draft,
-      instantView: !!init.instantView,
-    },
+    kind,
+    [kind]: TAB_KINDS[kind].state(init),
     init,
     // The tab's page once it has loaded (tab:hello); null while it loads.
     frame: null,
@@ -2529,7 +2572,7 @@ async function moveTab(tab, toHost, index) {
   tab.moving = false;
   // Closed, or the window it was going to closed, while it packed up.
   if (!tabsById.has(tab.id) || tab.host !== fromHost || toHost.win.isDestroyed()) return;
-  tab.init = snapshot && typeof snapshot === 'object' ? snapshot : initFromDoc(tab);
+  tab.init = snapshot && typeof snapshot === 'object' ? snapshot : TAB_KINDS[tab.kind].reopen(tab);
   tab.frame = null;
   stopWatching(tabWatchKey(tab));
   const from = fromHost.tabs.indexOf(tab);
@@ -2671,7 +2714,7 @@ function setupTabWindow(owner, win, key) {
         continue;
       }
       tab.frame = null;
-      tab.init = initFromDoc(tab);
+      tab.init = TAB_KINDS[tab.kind].reopen(tab);
       tab.host = mainHost;
       mainHost.tabs.push(tab);
     }
@@ -2775,6 +2818,27 @@ appIpc.handle('tabs:open', (event, filePath, options = {}) => {
   if (!host || typeof filePath !== 'string' || !filePath) return { ok: false };
   const tab = openDocumentInTab(host, filePath, options || {});
   return { ok: true, id: tab.id };
+});
+
+// A 'test' tab (see TAB_KINDS) — only while run from source.
+function openTestTab(host, url) {
+  if (app.isPackaged || !host || typeof url !== 'string' || !url) return null;
+  return createTab(host, { url }, { kind: 'test' });
+}
+
+async function openTestTabFromDialog(win) {
+  const host = docHostFor(win);
+  if (!host) return;
+  const result = await dialog.showOpenDialog(host.win, {
+    properties: ['openFile'],
+    filters: [{ name: 'HTML', extensions: ['html', 'htm'] }],
+  });
+  if (!result.canceled && result.filePaths[0]) openTestTab(host, pathToFileURL(result.filePaths[0]).href);
+}
+
+appIpc.handle('tabs:open-test', (event, url, container) => {
+  const tab = openTestTab(senderHost(event, container), url);
+  return tab ? { ok: true, id: tab.id } : { ok: false };
 });
 
 appIpc.handle('tabs:new-draft', (event, container) => {
