@@ -13,6 +13,8 @@ const hljs = require('highlight.js');
 const sanitizeHtml = require('sanitize-html');
 const { CODE_LANGUAGE_BY_EXT, CODE_HIGHLIGHT_MAX_LENGTH, codeLanguageOf } = require('./src/code-languages.js');
 const { DEFAULT_LANGUAGE, SUPPORTED_LANGUAGES, STRINGS, translate } = require('./assets/i18n.js');
+const { samePath, isPathInside, openArgFromArgv } = require('./lib/paths.js');
+const { neighbourIndex, reorderIndex, insertIndex } = require('./lib/tab-strip.js');
 
 // Tells preload.js where the app's own pages are, so the bridge goes to
 // them alone and not to a project's .html file that happens to share a
@@ -535,13 +537,9 @@ const terminals = new Map();
 
 // When launched by double-clicking a .md file (file association), via
 // `mdviewer.exe file.md`, or via `mdviewer .` from a shell (PATH-installed),
-// Windows/argv passes the path as a plain argument. argv[0] is the
-// executable, and an unpackaged run (`electron .`) also has the app path as
-// its first plain argument — which is not always argv[1]: the argv a second
-// instance hands over has its switches moved ahead of it.
+// Windows/argv passes the path as a plain argument (see openArgFromArgv).
 function extractOpenTargetFromArgv(argv, cwd) {
-  const plain = argv.slice(1).filter((a) => !a.startsWith('-'));
-  const candidate = app.isPackaged ? plain[0] : plain[1];
+  const candidate = openArgFromArgv(argv, app.isPackaged);
   if (!candidate) return null;
   const resolved = path.resolve(cwd || process.cwd(), candidate);
   try {
@@ -2230,15 +2228,6 @@ function fileKindOf(filePath) {
   return 'markdown';
 }
 
-function samePath(a, b) {
-  return !!a && !!b && path.resolve(a).toLowerCase() === path.resolve(b).toLowerCase();
-}
-
-function isPathInside(filePath, rootPath) {
-  const rel = path.relative(rootPath, filePath);
-  return rel === '' || (!!rel && !rel.startsWith('..') && !path.isAbsolute(rel));
-}
-
 // The program window's open projects, which decide what project a tab's
 // document belongs to (see doc:context in doc.js).
 function tabContextFor(host) {
@@ -2279,7 +2268,7 @@ function activateTab(host, id, { focus = true } = {}) {
 // The tab to show once the active one leaves: the one that took its place
 // in the strip, else the one before it.
 function activateNeighbour(host, index) {
-  const next = host.tabs[Math.min(index, host.tabs.length - 1)];
+  const next = host.tabs[neighbourIndex(host.tabs.length, index)];
   host.activeId = null;
   if (next) activateTab(host, next.id, { focus: false });
   else notifyTabsChanged(host);
@@ -2431,8 +2420,8 @@ async function moveTab(tab, toHost, index) {
     // Dropped on its own window's document area: already where it goes.
     if (!Number.isInteger(index)) return;
     const from = fromHost.tabs.indexOf(tab);
+    const at = reorderIndex(fromHost.tabs.length, from, index);
     fromHost.tabs.splice(from, 1);
-    const at = Math.max(0, Math.min(from < index ? index - 1 : index, fromHost.tabs.length));
     fromHost.tabs.splice(at, 0, tab);
     notifyTabsChanged(fromHost);
     return;
@@ -2451,8 +2440,7 @@ async function moveTab(tab, toHost, index) {
   if (fromHost.activeId === tab.id) activateNeighbour(fromHost, from);
   else notifyTabsChanged(fromHost);
   tab.host = toHost;
-  const at = Number.isInteger(index) ? Math.max(0, Math.min(index, toHost.tabs.length)) : toHost.tabs.length;
-  toHost.tabs.splice(at, 0, tab);
+  toHost.tabs.splice(insertIndex(toHost.tabs.length, index), 0, tab);
   activateTab(toHost, tab.id);
   closeTabWindowIfEmpty(fromHost);
   // Another program window shows the document's project in its explorer.
