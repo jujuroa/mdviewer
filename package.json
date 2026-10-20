@@ -10,7 +10,7 @@
     "prepare:runtimes": "npm run prepare:plantuml && npm run prepare:mermaid && npm run prepare:highlight",
     "prestart": "npm run prepare:runtimes",
     "start": "node scripts/start.js",
-    "test": "node --test",
+    "test": "node --test \"test/*.test.js\"",
     "prepack": "npm run prepare:runtimes",
     "pack": "electron-builder --dir",
     "predist": "npm run prepare:runtimes",
@@ -50,6 +50,7 @@
       "main.js",
       "preload.js",
       "lib/**/*",
+      "addons/**/*",
       "assets/**/*",
       "src/**/*"
     ],
