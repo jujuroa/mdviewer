@@ -51,6 +51,10 @@
     userCss: '',
     editMode: false,
     sourceDirty: false,
+    // The version (lib/doc-version.js) of the file's text the editor was
+    // loaded from or last saved as: a save refuses to write over a file
+    // that no longer has it (see saveSource).
+    diskVersion: null,
     sourceDebounceTimer: null,
     suppressNextWatch: false,
     scrollPositions: {},
@@ -1194,12 +1198,7 @@
     // Stay in edit mode across file switches: refresh the source editor with
     // the newly selected file's content instead of closing the edit pane.
     if (state.editMode) {
-      const readResult = await window.mdviewer.readFile(filePath);
-      if (readResult.ok) {
-        el.mdSourceEditor.value = readResult.content;
-      }
-      state.sourceDirty = false;
-      el.editStatus.textContent = '';
+      loadEditorFromDisk(await window.mdviewer.readFile(filePath));
     }
 
     refreshToc();
@@ -1230,12 +1229,7 @@
     restoreScrollPosition(filePath);
 
     if (state.editMode) {
-      const readResult = await window.mdviewer.readFile(filePath);
-      if (readResult.ok) {
-        el.mdSourceEditor.value = readResult.content;
-      }
-      state.sourceDirty = false;
-      el.editStatus.textContent = '';
+      loadEditorFromDisk(await window.mdviewer.readFile(filePath));
     }
 
     refreshToc();
@@ -1418,11 +1412,10 @@
   }
 
   // Reloads the currently open file from disk, whatever its kind — picks up
-  // changes made in another editor. Outside edit mode the file watcher
-  // already does this automatically, but it deliberately stays silent
-  // during edit mode to avoid clobbering in-progress edits (see the
-  // 'file-changed' handler below), so this button is the manual way to
-  // pull in external changes while editing. Confirms first if there are
+  // changes made in another editor. The file watcher already does this
+  // automatically, except over unsaved edits (see the 'file-changed'
+  // handler below), so this button is the manual way to pull in external
+  // changes while editing. Confirms first if there are
   // unsaved edits, since this discards them the same way switching files
   // or exiting edit mode does.
   async function refreshCurrentFile() {
@@ -1437,9 +1430,7 @@
 
     const readResult = await window.mdviewer.readFile(state.currentFilePath);
     if (!readResult.ok) return;
-    el.mdSourceEditor.value = readResult.content;
-    state.sourceDirty = false;
-    el.editStatus.textContent = '';
+    loadEditorFromDisk(readResult);
 
     if (state.currentFileKind === 'puml') {
       await renderPumlFromText(readResult.content);
@@ -1472,12 +1463,7 @@
     restoreScrollPosition(filePath);
 
     if (state.editMode) {
-      const readResult = await window.mdviewer.readFile(filePath);
-      if (readResult.ok) {
-        el.mdSourceEditor.value = readResult.content;
-      }
-      state.sourceDirty = false;
-      el.editStatus.textContent = '';
+      loadEditorFromDisk(await window.mdviewer.readFile(filePath));
     }
 
     refreshToc();
@@ -1505,12 +1491,7 @@
     restoreScrollPosition(filePath);
 
     if (state.editMode) {
-      const readResult = await window.mdviewer.readFile(filePath);
-      if (readResult.ok) {
-        el.mdSourceEditor.value = readResult.content;
-      }
-      state.sourceDirty = false;
-      el.editStatus.textContent = '';
+      loadEditorFromDisk(await window.mdviewer.readFile(filePath));
     }
 
     refreshToc();
@@ -1581,6 +1562,7 @@
       const readResult = await window.mdviewer.readFile(state.currentFilePath);
       if (!readResult.ok) return false;
       sourceText = readResult.content;
+      state.diskVersion = readResult.version;
     }
 
     let root;
@@ -1779,7 +1761,7 @@
     askWindow('fresh', { path: filePath });
   }
 
-  window.mdviewer.onFileChanged((changedPath) => {
+  window.mdviewer.onFileChanged(async (changedPath) => {
     if (changedPath !== state.currentFilePath) return;
     if (isProjectStateFile(changedPath)) return;
     markTreeRowFresh(changedPath);
@@ -1787,8 +1769,22 @@
       state.suppressNextWatch = false;
       return;
     }
-    if (state.editMode) return; // avoid clobbering in-progress edits
-    loadAndRenderByPath(changedPath);
+    if (!state.editMode) {
+      loadAndRenderByPath(changedPath);
+      return;
+    }
+    // In edit mode only a real change counts (a watcher can report one
+    // write twice, or this tab's own save late).
+    const readResult = await window.mdviewer.readFile(changedPath);
+    if (!readResult.ok || readResult.version === state.diskVersion) return;
+    if (changedPath !== state.currentFilePath || !state.editMode) return;
+    if (state.sourceDirty) {
+      // The edits stay; saving them asks what to keep (see saveSource).
+      el.editStatus.textContent = t('edit.changedOnDisk');
+      return;
+    }
+    await takeDiskText(readResult);
+    el.editStatus.textContent = t('edit.reloadedFromDisk');
   });
 
   // ---------------------------------------------------------------------
@@ -2624,11 +2620,9 @@
       return;
     }
     exitDocFullscreen();
-    el.mdSourceEditor.value = result.content;
+    loadEditorFromDisk(result);
     state.editMode = true;
-    state.sourceDirty = false;
     setEditModeUI(true);
-    el.editStatus.textContent = '';
     // Start the split view aligned to wherever the viewer was already
     // scrolled to, rather than snapping the editor back to the top.
     syncEditorScrollToViewer();
@@ -2706,15 +2700,62 @@
     }
   }
 
-  async function saveSource() {
+  // The editor now holds the file's text as read from disk (a readFile
+  // result): nothing unsaved, and saves go through while the disk still
+  // has this version. A failed read leaves the text as it was.
+  function loadEditorFromDisk(readResult) {
+    if (readResult.ok) el.mdSourceEditor.value = readResult.content;
+    state.diskVersion = readResult.ok ? readResult.version : null;
+    state.sourceDirty = false;
+    el.editStatus.textContent = '';
+  }
+
+  // Swaps the editor's text for the one on disk (a readFile result) while
+  // editing, keeping the caret and scroll where they were as far as the
+  // new text reaches. Undo history starts over: its steps were taken on
+  // text that is gone.
+  async function takeDiskText(readResult) {
+    const ta = el.mdSourceEditor;
+    const { selectionStart, selectionEnd, selectionDirection, scrollTop } = ta;
+    loadEditorFromDisk(readResult);
+    const end = ta.value.length;
+    ta.setSelectionRange(Math.min(selectionStart, end), Math.min(selectionEnd, end), selectionDirection);
+    ta.scrollTop = scrollTop;
+    if (state.currentFileKind === 'puml') await renderPumlFromText(ta.value);
+    else await renderSourcePreview();
+  }
+
+  // auto: an auto save, which doesn't ask: when the file has changed on
+  // disk since the editor read it, it saves nothing and says so, and the
+  // next save by hand asks whether to write over it or take the disk's
+  // text instead.
+  async function saveSource({ auto = false } = {}) {
     if (state.untitledDraft) {
       await saveUntitledDraft();
       return;
     }
     if (!state.currentFilePath) return;
+    const filePath = state.currentFilePath;
     state.suppressNextWatch = true;
-    const result = await window.mdviewer.writeFile(state.currentFilePath, el.mdSourceEditor.value);
+    let result = await window.mdviewer.writeFile(filePath, el.mdSourceEditor.value, state.diskVersion);
+    if (result.conflict) {
+      state.suppressNextWatch = false;
+      const choice = auto ? 'cancel' : await window.mdviewer.confirmSaveConflict(filePath);
+      if (filePath !== state.currentFilePath) return;
+      if (choice === 'reload') {
+        const readResult = await window.mdviewer.readFile(filePath);
+        if (readResult.ok) await takeDiskText(readResult);
+        return;
+      }
+      if (choice !== 'overwrite') {
+        el.editStatus.textContent = t('edit.savePostponed');
+        return;
+      }
+      state.suppressNextWatch = true;
+      result = await window.mdviewer.writeFile(filePath, el.mdSourceEditor.value);
+    }
     if (result.ok) {
+      state.diskVersion = result.version;
       state.sourceDirty = false;
       el.editStatus.textContent = t('edit.saved');
       markTreeRowFresh(state.currentFilePath);
@@ -2741,7 +2782,7 @@
       .then(() => {
         // Still the same document with edits outstanding: an earlier save in
         // the chain or a file switch may have settled it meanwhile.
-        if (state.editMode && state.sourceDirty && state.currentFilePath === filePath) return saveSource();
+        if (state.editMode && state.sourceDirty && state.currentFilePath === filePath) return saveSource({ auto: true });
       })
       .catch(() => {
         // saveSource reports its own failures in the status line.
@@ -2917,6 +2958,7 @@
     updateFileKindUI();
 
     el.mdSourceEditor.value = '';
+    state.diskVersion = null;
     state.editMode = true;
     state.sourceDirty = false;
     setEditModeUI(true);
@@ -2938,6 +2980,7 @@
     }
     state.untitledDraft = false;
     state.sourceDirty = false;
+    state.diskVersion = result.version;
 
     state.currentFilePath = filePath;
     state.currentFileKind = fileKindForPath(filePath);
@@ -2989,7 +3032,7 @@
     // With auto save on, the text is written out (synchronously: the page
     // is going away) instead of asked about.
     if (canAutoSave()) {
-      const result = window.mdviewer.writeFileSync(state.currentFilePath, el.mdSourceEditor.value);
+      const result = window.mdviewer.writeFileSync(state.currentFilePath, el.mdSourceEditor.value, state.diskVersion);
       if (result && result.ok) {
         state.sourceDirty = false;
         return;
@@ -3000,7 +3043,7 @@
   });
 
   el.btnToggleEdit.addEventListener('click', toggleEditMode);
-  el.btnSaveSource.addEventListener('click', saveSource);
+  el.btnSaveSource.addEventListener('click', () => saveSource());
   el.btnRefreshPuml.addEventListener('click', refreshCurrentFile);
 
   window.mdviewer.onMenuToggleEditMode(toggleEditMode);
@@ -4724,6 +4767,9 @@
       snapshot.editor = {
         // Text on disk is read again; only what isn't there travels.
         text: state.sourceDirty || state.untitledDraft ? ta.value : null,
+        // What that text was based on, so saving it in the new window still
+        // notices a change on disk made before the move.
+        diskVersion: state.diskVersion,
         selection: [ta.selectionStart, ta.selectionEnd, ta.selectionDirection],
         scrollTop: ta.scrollTop,
         width: el.editorPane.style.width || '',
@@ -4748,6 +4794,7 @@
         ta.value = editor.text;
         // Marks it unsaved and renders it, as typing it would have.
         ta.dispatchEvent(new Event('input', { bubbles: true }));
+        if (typeof editor.diskVersion === 'string') state.diskVersion = editor.diskVersion;
       }
       const [start, end, direction] = Array.isArray(editor.selection) ? editor.selection : [];
       if (Number.isInteger(start) && Number.isInteger(end)) ta.setSelectionRange(start, end, direction || 'none');

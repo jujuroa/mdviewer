@@ -15,6 +15,7 @@ const { CODE_LANGUAGE_BY_EXT, CODE_HIGHLIGHT_MAX_LENGTH, codeLanguageOf } = requ
 const { DEFAULT_LANGUAGE, SUPPORTED_LANGUAGES, STRINGS, translate } = require('./assets/i18n.js');
 const { samePath, isPathInside, openArgFromArgv } = require('./lib/paths.js');
 const { neighbourIndex, reorderIndex, insertIndex } = require('./lib/tab-strip.js');
+const { contentVersion, writeIfUnchanged } = require('./lib/doc-version.js');
 
 // Tells preload.js where the app's own pages are, so the bridge goes to
 // them alone and not to a project's .html file that happens to share a
@@ -2861,6 +2862,23 @@ ipcMain.handle('doc:close-self', (event) => {
 });
 
 // A tab closing with unsaved text that auto save couldn't write.
+// Saving would write over a file changed on disk since it was read:
+// 'overwrite', 'reload' (take the disk's text) or 'cancel'.
+ipcMain.handle('doc:confirm-save-conflict', (event, filePath) => {
+  const win = windowFor(event.sender);
+  const choice = dialog.showMessageBoxSync(win, {
+    type: 'warning',
+    title: t('conflict.title'),
+    message: t('conflict.message', { name: path.basename(filePath || '') }),
+    detail: t('conflict.detail'),
+    buttons: [t('conflict.overwrite'), t('conflict.reload'), t('close.cancelButton')],
+    defaultId: 2,
+    cancelId: 2,
+    noLink: true,
+  });
+  return ['overwrite', 'reload', 'cancel'][choice] || 'cancel';
+});
+
 ipcMain.handle('doc:confirm-discard', (event) => {
   const win = windowFor(event.sender);
   const choice = dialog.showMessageBoxSync(win, {
@@ -3118,18 +3136,21 @@ ipcMain.handle('fs:render-plaintext', (event, filePath) => {
   }
 });
 
+// version: see lib/doc-version.js. Passed back to fs:write-file, it keeps
+// a save from writing over what changed on disk since the read
+// ({ ok: false, conflict: true }).
 ipcMain.handle('fs:read-file', (event, filePath) => {
   try {
-    return { ok: true, content: fs.readFileSync(filePath, 'utf-8') };
+    const content = fs.readFileSync(filePath, 'utf-8');
+    return { ok: true, content, version: contentVersion(content) };
   } catch (err) {
     return { ok: false, error: err.message };
   }
 });
 
-ipcMain.handle('fs:write-file', (event, filePath, content) => {
+ipcMain.handle('fs:write-file', (event, filePath, content, expectedVersion) => {
   try {
-    fs.writeFileSync(filePath, content, 'utf-8');
-    return { ok: true };
+    return writeIfUnchanged(fs, filePath, content, expectedVersion);
   } catch (err) {
     return { ok: false, error: err.message };
   }
@@ -4233,10 +4254,9 @@ ipcMain.handle('settings:set-scroll-sync', (event, enabled) => setScrollSync(ena
 
 // Synchronous on purpose: the renderer saves from 'beforeunload', where an
 // async write would be cut off by the page going away.
-ipcMain.on('fs:write-file-sync', (event, filePath, content) => {
+ipcMain.on('fs:write-file-sync', (event, filePath, content, expectedVersion) => {
   try {
-    fs.writeFileSync(filePath, content, 'utf-8');
-    event.returnValue = { ok: true };
+    event.returnValue = writeIfUnchanged(fs, filePath, content, expectedVersion);
   } catch (err) {
     event.returnValue = { ok: false, error: err.message };
   }
