@@ -3315,31 +3315,25 @@
   // ---------------------------------------------------------------------
   // Tab areas
   //
-  // Each tab is one document with its viewer and, in edit mode, the source
-  // editor beside it, shown by src/doc.html in an iframe. The tabs
-  // themselves live in main.js (their order, the one on screen, what each
-  // shows); this page draws, from what it reports (tabs:changed), the strip
-  // and the iframes of every tab area it has: its own, and those of the tab
-  // windows tabs were moved out to. A tab window is opened from here
-  // (window.open keeps it in this renderer) and filled by this page, the
-  // way VS Code's editor windows are.
-  //
-  // A single click in the explorer opens the "preview" tab (name in
-  // italics), which the next single click replaces, so clicking through
-  // documents doesn't pile up tabs; double-clicking, editing, or opening a
-  // file by name keeps a tab open.
+  // Each tab is a page in an iframe — a document tab is one document with
+  // its viewer and, in edit mode, the source editor beside it (src/doc.html).
+  // The tabs themselves live in main.js (their order, the one on screen,
+  // what each shows); this page draws, from what it reports (tabs:changed:
+  // each tab's strip entry and page address), the strip and the iframes of
+  // every tab area it has: its own, and those of the tab windows tabs were
+  // moved out to. A tab window is opened from here (window.open keeps it in
+  // this renderer) and filled by this page, the way VS Code's editor
+  // windows are.
   // ---------------------------------------------------------------------
 
   const TAB_DRAG_TYPE = 'application/x-mdviewer-tab';
-  const DOC_PAGE_URL = new URL('doc.html', location.href).href;
 
   // key ('main', or a tab window's 'aux-N') -> { key, win, doc, root,
   // strip, host, tabs, activeId, frames (tab id -> iframe) }
   const tabAreas = new Map();
 
   function tabTitle(tab) {
-    if (tab.draft) return t('draft.title');
-    return tab.path ? pathBasename(tab.path) : t('tabs.empty');
+    return tab.view.title;
   }
 
   function renderTabStrip(area) {
@@ -3351,26 +3345,27 @@
       const node = doc.createElement('div');
       node.className = 'doc-tab';
       node.classList.toggle('active', tab.id === area.activeId);
-      node.classList.toggle('dirty', !!tab.dirty);
+      node.classList.toggle('dirty', !!tab.view.dirty);
       node.dataset.tabId = String(tab.id);
       node.draggable = true;
       node.setAttribute('role', 'tab');
       node.setAttribute('aria-selected', tab.id === area.activeId ? 'true' : 'false');
-      node.title = tab.path || titles[i];
+      node.title = tab.view.tooltip || titles[i];
 
       const icon = doc.createElement('span');
       icon.className = 'doc-tab-icon';
-      const kind = tab.draft ? 'md' : { markdown: 'md', puml: 'puml', json: 'json', html: 'html', pdf: 'pdf', text: 'text' }[tab.kind];
-      icon.innerHTML = fileBadgeSvg(kind || 'md', tab.path || '');
+      const { badge, path: iconPath } = tab.view.icon || {};
+      icon.innerHTML = fileBadgeSvg(badge || 'md', iconPath || '');
       node.appendChild(icon);
 
       const label = doc.createElement('span');
       label.className = 'doc-tab-label';
       label.textContent = titles[i];
-      if (tab.path && titles.filter((title) => title === titles[i]).length > 1) {
+      const docPath = tab.doc && tab.doc.path;
+      if (docPath && titles.filter((title) => title === titles[i]).length > 1) {
         const dir = doc.createElement('span');
         dir.className = 'doc-tab-dir';
-        dir.textContent = pathBasename(dirnameOf(tab.path));
+        dir.textContent = pathBasename(dirnameOf(docPath));
         label.appendChild(dir);
       }
       node.appendChild(label);
@@ -3396,7 +3391,9 @@
   // One iframe per tab, the one on screen shown. A tab that arrives here
   // from another tab area gets a new iframe, which opens on what the old
   // one handed over (see moveTab in main.js).
-  function syncDocFrames(area, focusId) {
+  // One iframe per tab, at the address main.js gave it (page.url, with
+  // page.sandbox as its sandbox attribute when there is one).
+  function syncTabFrames(area, focusId) {
     const ids = new Set(area.tabs.map((tab) => tab.id));
     for (const [id, frame] of area.frames) {
       if (ids.has(id)) continue;
@@ -3408,7 +3405,8 @@
       if (!frame) {
         frame = area.doc.createElement('iframe');
         frame.className = 'doc-frame';
-        frame.src = `${DOC_PAGE_URL}?tab=${tab.id}`;
+        if (tab.page.sandbox != null) frame.setAttribute('sandbox', tab.page.sandbox);
+        frame.src = tab.page.url;
         area.host.appendChild(frame);
         area.frames.set(tab.id, frame);
       }
@@ -3435,7 +3433,8 @@
   // say in it.
   async function followActiveTab(previousId, previousPath) {
     const active = state.tabs.find((tab) => tab.id === state.activeTabId) || null;
-    state.activeDocPath = active && active.path && !active.instantView ? active.path : null;
+    const activeDoc = active && active.doc;
+    state.activeDocPath = activeDoc && activeDoc.path && !activeDoc.instantView ? activeDoc.path : null;
     markActiveDocRow();
     updateDocHostView();
     const changed = state.activeTabId !== previousId || state.activeDocPath !== previousPath;
@@ -3450,7 +3449,7 @@
     area.tabs = Array.isArray(tabs) ? tabs : [];
     area.activeId = activeId || null;
     renderTabStrip(area);
-    syncDocFrames(area, focusId);
+    syncTabFrames(area, focusId);
     if (container !== 'main') return;
     const previousId = state.activeTabId;
     const previousPath = state.activeDocPath;

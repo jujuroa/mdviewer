@@ -2,6 +2,7 @@ const {
   app, BrowserWindow, webContents, ipcMain, dialog, shell, Menu, clipboard, nativeImage, nativeTheme, net, protocol, screen,
 } = require('electron');
 const path = require('path');
+const { pathToFileURL } = require('url');
 const fs = require('fs');
 const { pathToFileURL } = require('url');
 const { spawn } = require('child_process');
@@ -524,8 +525,8 @@ function openProjectsOf(win, { withTabs = false } = {}) {
   const host = withTabs ? hostOf(win) : null;
   if (host) {
     // Tabs in tab windows come back in the program window.
-    const kept = tabsOwnedBy(win).filter((tab) => tab.meta.path && !tab.meta.instantView);
-    payload.tabs = kept.map((tab) => ({ path: tab.meta.path }));
+    const kept = tabsOwnedBy(win).filter((tab) => TAB_KINDS[tab.kind].restoreEntry(tab));
+    payload.tabs = kept.map((tab) => TAB_KINDS[tab.kind].restoreEntry(tab));
     payload.activeTab = kept.findIndex((tab) => tab.id === host.activeId);
   }
   return payload;
@@ -2015,7 +2016,7 @@ function createWindow({ bounds: requestedBounds = null } = {}) {
   win.on('close', (event) => {
     saveWindowState(win);
     if (host.closingApproved) return;
-    const unsaved = tabsOwnedBy(win).filter((tab) => tab.meta.dirty);
+    const unsaved = tabsOwnedBy(win).filter(isTabDirty);
     if (!unsaved.length) return;
     event.preventDefault();
     closeTabs(unsaved).then((closed) => {
@@ -2086,20 +2087,48 @@ function stopWatching(webContentsId) {
 // and the new iframe opens on that. Only the editor's undo history stays
 // behind.
 
-const DEFAULT_TAB_META = {
+// What a document tab's page last reported of its document (doc:state).
+// fileKind: how the document is shown ('markdown', 'puml', 'json', 'text').
+const DEFAULT_DOC_STATE = {
   path: null,
-  kind: 'markdown',
+  fileKind: 'markdown',
   dirty: false,
   editMode: false,
   draft: false,
   instantView: false,
 };
 
+const DOC_PAGE_URL = pathToFileURL(path.join(__dirname, 'src', 'doc.html')).href;
+const FILE_BADGES = { markdown: 'md', puml: 'puml', json: 'json', html: 'html', pdf: 'pdf', text: 'text' };
+
+// What differs between kinds of tab. Only document tabs ('doc') so far;
+// add-on tabs come with add-ons (2.x). The window page builds each tab's
+// strip entry and iframe from what this gives (see tabForPage), without
+// knowing the kinds itself.
+//   page: the iframe's address (and sandbox attribute, when it has one).
+//   view: the strip entry — title, tooltip, icon, unsaved mark.
+//   restoreEntry: what brings the tab back after a relaunch, or null.
+const TAB_KINDS = {
+  doc: {
+    page: (tab) => ({ url: `${DOC_PAGE_URL}?tab=${tab.id}` }),
+    view: (tab) => {
+      const { path: filePath, fileKind, draft, dirty } = tab.doc;
+      return {
+        title: draft ? t('draft.title') : filePath ? path.basename(filePath) : t('tabs.empty'),
+        tooltip: filePath || '',
+        icon: { badge: draft ? 'md' : FILE_BADGES[fileKind] || 'md', path: filePath || '' },
+        dirty,
+      };
+    },
+    restoreEntry: (tab) => (tab.doc.path && !tab.doc.instantView ? { path: tab.doc.path } : null),
+  },
+};
+
 // BrowserWindow.id -> { key, win, owner, aux, tabs, activeId, closingApproved }.
 // One per program window (key 'main', owner = the window itself) and one
 // per tab window (key 'aux-N', owner = the program window that opened it).
 const tabHosts = new Map();
-const tabsById = new Map(); // tab id -> { id, host, meta, init, frame }
+const tabsById = new Map(); // tab id -> { id, host, kind, doc, init, frame }
 let nextTabId = 1;
 let nextTabWindowId = 1;
 // The CSS editor's unsaved text per project (normalized root -> { css,
@@ -2220,6 +2249,10 @@ function sendToAllTabs(channel, ...args) {
   for (const tab of tabsById.values()) sendToTab(tab, channel, ...args);
 }
 
+function isTabDirty(tab) {
+  return !!(tab.doc && tab.doc.dirty);
+}
+
 function fileKindOf(filePath) {
   if (/\.(html?|xhtml)$/i.test(filePath)) return 'html';
   if (/\.pdf$/i.test(filePath)) return 'pdf';
@@ -2236,10 +2269,24 @@ function tabContextFor(host) {
   return { roots: entry && entry.roots ? [...entry.roots] : [], active: (entry && entry.active) || null };
 }
 
-// What a tab's page opens on when nothing more was handed over: the
-// document it shows.
-function initFromMeta(tab) {
-  return { filePath: tab.meta.path, draft: tab.meta.draft, instantView: tab.meta.instantView };
+// What a document tab's page opens on when nothing more was handed over:
+// the document it shows.
+function initFromDoc(tab) {
+  return { filePath: tab.doc.path, draft: tab.doc.draft, instantView: tab.doc.instantView };
+}
+
+// A tab as the window page gets it (tabs:changed). doc: what the page
+// needs of a document tab's document (the active project follows it, and
+// two tabs of the same name are told apart by their folders).
+function tabForPage(tab) {
+  const kind = TAB_KINDS[tab.kind];
+  return {
+    id: tab.id,
+    kind: tab.kind,
+    view: kind.view(tab),
+    page: kind.page(tab),
+    doc: tab.kind === 'doc' ? { path: tab.doc.path, instantView: tab.doc.instantView } : null,
+  };
 }
 
 // focusId: the tab whose iframe should take the keyboard.
@@ -2247,7 +2294,7 @@ function notifyTabsChanged(host, { focusId = null } = {}) {
   if (!host || host.owner.isDestroyed()) return;
   host.owner.webContents.send('tabs:changed', {
     container: host.key,
-    tabs: host.tabs.map((tab) => ({ id: tab.id, ...tab.meta })),
+    tabs: host.tabs.map(tabForPage),
     activeId: host.activeId,
     focusId,
   });
@@ -2282,10 +2329,11 @@ function createTab(host, init, { index, activate = true, focus = true } = {}) {
   const tab = {
     id: nextTabId++,
     host,
-    meta: {
-      ...DEFAULT_TAB_META,
+    kind: 'doc',
+    doc: {
+      ...DEFAULT_DOC_STATE,
       path: init.filePath || null,
-      kind: init.filePath ? fileKindOf(init.filePath) : 'markdown',
+      fileKind: init.filePath ? fileKindOf(init.filePath) : 'markdown',
       draft: !!init.draft,
       instantView: !!init.instantView,
     },
@@ -2400,7 +2448,7 @@ async function closeTabs(tabs) {
 // The tab already showing the file in the program window or one of its
 // tab windows, if any.
 function findTabForPath(owner, filePath) {
-  return tabsOwnedBy(owner).find((tab) => samePath(tab.meta.path, filePath)) || null;
+  return tabsOwnedBy(owner).find((tab) => tab.kind === 'doc' && samePath(tab.doc.path, filePath)) || null;
 }
 
 // Opens a document in a tab: the one already showing it, else a new one.
@@ -2433,7 +2481,7 @@ async function moveTab(tab, toHost, index) {
   tab.moving = false;
   // Closed, or the window it was going to closed, while it packed up.
   if (!tabsById.has(tab.id) || tab.host !== fromHost || toHost.win.isDestroyed()) return;
-  tab.init = snapshot && typeof snapshot === 'object' ? snapshot : initFromMeta(tab);
+  tab.init = snapshot && typeof snapshot === 'object' ? snapshot : initFromDoc(tab);
   tab.frame = null;
   stopWatching(tabWatchKey(tab));
   const from = fromHost.tabs.indexOf(tab);
@@ -2445,10 +2493,10 @@ async function moveTab(tab, toHost, index) {
   activateTab(toHost, tab.id);
   closeTabWindowIfEmpty(fromHost);
   // Another program window shows the document's project in its explorer.
-  if (fromHost.owner !== toHost.owner && tab.meta.path && !tab.meta.instantView) {
+  if (fromHost.owner !== toHost.owner && tab.kind === 'doc' && tab.doc.path && !tab.doc.instantView) {
     sendToWindowWhenLoaded(toHost.owner, 'shell:request', {
       action: 'ensure-project',
-      payload: { path: tab.meta.path },
+      payload: { path: tab.doc.path },
     });
   }
 }
@@ -2576,7 +2624,7 @@ function setupTabWindow(owner, win, key) {
         continue;
       }
       tab.frame = null;
-      tab.init = initFromMeta(tab);
+      tab.init = initFromDoc(tab);
       tab.host = mainHost;
       mainHost.tabs.push(tab);
     }
@@ -2730,7 +2778,7 @@ ipcMain.handle('tabs:show-context-menu', (event, id) => {
   const host = tab.host;
   const index = host.tabs.indexOf(tab);
   const others = host.tabs.filter((t) => t !== tab);
-  const filePath = tab.meta.path;
+  const filePath = tab.kind === 'doc' ? tab.doc.path : null;
   const items = [
     { label: t('tabs.close'), accelerator: 'CmdOrCtrl+W', click: () => closeTab(tab) },
     { label: t('tabs.closeOthers'), enabled: others.length > 0, click: () => closeTabs(others) },
@@ -2783,7 +2831,11 @@ ipcMain.handle('tabs:close-under', async (event, roots) => {
   const owner = ownerOf(windowFor(event.sender));
   if (!owner || !Array.isArray(roots)) return false;
   const inside = tabsOwnedBy(owner).filter(
-    (tab) => tab.meta.path && !tab.meta.instantView && roots.some((root) => isPathInside(tab.meta.path, root))
+    (tab) =>
+      tab.kind === 'doc' &&
+      tab.doc.path &&
+      !tab.doc.instantView &&
+      roots.some((root) => isPathInside(tab.doc.path, root))
   );
   return closeTabs(inside);
 });
@@ -2824,15 +2876,15 @@ ipcMain.on('doc:hello', (event, id) => {
   });
   // A later load brings back the document it shows by then, without the
   // one-time extras.
-  tab.init = initFromMeta(tab);
+  tab.init = initFromDoc(tab);
 });
 
 ipcMain.on('doc:state', (event, docState) => {
   const tab = senderTab(event);
-  if (!tab || !docState) return;
-  tab.meta = {
+  if (!tab || tab.kind !== 'doc' || !docState) return;
+  tab.doc = {
     path: typeof docState.path === 'string' ? docState.path : null,
-    kind: docState.kind || 'markdown',
+    fileKind: docState.kind || 'markdown',
     dirty: !!docState.dirty,
     editMode: !!docState.editMode,
     draft: !!docState.draft,
