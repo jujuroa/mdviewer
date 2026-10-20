@@ -54,6 +54,7 @@ const STRINGS = {
     'menu.help': 'Help',
     'menu.about': 'About MD Viewer',
     'menu.reloadProgram': 'Reload Program (Dev)',
+    'menu.openTestTab': 'Open Test Tab... (Dev)',
 
     'about.title': 'About MD Viewer',
     'about.detail': 'Version {version}\n\nElectron {electron}\nChromium {chrome}\nNode.js {node}\n\nCopyright © {year} MD Viewer',
@@ -369,6 +370,7 @@ const STRINGS = {
     'menu.help': '도움말',
     'menu.about': 'MD Viewer 정보',
     'menu.reloadProgram': '프로그램 다시 불러오기 (개발용)',
+    'menu.openTestTab': '시험 탭 열기... (개발용)',
 
     'about.title': 'MD Viewer 정보',
     'about.detail': '버전 {version}\n\nElectron {electron}\nChromium {chrome}\nNode.js {node}\n\nCopyright © {year} MD Viewer',

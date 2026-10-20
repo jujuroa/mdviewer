@@ -79,6 +79,8 @@ if (PAGE === 'index.html' || TAB_ID) contextBridge.exposeInMainWorld('mdviewer',
   closeTab: (id) => ipcRenderer.invoke('tabs:close', id),
   moveTabHere: (id, index, container) => ipcRenderer.invoke('tabs:move-here', id, index, container),
   detachTab: (id, screenPoint) => ipcRenderer.invoke('tabs:detach', id, screenPoint),
+  // Run from source only (main refuses otherwise): a 'test' tab showing `url`.
+  openTestTab: (url, container) => ipcRenderer.invoke('tabs:open-test', url, container),
   showTabContextMenu: (id) => ipcRenderer.invoke('tabs:show-context-menu', id),
   restoreTabs: (tabs, activeIndex) => ipcRenderer.invoke('tabs:restore', tabs, activeIndex),
   closeTabsUnder: (roots) => ipcRenderer.invoke('tabs:close-under', roots),
