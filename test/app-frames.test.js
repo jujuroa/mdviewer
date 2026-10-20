@@ -58,6 +58,20 @@ test('subframeNavigationAllowed: other frames never reach an app page', () => {
   assert.equal(subframeNavigationAllowed({ fromUrl: '', targetUrl: `${DOC}?tab=x`, tabLevel: true }, PAGES), false);
 });
 
+test('subframeNavigationAllowed: an add-on page stays in its origin', () => {
+  const P = { ...PAGES, addonScheme: 'mdviewer-addon' };
+  const from = 'mdviewer-addon://test/tab.html';
+  assert.equal(subframeNavigationAllowed({ fromUrl: from, targetUrl: 'mdviewer-addon://test/other.html', tabLevel: true }, P), true);
+  assert.equal(subframeNavigationAllowed({ fromUrl: from, targetUrl: 'mdviewer-addon://TEST/x', tabLevel: true }, P), true);
+  assert.equal(subframeNavigationAllowed({ fromUrl: from, targetUrl: 'mdviewer-addon://other/tab.html', tabLevel: true }, P), false);
+  assert.equal(subframeNavigationAllowed({ fromUrl: from, targetUrl: 'https://example.com/', tabLevel: true }, P), false);
+  assert.equal(subframeNavigationAllowed({ fromUrl: from, targetUrl: 'file:///C:/x.html', tabLevel: true }, P), false);
+  assert.equal(subframeNavigationAllowed({ fromUrl: from, targetUrl: `${DOC}?tab=1`, tabLevel: true }, P), false);
+  assert.equal(subframeNavigationAllowed({ fromUrl: from, targetUrl: 'about:blank', tabLevel: true }, P), false);
+  // A new tab iframe may load an add-on page.
+  assert.equal(subframeNavigationAllowed({ fromUrl: '', targetUrl: from, tabLevel: true }, P), true);
+});
+
 test('subframeNavigationAllowed: everything else is left alone', () => {
   assert.equal(subframeNavigationAllowed({ fromUrl: 'about:blank', targetUrl: 'file:///C:/x.html', tabLevel: false }, PAGES), true);
   assert.equal(subframeNavigationAllowed({ fromUrl: 'file:///C:/x.html', targetUrl: 'https://example.com/', tabLevel: true }, PAGES), true);

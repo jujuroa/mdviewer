@@ -17,6 +17,8 @@ const { samePath, isPathInside, openArgFromArgv } = require('./lib/paths.js');
 const { neighbourIndex, reorderIndex, insertIndex } = require('./lib/tab-strip.js');
 const { contentVersion, writeIfUnchanged } = require('./lib/doc-version.js');
 const { isAppPageUrl, docTabIdOf, subframeNavigationAllowed } = require('./lib/app-frames.js');
+const { registerAddonScheme, serveAddonPages, limitPermissionsToAppPages, refuseAddonDownloads } = require('./addons/protocol.js');
+const { SCHEME: ADDON_SCHEME } = require('./addons/pages.js');
 
 // A preview build (`npm run dist:preview`) carries a prerelease version such
 // as 1.3.0-preview.3 and installs over the released app, so once it is running
@@ -2135,9 +2137,9 @@ const TAB_KINDS = {
       tab.init = initFromDoc(tab);
     },
   },
-  // init: { url } — a file: page for now, which shares the window page's
-  // origin and so is not walled off from it at all; F0-b serves test pages
-  // the way add-on pages will be, each in an origin of its own.
+  // init: { url } — a test add-on's page (mdviewer-addon://<id>/..., in an
+  // origin of its own, as add-on pages will be) or a file: page, which
+  // shares the window page's origin and so is not walled off from it.
   test: {
     state: (init) => ({ url: String(init.url || 'about:blank') }),
     reopen: (tab) => ({ url: tab.test.url }),
@@ -2410,7 +2412,7 @@ function closeTabWindowIfEmpty(host) {
 // by navigating (see guardFrameNavigation), so a frame cannot become one.
 
 const WINDOW_PAGE_URL = pathToFileURL(path.join(__dirname, 'src', 'index.html')).href;
-const APP_PAGES = { docPageUrl: DOC_PAGE_URL, appPageUrls: [WINDOW_PAGE_URL, DOC_PAGE_URL] };
+const APP_PAGES = { docPageUrl: DOC_PAGE_URL, appPageUrls: [WINDOW_PAGE_URL, DOC_PAGE_URL], addonScheme: ADDON_SCHEME };
 
 function isAppSender(event) {
   const frame = event.senderFrame;
@@ -2454,7 +2456,8 @@ const appIpc = {
 };
 
 // Frames below a window's page (tabs, and whatever is inside them) never
-// navigate to an app page, and a tab's page never navigates away.
+// navigate to an app page, a tab's page never navigates away, and an
+// add-on's page never leaves its add-on's origin.
 function guardFrameNavigation(win) {
   win.webContents.on('will-frame-navigate', (details) => {
     if (details.isMainFrame) return;
@@ -2829,11 +2832,21 @@ function openTestTab(host, url) {
 async function openTestTabFromDialog(win) {
   const host = docHostFor(win);
   if (!host) return;
+  const testAddons = path.join(__dirname, 'test', 'addons');
   const result = await dialog.showOpenDialog(host.win, {
+    defaultPath: testAddons,
     properties: ['openFile'],
     filters: [{ name: 'HTML', extensions: ['html', 'htm'] }],
   });
-  if (!result.canceled && result.filePaths[0]) openTestTab(host, pathToFileURL(result.filePaths[0]).href);
+  const file = !result.canceled && result.filePaths[0];
+  if (!file) return;
+  // A test add-on's page opens the way add-on pages will: from its scheme.
+  const rel = isPathInside(file, testAddons) ? path.relative(testAddons, file).split(path.sep) : null;
+  const url =
+    rel && rel.length > 1
+      ? `${ADDON_SCHEME}://${rel[0].toLowerCase()}/${rel.slice(1).map(encodeURIComponent).join('/')}`
+      : pathToFileURL(file).href;
+  openTestTab(host, url);
 }
 
 appIpc.handle('tabs:open-test', (event, url, container) => {
@@ -3140,6 +3153,25 @@ function spawnTerminalFor(event, key, cwd, cols, rows) {
 // on a .md file should hand its path to the window the user was last in
 // instead of spawning a competing process. Starting the program again with
 // nothing to open asks for another window, which this process opens.
+// Add-on pages (see addons/protocol.js). Until add-ons are found and
+// registered (F1), the only ones served are the test add-ons in
+// test/addons/<id>/, and only while run from source; manifest.json there
+// gives network.hosts.
+registerAddonScheme();
+
+function resolveAddonPages(id) {
+  if (app.isPackaged || !/^[a-z0-9][a-z0-9-]*$/.test(id)) return null;
+  const dir = path.join(__dirname, 'test', 'addons', id);
+  let manifest;
+  try {
+    manifest = JSON.parse(fs.readFileSync(path.join(dir, 'manifest.json'), 'utf-8'));
+  } catch (err) {
+    return null;
+  }
+  const hosts = manifest && manifest.network && Array.isArray(manifest.network.hosts) ? manifest.network.hosts : [];
+  return { dir, hosts };
+}
+
 const gotSingleInstanceLock = app.requestSingleInstanceLock();
 if (!gotSingleInstanceLock) {
   app.quit();
@@ -3158,6 +3190,9 @@ if (!gotSingleInstanceLock) {
   });
 
   app.whenReady().then(() => {
+    serveAddonPages(resolveAddonPages);
+    limitPermissionsToAppPages();
+    refuseAddonDownloads();
     const win = createWindow();
     const target = extractOpenTargetFromArgv(process.argv);
     if (target) openTargetInWindow(win, target);
