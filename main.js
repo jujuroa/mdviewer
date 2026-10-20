@@ -658,6 +658,18 @@ function setAutoSave(enabled) {
   sendToAllTabs('settings:auto-save-changed', !!enabled);
 }
 
+// Viewer width limit (Settings > Limit Viewer Width by Default): on unless
+// turned off. The toolbar's width toggle (↔) overrides it per project (see
+// src/doc.js).
+function getPreviewWidthLimit() {
+  return loadSettings().previewWidthLimit !== false;
+}
+
+function setPreviewWidthLimit(enabled) {
+  saveSettings({ ...loadSettings(), previewWidthLimit: !!enabled });
+  sendToAllTabs('settings:preview-width-limit-changed', !!enabled);
+}
+
 function plainTextExtensionPattern() {
   const all = ['txt', 'log', ...getCustomTextExtensions()];
   return new RegExp('\\.(' + all.join('|') + ')$', 'i');
@@ -1719,6 +1731,12 @@ function buildAppMenu() {
               click: () => setThemeSource('dark'),
             },
           ],
+        },
+        {
+          label: t('menu.previewWidthLimit'),
+          type: 'checkbox',
+          checked: getPreviewWidthLimit(),
+          click: (item) => setPreviewWidthLimit(item.checked),
         },
         { type: 'separator' },
         {
@@ -4074,6 +4092,7 @@ ipcMain.handle('settings:set-language', (event, lang) => {
 });
 
 ipcMain.handle('settings:get-auto-save', () => getAutoSave());
+ipcMain.handle('settings:get-preview-width-limit', () => getPreviewWidthLimit());
 
 // Synchronous on purpose: the renderer saves from 'beforeunload', where an
 // async write would be cut off by the page going away.

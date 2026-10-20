@@ -76,9 +76,12 @@
     baseCss: '',
     hljsCss: '',
     previewZoom: 100,
-    // The toolbar's width toggle (↔): lifts the prose reading width of the
-    // viewer. Saved with the project, like the TOC fold.
-    previewFullWidth: false,
+    // Whether the viewer limits the prose reading width: the global default
+    // (Settings > Limit Viewer Width by Default), unless the toolbar's width
+    // toggle (↔) set this project's own choice (null = follow the default).
+    // The project's choice is saved with it, like the TOC fold.
+    previewWidthLimitDefault: true,
+    previewWidthLimit: null,
     // Fullscreen document view (see enterDocFullscreen) — deliberately not
     // part of the saved project state: it's a way to read right now, not a
     // layout the project should reopen in.
@@ -935,7 +938,7 @@
     state.cssEnabled = saved.cssEnabled !== undefined ? saved.cssEnabled : true;
     restorePreviewZoom(saved.previewZoom);
     el.tocPanel.classList.toggle('collapsed', !!saved.tocCollapsed);
-    state.previewFullWidth = !!saved.previewFullWidth;
+    state.previewWidthLimit = typeof saved.previewWidthLimit === 'boolean' ? saved.previewWidthLimit : null;
     applyPreviewFullWidth();
     let css = '';
     if (root) {
@@ -974,7 +977,7 @@
       tocCollapsed: el.tocPanel.classList.contains('collapsed'),
       scrollPositions: state.scrollPositions,
       previewZoom: state.previewZoom,
-      previewFullWidth: state.previewFullWidth,
+      previewWidthLimit: state.previewWidthLimit,
     };
     if (state.isActiveTab) {
       patch.lastOpenFile = state.currentFilePath || null;
@@ -1072,17 +1075,30 @@
     reportDocState();
   }
 
+  function isPreviewWidthLimited() {
+    return state.previewWidthLimit !== null ? state.previewWidthLimit : state.previewWidthLimitDefault;
+  }
+
   function applyPreviewFullWidth() {
+    const fullWidth = !isPreviewWidthLimited();
     const body = el.frame.contentDocument && el.frame.contentDocument.body;
-    if (body) body.classList.toggle('full-width', state.previewFullWidth);
-    el.btnFullWidth.classList.toggle('active', state.previewFullWidth);
+    if (body) body.classList.toggle('full-width', fullWidth);
+    el.btnFullWidth.classList.toggle('active', fullWidth);
   }
 
   function togglePreviewFullWidth() {
-    state.previewFullWidth = !state.previewFullWidth;
+    const limit = !isPreviewWidthLimited();
+    // Toggling back to the default drops the project's own choice, so the
+    // project follows later changes of the default again.
+    state.previewWidthLimit = limit === state.previewWidthLimitDefault ? null : limit;
     applyPreviewFullWidth();
     persistProjectState();
   }
+
+  window.mdviewer.onPreviewWidthLimitChanged((enabled) => {
+    state.previewWidthLimitDefault = enabled;
+    applyPreviewFullWidth();
+  });
 
   el.btnFullWidth.addEventListener('click', togglePreviewFullWidth);
 
@@ -4541,6 +4557,7 @@
     await initI18n();
     await loadCustomExtensions();
     state.autoSave = (await window.mdviewer.getAutoSave()) !== false;
+    state.previewWidthLimitDefault = (await window.mdviewer.getPreviewWidthLimit()) !== false;
     await initPreviewFrame();
     updateCssAppliedBadge();
   })();
