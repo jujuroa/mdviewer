@@ -670,6 +670,36 @@ function setPreviewWidthLimit(enabled) {
   sendToAllTabs('settings:preview-width-limit-changed', !!enabled);
 }
 
+// Where the source editor sits beside the viewer in edit mode (Settings >
+// Editor Layout): 'horizontal' puts it on the left (the default),
+// 'vertical' above the viewer. The edit-mode toolbar's layout button
+// switches it too, for every tab at once.
+const EDITOR_LAYOUTS = ['horizontal', 'vertical'];
+
+function getEditorLayout() {
+  const layout = loadSettings().editorLayout;
+  return EDITOR_LAYOUTS.includes(layout) ? layout : 'horizontal';
+}
+
+function setEditorLayout(layout) {
+  if (!EDITOR_LAYOUTS.includes(layout)) return;
+  saveSettings({ ...loadSettings(), editorLayout: layout });
+  buildAppMenu();
+  sendToAllTabs('settings:editor-layout-changed', layout);
+}
+
+// Whether the editor and the viewer scroll together in edit mode: on unless
+// turned off with the toggle on the splitter between them, for every tab
+// at once.
+function getScrollSync() {
+  return loadSettings().scrollSync !== false;
+}
+
+function setScrollSync(enabled) {
+  saveSettings({ ...loadSettings(), scrollSync: !!enabled });
+  sendToAllTabs('settings:scroll-sync-changed', !!enabled);
+}
+
 function plainTextExtensionPattern() {
   const all = ['txt', 'log', ...getCustomTextExtensions()];
   return new RegExp('\\.(' + all.join('|') + ')$', 'i');
@@ -1737,6 +1767,23 @@ function buildAppMenu() {
           type: 'checkbox',
           checked: getPreviewWidthLimit(),
           click: (item) => setPreviewWidthLimit(item.checked),
+        },
+        {
+          label: t('menu.editorLayout'),
+          submenu: [
+            {
+              label: t('menu.editorLayoutHorizontal'),
+              type: 'radio',
+              checked: getEditorLayout() === 'horizontal',
+              click: () => setEditorLayout('horizontal'),
+            },
+            {
+              label: t('menu.editorLayoutVertical'),
+              type: 'radio',
+              checked: getEditorLayout() === 'vertical',
+              click: () => setEditorLayout('vertical'),
+            },
+          ],
         },
         { type: 'separator' },
         {
@@ -4093,6 +4140,10 @@ ipcMain.handle('settings:set-language', (event, lang) => {
 
 ipcMain.handle('settings:get-auto-save', () => getAutoSave());
 ipcMain.handle('settings:get-preview-width-limit', () => getPreviewWidthLimit());
+ipcMain.handle('settings:get-editor-layout', () => getEditorLayout());
+ipcMain.handle('settings:set-editor-layout', (event, layout) => setEditorLayout(layout));
+ipcMain.handle('settings:get-scroll-sync', () => getScrollSync());
+ipcMain.handle('settings:set-scroll-sync', (event, enabled) => setScrollSync(enabled));
 
 // Synchronous on purpose: the renderer saves from 'beforeunload', where an
 // async write would be cut off by the page going away.

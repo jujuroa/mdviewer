@@ -245,9 +245,15 @@
     resizerEl.addEventListener('pointermove', (e) => {
       if (!dragging) return;
       const rect = targetEl.parentElement.getBoundingClientRect();
-      if (mode === 'left') {
+      // A function picks the side per drag, for a pane that can move.
+      const side = typeof mode === 'function' ? mode() : mode;
+      if (side === 'left') {
         targetEl.style.width = Math.max(160, e.clientX - rect.left) + 'px';
-      } else if (mode === 'bottom') {
+      } else if (side === 'top') {
+        // Leaves the pane below at least as tall as the pane's own minimum.
+        const height = Math.min(rect.height - 80 - resizerEl.offsetHeight, e.clientY - rect.top);
+        targetEl.style.height = Math.max(80, height) + 'px';
+      } else if (side === 'bottom') {
         targetEl.style.height = Math.max(80, rect.bottom - e.clientY) + 'px';
       } else {
         targetEl.style.width = Math.max(220, rect.right - e.clientX) + 'px';

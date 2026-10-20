@@ -761,6 +761,7 @@ html, body {
 .preview-toolbar button.toolbar-icon-btn:hover { color: var(--text); }
 #btn-fullscreen.hidden { display: none; }
 #btn-full-width.hidden { display: none; }
+#btn-editor-layout.hidden { display: none; }
 .preview-toolbar button#btn-full-width.active { color: var(--accent); }
 
 .toolbar-right {
@@ -1107,6 +1108,77 @@ html, body {
 }
 
 #editor-resizer.hidden { display: none; }
+
+/* The scroll sync toggle, centred on the editor splitter and overlapping
+   both panes a little (the splitter itself is only 4px). */
+#editor-resizer { position: relative; z-index: 1; }
+.scroll-sync-btn {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  background: var(--bg-app);
+  color: var(--accent);
+  cursor: pointer;
+}
+.scroll-sync-btn:hover { border-color: var(--accent); }
+.scroll-sync-btn svg {
+  width: 18px;
+  height: 18px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+}
+.scroll-sync-btn .scroll-sync-slash { display: none; }
+.scroll-sync-btn.off { color: var(--text-dim); }
+.scroll-sync-btn.off .scroll-sync-slash { display: inline; }
+
+/* Side by side, a height left by the stacked layout must not stop the
+   editor from filling the row. */
+.preview-body:not(.editor-stacked) #editor-pane { height: auto !important; }
+
+/* Stacked editor layout (Settings > Editor Layout): the editor above the
+   viewer, the TOC still the full height on the right. The editor's height
+   comes from the splitter (style.height); its width (style.width, kept for
+   the side-by-side layout) is overridden here. */
+.preview-body.editor-stacked {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-rows: auto auto minmax(0, 1fr);
+}
+.preview-body.editor-stacked #editor-pane {
+  grid-column: 1;
+  grid-row: 1;
+  width: auto !important;
+  min-width: 0;
+  max-width: none;
+  height: 45vh;
+  min-height: 80px;
+}
+.preview-body.editor-stacked #editor-resizer {
+  grid-column: 1;
+  grid-row: 2;
+}
+.preview-body.editor-stacked #preview-frame {
+  grid-column: 1;
+  grid-row: 3;
+  min-width: 0;
+  height: 100%;
+  min-height: 80px;
+}
+.preview-body.editor-stacked .toc-panel {
+  grid-column: 2;
+  grid-row: 1 / -1;
+}
 
 #preview-frame {
   flex: 1;

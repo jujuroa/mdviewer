@@ -30,6 +30,8 @@
             data-i18n-title="toolbar.fullscreenTitle" title="현재 문서 전체화면으로 보기 (F11)">⛶</button>
           <button id="btn-full-width" class="toolbar-icon-btn hidden"
             data-i18n-title="toolbar.fullWidthTitle" title="보기창 가로폭 제한 켜기/끄기">↔</button>
+          <button id="btn-editor-layout" class="toolbar-icon-btn hidden"
+            data-i18n-title="toolbar.editorLayoutTitle" title="편집창 배치를 좌우/상하로 전환">⇅</button>
           <button id="btn-save-source" class="btn-primary hidden" data-i18n="toolbar.saveBtn" data-i18n-title="toolbar.saveTitle" title="저장 (Ctrl+S)">저장</button>
           <button id="btn-refresh-puml" class="hidden" data-i18n="toolbar.refreshBtn" data-i18n-title="toolbar.refreshTitle" title="디스크에서 파일 다시 불러오기">새로고침</button>
           <button id="btn-toggle-edit" data-i18n="toolbar.editBtn" data-i18n-title="toolbar.editTitle" title="본문 편집 모드 전환 (Ctrl+Shift+E)">편집</button>
@@ -60,7 +62,15 @@
           <textarea id="md-source-editor" spellcheck="false"
             data-i18n-placeholder="editor.placeholder" placeholder="마크다운 소스를 입력하세요"></textarea>
         </div>
-        <div id="editor-resizer" class="resizer hidden"></div>
+        <div id="editor-resizer" class="resizer hidden">
+          <button id="btn-scroll-sync" class="scroll-sync-btn" tabindex="-1"
+            data-i18n-title="editor.scrollSyncOnTitle" title="스크롤 동기화 켜짐: 누르면 편집창과 보기창을 따로 스크롤">
+            <svg viewBox="0 0 16 16" aria-hidden="true">
+              <path d="M5.5 7V4.5a2.5 2.5 0 0 1 5 0V7M5.5 9v2.5a2.5 2.5 0 0 0 5 0V9M8 5.5v5" />
+              <path class="scroll-sync-slash" d="M2.5 2.5l11 11" />
+            </svg>
+          </button>
+        </div>
         <iframe id="preview-frame" title="markdown preview" sandbox="allow-same-origin"></iframe>
         <aside id="toc-panel" class="toc-panel">
           <div id="toc-panel-header" class="toc-panel-header" role="button" tabindex="0" data-i18n-title="toc.collapseTitle" title="목차 접기/펼치기">

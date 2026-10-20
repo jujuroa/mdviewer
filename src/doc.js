@@ -82,6 +82,13 @@
     // The project's choice is saved with it, like the TOC fold.
     previewWidthLimitDefault: true,
     previewWidthLimit: null,
+    // Where the source editor sits in edit mode: 'horizontal' (left of the
+    // viewer) or 'vertical' (above it). A global setting (Settings > Editor
+    // Layout), switched for every tab at once.
+    editorLayout: 'horizontal',
+    // Whether the editor and the viewer scroll together in edit mode (the
+    // toggle on the splitter between them). A global setting.
+    scrollSync: true,
     // Fullscreen document view (see enterDocFullscreen) — deliberately not
     // part of the saved project state: it's a way to read right now, not a
     // layout the project should reopen in.
@@ -115,6 +122,8 @@
     editorHighlight: document.getElementById('editor-highlight'),
     editorSyntax: document.getElementById('editor-syntax'),
     editorResizer: document.getElementById('editor-resizer'),
+    btnEditorLayout: document.getElementById('btn-editor-layout'),
+    btnScrollSync: document.getElementById('btn-scroll-sync'),
     btnToggleEdit: document.getElementById('btn-toggle-edit'),
     btnSaveSource: document.getElementById('btn-save-source'),
     btnRefreshPuml: document.getElementById('btn-refresh-puml'),
@@ -340,7 +349,7 @@
         persistProjectState();
       }, 400);
 
-      if (!state.suppressScrollSync && !viewerEditorSyncQueued) {
+      if (state.scrollSync && !state.suppressScrollSync && !viewerEditorSyncQueued) {
         viewerEditorSyncQueued = true;
         requestAnimationFrame(() => {
           viewerEditorSyncQueued = false;
@@ -1851,7 +1860,7 @@
   let viewerSyncQueued = false;
   el.mdSourceEditor.addEventListener('scroll', () => {
     syncEditorMirrorScroll();
-    if (state.suppressScrollSync || viewerSyncQueued) return;
+    if (!state.scrollSync || state.suppressScrollSync || viewerSyncQueued) return;
     viewerSyncQueued = true;
     requestAnimationFrame(() => {
       viewerSyncQueued = false;
@@ -1890,6 +1899,8 @@
     }
     const anchor = splitViewAnchor;
     splitViewAnchor = null;
+    // Unsynced, each side keeps its own place through the reflow.
+    if (!state.scrollSync) return;
     if (!anchor) {
       syncEditorScrollToViewer();
       return;
@@ -2353,8 +2364,56 @@
     }
     el.btnToggleEdit.classList.toggle('active', enabled);
     el.btnSaveSource.classList.toggle('hidden', !enabled);
+    el.btnEditorLayout.classList.toggle('hidden', !enabled);
     if (enabled) sizeEditorPaneForViewer();
   }
+
+  function editorStacked() {
+    return state.editorLayout === 'vertical';
+  }
+
+  // Stacked, the editor keeps its own height (style.height) and side by
+  // side its own width (style.width); ui.css ignores the other one, so each
+  // layout comes back at the size it was left at.
+  function applyEditorLayout() {
+    const stacked = editorStacked();
+    // Rewrapping the editor moves its text, so keep the source line on top.
+    const splitView = splitViewActive();
+    if (splitView) holdSplitViewAnchor();
+    el.previewBody.classList.toggle('editor-stacked', stacked);
+    el.editorResizer.classList.toggle('horizontal', stacked);
+    el.btnEditorLayout.textContent = stacked ? '⇄' : '⇅';
+    if (splitView && !stacked && !el.editorPane.style.width) sizeEditorPaneForViewer();
+  }
+
+  window.mdviewer.onEditorLayoutChanged((layout) => {
+    state.editorLayout = layout === 'vertical' ? 'vertical' : 'horizontal';
+    applyEditorLayout();
+  });
+
+  function applyScrollSync() {
+    el.btnScrollSync.classList.toggle('off', !state.scrollSync);
+    const key = state.scrollSync ? 'editor.scrollSyncOnTitle' : 'editor.scrollSyncOffTitle';
+    el.btnScrollSync.setAttribute('data-i18n-title', key);
+    el.btnScrollSync.title = t(key);
+    // Turning it back on lines the editor up with the viewer again.
+    if (state.scrollSync) syncEditorScrollToViewer();
+  }
+
+  window.mdviewer.onScrollSyncChanged((enabled) => {
+    state.scrollSync = enabled !== false;
+    applyScrollSync();
+  });
+
+  // The button sits on the splitter: pressing it must not start a drag.
+  el.btnScrollSync.addEventListener('pointerdown', (e) => e.stopPropagation());
+  el.btnScrollSync.addEventListener('click', () => {
+    window.mdviewer.setScrollSync(!state.scrollSync);
+  });
+
+  el.btnEditorLayout.addEventListener('click', () => {
+    window.mdviewer.setEditorLayout(editorStacked() ? 'horizontal' : 'vertical');
+  });
 
   // Opening the editor shouldn't squeeze the document: the viewer keeps the
   // width its prose column (body max-width) needs, and the editor gets the
@@ -2365,6 +2424,8 @@
   const EDITOR_OPEN_MIN_WIDTH = 400;
 
   function sizeEditorPaneForViewer() {
+    // Stacked, the editor takes none of the viewer's width.
+    if (editorStacked()) return;
     if (el.frame.classList.contains('hidden')) return;
     const doc = el.frame.contentDocument;
     if (!doc || !doc.body) return;
@@ -2460,12 +2521,15 @@
     const result = await window.mdviewer.renderMarkdownText(el.mdSourceEditor.value, baseDir, requestId);
     if (isStaleRequest(requestId)) return;
     if (result.ok) {
+      const viewerScroll = el.frame.contentWindow.scrollY;
       el.frame.contentDocument.body.innerHTML = result.html;
       refreshToc();
       // Re-rendering replaces the whole preview body, which would otherwise
       // reset its scroll to the top on every keystroke — snap it back to
-      // wherever the editor currently is instead.
-      syncViewerScrollToEditor();
+      // wherever the editor currently is instead (or, unsynced, to where
+      // the viewer itself was).
+      if (state.scrollSync) syncViewerScrollToEditor();
+      else el.frame.contentWindow.scrollTo(0, viewerScroll);
     }
   }
 
@@ -4129,7 +4193,9 @@
     // Size the pane, not the textarea: the textarea (and the highlight layer
     // behind it) must keep filling the pane, or they fall out of step with
     // it and stop following later window/splitter resizes.
-    if (splitView) {
+    // Stacked, the editor and the viewer share the width the TOC leaves, so
+    // there's no width to steal.
+    if (splitView && !editorStacked()) {
       const currentWidth = el.editorPane.getBoundingClientRect().width;
       const delta = expanding ? TOC_WIDTH_DELTA : -TOC_WIDTH_DELTA;
       const newWidth = Math.max(EDITOR_MIN_WIDTH, currentWidth - delta);
@@ -4385,7 +4451,7 @@
     await openFileLink(link);
   });
 
-  setupResizer(el.editorResizer, el.editorPane, 'left');
+  setupResizer(el.editorResizer, el.editorPane, () => (editorStacked() ? 'top' : 'left'));
 
   // ---------------------------------------------------------------------
   // Messages from the tab host (main.js)
@@ -4458,6 +4524,7 @@
         selection: [ta.selectionStart, ta.selectionEnd, ta.selectionDirection],
         scrollTop: ta.scrollTop,
         width: el.editorPane.style.width || '',
+        height: el.editorPane.style.height || '',
       };
     }
     return snapshot;
@@ -4473,6 +4540,7 @@
     if (editor && state.editMode) {
       const ta = el.mdSourceEditor;
       if (editor.width) el.editorPane.style.width = editor.width;
+      if (editor.height) el.editorPane.style.height = editor.height;
       if (typeof editor.text === 'string' && editor.text !== ta.value) {
         ta.value = editor.text;
         // Marks it unsaved and renders it, as typing it would have.
@@ -4558,6 +4626,10 @@
     await loadCustomExtensions();
     state.autoSave = (await window.mdviewer.getAutoSave()) !== false;
     state.previewWidthLimitDefault = (await window.mdviewer.getPreviewWidthLimit()) !== false;
+    state.editorLayout = (await window.mdviewer.getEditorLayout()) === 'vertical' ? 'vertical' : 'horizontal';
+    applyEditorLayout();
+    state.scrollSync = (await window.mdviewer.getScrollSync()) !== false;
+    applyScrollSync();
     await initPreviewFrame();
     updateCssAppliedBadge();
   })();

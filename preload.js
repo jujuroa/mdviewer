@@ -112,6 +112,14 @@ if (PAGE === 'index.html' || TAB_ID) contextBridge.exposeInMainWorld('mdviewer',
   getPreviewWidthLimit: () => ipcRenderer.invoke('settings:get-preview-width-limit'),
   onPreviewWidthLimitChanged: (callback) =>
     ipcRenderer.on('settings:preview-width-limit-changed', (event, enabled) => callback(enabled)),
+  getEditorLayout: () => ipcRenderer.invoke('settings:get-editor-layout'),
+  setEditorLayout: (layout) => ipcRenderer.invoke('settings:set-editor-layout', layout),
+  onEditorLayoutChanged: (callback) =>
+    ipcRenderer.on('settings:editor-layout-changed', (event, layout) => callback(layout)),
+  getScrollSync: () => ipcRenderer.invoke('settings:get-scroll-sync'),
+  setScrollSync: (enabled) => ipcRenderer.invoke('settings:set-scroll-sync', enabled),
+  onScrollSyncChanged: (callback) =>
+    ipcRenderer.on('settings:scroll-sync-changed', (event, enabled) => callback(enabled)),
   writeFileSync: (filePath, content) => ipcRenderer.sendSync('fs:write-file-sync', filePath, content),
   setCustomExtensions: (list) => ipcRenderer.invoke('settings:set-custom-extensions', list),
   getHiddenNames: () => ipcRenderer.invoke('settings:get-hidden-names'),
