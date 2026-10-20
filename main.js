@@ -484,7 +484,7 @@ function sendToWindowWhenLoaded(win, channel, ...args) {
 // file, scroll offset and panel layout.
 const windowProjects = new Map();
 
-// withTabs: also the window's document tabs ({ path, pinned } in order, and
+// withTabs: also the window's document tabs ({ path } in order, and
 // which one is on screen), for a relaunch, after which they are gone too.
 function openProjectsOf(win, { withTabs = false } = {}) {
   const entry = windowProjects.get(win.webContents.id);
@@ -494,7 +494,7 @@ function openProjectsOf(win, { withTabs = false } = {}) {
   if (host) {
     // Tabs in tab windows come back in the program window.
     const kept = tabsOwnedBy(win).filter((tab) => tab.meta.path && !tab.meta.instantView);
-    payload.tabs = kept.map((tab) => ({ path: tab.meta.path, pinned: tab.pinned }));
+    payload.tabs = kept.map((tab) => ({ path: tab.meta.path }));
     payload.activeTab = kept.findIndex((tab) => tab.id === host.activeId);
   }
   return payload;
@@ -1617,7 +1617,7 @@ function buildAppMenu() {
           accelerator: 'CmdOrCtrl+N',
           click: (item, win) => {
             const host = docHostFor(win);
-            if (host) createTab(host, { draft: true }, { pinned: true });
+            if (host) createTab(host, { draft: true });
           },
         },
         { type: 'separator' },
@@ -2069,7 +2069,7 @@ const DEFAULT_TAB_META = {
 // One per program window (key 'main', owner = the window itself) and one
 // per tab window (key 'aux-N', owner = the program window that opened it).
 const tabHosts = new Map();
-const tabsById = new Map(); // tab id -> { id, host, pinned, meta, init, frame }
+const tabsById = new Map(); // tab id -> { id, host, meta, init, frame }
 let nextTabId = 1;
 let nextTabWindowId = 1;
 // The CSS editor's unsaved text per project (normalized root -> { css,
@@ -2224,7 +2224,7 @@ function notifyTabsChanged(host, { focusId = null } = {}) {
   if (!host || host.owner.isDestroyed()) return;
   host.owner.webContents.send('tabs:changed', {
     container: host.key,
-    tabs: host.tabs.map((tab) => ({ id: tab.id, pinned: tab.pinned, ...tab.meta })),
+    tabs: host.tabs.map((tab) => ({ id: tab.id, ...tab.meta })),
     activeId: host.activeId,
     focusId,
   });
@@ -2255,11 +2255,10 @@ function activateNeighbour(host, index) {
 // init: what the page opens with (doc:init) — { filePath } or { draft },
 // plus instantView, editMode and target (a spot to show, see applyDocTarget
 // in doc.js), or a moved tab's snapshot.
-function createTab(host, init, { index, pinned = false, activate = true, focus = true } = {}) {
+function createTab(host, init, { index, activate = true, focus = true } = {}) {
   const tab = {
     id: nextTabId++,
     host,
-    pinned: !!pinned,
     meta: {
       ...DEFAULT_TAB_META,
       path: init.filePath || null,
@@ -2381,26 +2380,15 @@ function findTabForPath(owner, filePath) {
   return tabsOwnedBy(owner).find((tab) => samePath(tab.meta.path, filePath)) || null;
 }
 
-// Opens a document in a tab: the one already showing it, else the preview
-// tab (not kept open, nothing being edited in it), else a new one. pin:
-// a tab that stays rather than the preview tab.
-function openDocumentInTab(host, filePath, { pin = false, editMode = false, target = null, focus = true, instantView = false } = {}) {
+// Opens a document in a tab: the one already showing it, else a new one.
+function openDocumentInTab(host, filePath, { editMode = false, target = null, focus = true, instantView = false } = {}) {
   const existing = findTabForPath(host.owner, filePath);
   if (existing) {
-    if (pin) existing.pinned = true;
     activateTab(existing.host, existing.id, { focus });
     if (target || editMode) sendToTab(existing, 'doc:navigate', { target, editMode });
     return existing;
   }
-  const preview = pin ? null : host.tabs.find((tab) => !tab.pinned && !tab.meta.editMode && !tab.meta.dirty);
-  if (preview) {
-    preview.meta = { ...preview.meta, path: filePath, kind: fileKindOf(filePath), draft: false };
-    activateTab(host, preview.id, { focus });
-    if (preview.frame) sendToTab(preview, 'doc:navigate', { filePath, target, editMode });
-    else preview.init = { filePath, target, editMode };
-    return preview;
-  }
-  return createTab(host, { filePath, target, editMode, instantView }, { pinned: pin, focus });
+  return createTab(host, { filePath, target, editMode, instantView }, { focus });
 }
 
 // Puts a tab into another window (or another place in its own strip).
@@ -2430,7 +2418,6 @@ async function moveTab(tab, toHost, index) {
   if (fromHost.activeId === tab.id) activateNeighbour(fromHost, from);
   else notifyTabsChanged(fromHost);
   tab.host = toHost;
-  tab.pinned = true;
   const at = Number.isInteger(index) ? Math.max(0, Math.min(index, toHost.tabs.length)) : toHost.tabs.length;
   toHost.tabs.splice(at, 0, tab);
   activateTab(toHost, tab.id);
@@ -2673,7 +2660,7 @@ ipcMain.handle('tabs:open', (event, filePath, options = {}) => {
 ipcMain.handle('tabs:new-draft', (event, container) => {
   const host = senderHost(event, container);
   if (!host) return { ok: false };
-  createTab(host, { draft: true }, { pinned: true });
+  createTab(host, { draft: true });
   return { ok: true };
 });
 
@@ -2685,13 +2672,6 @@ ipcMain.handle('tabs:activate', (event, id) => {
 ipcMain.handle('tabs:close', async (event, id) => {
   const tab = tabFromEvent(event, id);
   return { closed: tab ? await closeTab(tab) : false };
-});
-
-ipcMain.handle('tabs:pin', (event, id) => {
-  const tab = tabFromEvent(event, id);
-  if (!tab) return;
-  tab.pinned = true;
-  notifyTabsChanged(tab.host);
 });
 
 // A tab dropped on a tab strip (container: which of the window page's) or
@@ -2729,18 +2709,6 @@ ipcMain.handle('tabs:show-context-menu', (event, id) => {
       click: () => closeTabs(host.tabs.slice(index + 1)),
     },
   ];
-  if (!tab.pinned) {
-    items.push(
-      { type: 'separator' },
-      {
-        label: t('tabs.keepOpen'),
-        click: () => {
-          tab.pinned = true;
-          notifyTabsChanged(host);
-        },
-      }
-    );
-  }
   items.push({ type: 'separator' });
   if (host.aux) {
     items.push({ label: t('tabs.moveToMainWindow'), click: () => moveTab(tab, hostOf(host.owner)) });
@@ -2769,7 +2737,7 @@ ipcMain.handle('tabs:restore', (event, tabs, activeIndex) => {
   let activeTab = null;
   tabs.forEach((entry, i) => {
     if (!entry || typeof entry.path !== 'string' || findTabForPath(host.owner, entry.path)) return;
-    const tab = createTab(host, { filePath: entry.path }, { pinned: !!entry.pinned, activate: false });
+    const tab = createTab(host, { filePath: entry.path }, { activate: false });
     if (i === activeIndex) activeTab = tab;
   });
   const target = activeTab || host.tabs[0];
@@ -2839,8 +2807,6 @@ ipcMain.on('doc:state', (event, docState) => {
     draft: !!docState.draft,
     instantView: !!docState.instantView,
   };
-  // A document being edited stays open: it stops being the preview tab.
-  if (tab.meta.editMode || tab.meta.dirty) tab.pinned = true;
   notifyTabsChanged(tab.host);
 });
 

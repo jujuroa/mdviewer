@@ -4641,17 +4641,10 @@
 
   window.mdviewer.onDocInit((init) => initDocument(init || {}));
 
-  // Another document for this tab (the preview tab taking the next click
-  // in the explorer), or a spot to show in the one it has (a search hit, a
-  // file link's line) when it was asked for while already open here.
-  window.mdviewer.onDocNavigate(async ({ filePath, target, editMode } = {}) => {
+  // A spot to show in this tab's document (a search hit, a file link's
+  // line) or edit mode, asked for while the document is already open here.
+  window.mdviewer.onDocNavigate(async ({ target, editMode } = {}) => {
     await appReady;
-    const sameDoc =
-      !filePath || (!!state.currentFilePath && normalizePath(state.currentFilePath) === normalizePath(filePath));
-    if (!sameDoc) {
-      if (!(await guardNavigation())) return;
-      await loadAndRenderByPath(filePath);
-    }
     if (editMode && state.currentFilePath && !state.editMode) await enterEditMode();
     applyDocTarget(target || {});
   });

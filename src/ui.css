@@ -623,7 +623,6 @@ html, body {
   border-top-color: var(--accent);
   color: var(--text);
 }
-.doc-tab.preview .doc-tab-label { font-style: italic; }
 .doc-tab.drop-before { box-shadow: inset 2px 0 0 var(--accent); }
 .doc-tab.drop-after { box-shadow: inset -2px 0 0 var(--accent); }
 
