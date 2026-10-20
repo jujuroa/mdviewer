@@ -102,14 +102,19 @@
   // File kinds and their icons
   // ---------------------------------------------------------------------
 
+  // Source files that open in the text viewer/editor and are shown as a
+  // highlighted code block (see code-languages.js).
+  const CODE_FILE_EXTENSIONS = new Set(Object.keys(window.MdvCodeLanguages.CODE_LANGUAGE_BY_EXT));
+
   // Whether a path's extension should open in the plain-text viewer/editor:
-  // the built-in .txt/.log set, plus any user-added custom extensions from
-  // the "Custom Extensions..." settings dialog.
+  // the built-in .txt/.log set and source files, plus any user-added custom
+  // extensions from the "Custom Extensions..." settings dialog.
   function isPlainTextPathWith(customExtensions, filePath) {
     if (/\.(txt|log)$/i.test(filePath)) return true;
     const m = /\.([a-zA-Z0-9]+)$/.exec(filePath);
     if (!m) return false;
-    return customExtensions.includes(m[1].toLowerCase());
+    const ext = m[1].toLowerCase();
+    return CODE_FILE_EXTENSIONS.has(ext) || customExtensions.includes(ext);
   }
 
   // Page-with-a-label-band icon for the files the app opens, used by the
@@ -286,6 +291,7 @@
     projectRootIn,
     escapeHtml,
     isPlainTextPathWith,
+    CODE_FILE_EXTENSIONS,
     fileBadgeSvg,
     treeAgeStep,
     TREE_AGE_STEPS_DAYS,

@@ -1079,6 +1079,46 @@ html, body {
 #editor-syntax .md-html { color: #569cd6; }
 #editor-syntax .md-comment { color: #6a737d; }
 
+/* Code in its language, in the colours of the viewer's dark code blocks
+   (highlight.js's github-dark.css), colours only as above. */
+#editor-syntax .hljs-doctag,
+#editor-syntax .hljs-keyword,
+#editor-syntax .hljs-meta .hljs-keyword,
+#editor-syntax .hljs-template-tag,
+#editor-syntax .hljs-template-variable,
+#editor-syntax .hljs-type,
+#editor-syntax .hljs-variable.language_ { color: #ff7b72; }
+#editor-syntax .hljs-title,
+#editor-syntax .hljs-title.class_,
+#editor-syntax .hljs-title.class_.inherited__,
+#editor-syntax .hljs-title.function_ { color: #d2a8ff; }
+#editor-syntax .hljs-attr,
+#editor-syntax .hljs-attribute,
+#editor-syntax .hljs-literal,
+#editor-syntax .hljs-meta,
+#editor-syntax .hljs-number,
+#editor-syntax .hljs-operator,
+#editor-syntax .hljs-variable,
+#editor-syntax .hljs-selector-attr,
+#editor-syntax .hljs-selector-class,
+#editor-syntax .hljs-selector-id { color: #79c0ff; }
+#editor-syntax .hljs-regexp,
+#editor-syntax .hljs-string,
+#editor-syntax .hljs-meta .hljs-string { color: #a5d6ff; }
+#editor-syntax .hljs-built_in,
+#editor-syntax .hljs-symbol { color: #ffa657; }
+#editor-syntax .hljs-comment,
+#editor-syntax .hljs-code,
+#editor-syntax .hljs-formula { color: #8b949e; }
+#editor-syntax .hljs-name,
+#editor-syntax .hljs-quote,
+#editor-syntax .hljs-selector-tag,
+#editor-syntax .hljs-selector-pseudo { color: #7ee787; }
+#editor-syntax .hljs-section { color: #1f6feb; }
+#editor-syntax .hljs-bullet { color: #f2cc60; }
+#editor-syntax .hljs-addition { color: #aff5b4; }
+#editor-syntax .hljs-deletion { color: #ffdcd7; }
+
 #editor-highlight mark {
   border-radius: 2px;
   color: transparent;

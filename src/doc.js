@@ -30,6 +30,7 @@
     resolveLinkCandidates,
     setupResizer,
   } = window.MdvCommon;
+  const { codeLanguageOf } = window.MdvCodeLanguages;
 
   const state = {
     // The window's open projects and its active one (see doc:context).
@@ -1946,6 +1947,50 @@
     return text ? `<span class="md-${cls}">${escapeSyntaxHtml(text)}</span>` : '';
   }
 
+  // Code is coloured by the same highlight.js the viewer uses (a browser
+  // build, see scripts/prepare-highlight.js; without it code stays one
+  // colour). Fences the viewer draws as diagrams aren't code to colour.
+  const DIAGRAM_FENCE_LANGS = new Set(['plantuml', 'puml', 'mermaid']);
+  // The layer is recoloured on every keystroke, and highlighting costs about
+  // 1ms per KB, so past this the editor leaves code one colour (the viewer
+  // still highlights it).
+  const EDITOR_CODE_HIGHLIGHT_MAX_LENGTH = 64 * 1024;
+
+  // The highlighted html of `code`, one entry per source line, or null if
+  // it isn't highlighted. Every line closes the spans still open at its end
+  // and the next reopens them, so each line stands on its own.
+  function highlightCodeLines(code, lang) {
+    const hljs = window.hljs;
+    if (!lang || !hljs || !hljs.getLanguage(lang) || code.length > EDITOR_CODE_HIGHLIGHT_MAX_LENGTH) return null;
+    let html;
+    try {
+      html = hljs.highlight(code, { language: lang, ignoreIllegals: true }).value;
+    } catch (e) {
+      return null;
+    }
+    const lines = [];
+    const open = [];
+    let line = '';
+    for (const [, openTag, closeTag, text] of html.matchAll(/(<span[^>]*>)|(<\/span>)|([^<]+)/g)) {
+      if (openTag) {
+        open.push(openTag);
+        line += openTag;
+      } else if (closeTag) {
+        open.pop();
+        line += closeTag;
+      } else {
+        const pieces = text.split('\n');
+        line += pieces[0];
+        for (let i = 1; i < pieces.length; i++) {
+          lines.push(line + '</span>'.repeat(open.length));
+          line = open.join('') + pieces[i];
+        }
+      }
+    }
+    lines.push(line);
+    return lines;
+  }
+
   // Inline constructs, tried at each position in order. Each `re` is sticky
   // (anchored at lastIndex) and `render` turns the match into html.
   const INLINE_SYNTAX = [
@@ -2036,9 +2081,16 @@
   function renderMarkdownSyntax(text) {
     const lines = text.split('\n');
     const out = [];
-    let fence = null; // { char, length } while inside a fenced block
+    let fence = null; // { char, length, lang, start } while inside a fenced block
     let inComment = false;
     let prevParagraph = false; // the previous line could be a setext heading
+
+    // A fenced block's lines go out in the plain code colour as they're
+    // passed, and are recoloured in its language once the block is complete.
+    const highlightFence = (end) => {
+      const highlighted = highlightCodeLines(lines.slice(fence.start, end).join('\n'), fence.lang);
+      if (highlighted) highlighted.forEach((html, i) => (out[fence.start + i] = html));
+    };
 
     lines.forEach((line, index) => {
       let html;
@@ -2049,6 +2101,7 @@
         m = line.match(FENCE_CLOSE_RE);
         if (m && m[1][0] === fence.char && m[1].length >= fence.length) {
           html = syntaxSpan('fence', line);
+          highlightFence(index);
           fence = null;
         } else {
           html = syntaxSpan('code-block', line);
@@ -2057,7 +2110,13 @@
         html = syntaxSpan('comment', line);
         inComment = line.lastIndexOf('-->') < Math.max(line.lastIndexOf('<!--'), 0) || !line.includes('-->');
       } else if ((m = line.match(FENCE_OPEN_RE)) && !(m[2][0] === '`' && m[3].includes('`'))) {
-        fence = { char: m[2][0], length: m[2].length };
+        const lang = m[3].trim().split(/\s+/)[0].toLowerCase();
+        fence = {
+          char: m[2][0],
+          length: m[2].length,
+          lang: DIAGRAM_FENCE_LANGS.has(lang) ? null : lang,
+          start: index + 1,
+        };
         html = syntaxSpan('fence', m[1] + m[2]) + syntaxSpan('fence-info', m[3]);
       } else if ((m = line.match(ATX_HEADING_RE))) {
         html = `<span class="md-heading md-h${m[2].length}">` +
@@ -2083,7 +2142,15 @@
       out.push(html);
       prevParagraph = paragraph;
     });
+    // An unclosed fence runs to the end of the document, as in the viewer.
+    if (fence) highlightFence(lines.length);
     return out.join('\n');
+  }
+
+  // A source file in the editor, coloured as the viewer shows it.
+  function renderCodeSyntax(text) {
+    const lines = highlightCodeLines(text, codeLanguageOf(state.currentFilePath, window.hljs));
+    return lines ? lines.join('\n') : escapeSyntaxHtml(text);
   }
 
   // The layers have no scrollbar of their own, so they are padded by the
@@ -2107,7 +2174,12 @@
     requestAnimationFrame(() => {
       editorSyntaxQueued = false;
       const value = el.mdSourceEditor.value;
-      const html = state.currentFileKind === 'markdown' ? renderMarkdownSyntax(value) : escapeSyntaxHtml(value);
+      const html =
+        state.currentFileKind === 'markdown'
+          ? renderMarkdownSyntax(value)
+          : state.currentFileKind === 'text'
+            ? renderCodeSyntax(value)
+            : escapeSyntaxHtml(value);
       // The trailing newline gives a final empty line a line box, as the
       // textarea has, so the layer can scroll as far as the textarea does.
       el.editorSyntax.innerHTML = html + '\n';
@@ -2508,7 +2580,7 @@
       return;
     }
     if (state.currentFileKind === 'text') {
-      const result = await window.mdviewer.renderPlainTextText(el.mdSourceEditor.value);
+      const result = await window.mdviewer.renderPlainTextText(el.mdSourceEditor.value, state.currentFilePath);
       if (result.ok) {
         el.frame.contentDocument.body.innerHTML = result.html;
         refreshToc();
@@ -4396,12 +4468,12 @@
     }
   }
 
-  // The plain-text view is one <pre> without per-line markers, so the line
-  // is found by counting newlines through its text.
+  // The plain-text (or source code) view is one <pre> without per-line
+  // markers, so the line is found by counting newlines through its text.
   function scrollPlainTextToLine(line) {
     const doc = el.frame.contentDocument;
     const win = el.frame.contentWindow;
-    const pre = doc && doc.querySelector('.plaintext-view');
+    const pre = doc && doc.querySelector('.plaintext-view, .code-view');
     if (!pre) return;
     const walker = doc.createTreeWalker(pre, NodeFilter.SHOW_TEXT);
     let remaining = line;

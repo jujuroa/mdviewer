@@ -10,6 +10,7 @@ const taskLists = require('markdown-it-task-lists');
 const footnote = require('markdown-it-footnote');
 const hljs = require('highlight.js');
 const sanitizeHtml = require('sanitize-html');
+const { CODE_LANGUAGE_BY_EXT, CODE_HIGHLIGHT_MAX_LENGTH, codeLanguageOf } = require('./src/code-languages.js');
 const { DEFAULT_LANGUAGE, SUPPORTED_LANGUAGES, STRINGS, translate } = require('./assets/i18n.js');
 
 // A preview build (`npm run dist:preview`) carries a prerelease version such
@@ -557,7 +558,9 @@ function saveSettings(settings) {
   fs.writeFileSync(settingsFilePath(), JSON.stringify(settings, null, 2), 'utf-8');
 }
 
-const BUILTIN_KIND_EXTENSIONS = new Set(['md', 'markdown', 'puml', 'json', 'txt', 'log']);
+const BUILTIN_KIND_EXTENSIONS = new Set([
+  'md', 'markdown', 'puml', 'json', 'txt', 'log', ...Object.keys(CODE_LANGUAGE_BY_EXT),
+]);
 
 function normalizeExtensionList(list) {
   if (!Array.isArray(list)) return [];
@@ -701,7 +704,7 @@ function setScrollSync(enabled) {
 }
 
 function plainTextExtensionPattern() {
-  const all = ['txt', 'log', ...getCustomTextExtensions()];
+  const all = ['txt', 'log', ...Object.keys(CODE_LANGUAGE_BY_EXT), ...getCustomTextExtensions()];
   return new RegExp('\\.(' + all.join('|') + ')$', 'i');
 }
 
@@ -1222,13 +1225,27 @@ function renderJsonFile(filePath) {
   return renderJsonText(raw);
 }
 
-function renderPlainText(text) {
+// A source file renders as one fenced code block of its language (the same
+// markup markdown-it gives a fence, so it picks up the same styling).
+function renderPlainText(text, filePath) {
+  const lang = codeLanguageOf(filePath, hljs);
+  if (lang) {
+    let body = null;
+    if (text.length <= CODE_HIGHLIGHT_MAX_LENGTH) {
+      try {
+        body = hljs.highlight(text, { language: lang, ignoreIllegals: true }).value;
+      } catch (e) {
+        /* fall through to escaping */
+      }
+    }
+    return `<pre class="code-view"><code class="language-${lang}">${body ?? escapeHtmlText(text)}</code></pre>`;
+  }
   return `<pre class="plaintext-view">${escapeHtmlText(text)}</pre>`;
 }
 
 function renderPlainTextFile(filePath) {
   const raw = fs.readFileSync(filePath, 'utf-8');
-  return renderPlainText(raw);
+  return renderPlainText(raw, filePath);
 }
 
 function isHidden(name) {
@@ -3009,12 +3026,15 @@ ipcMain.handle('dialog:open-file', async (event) => {
     filters: [
       {
         name: 'Supported Files',
-        extensions: ['md', 'markdown', 'puml', 'json', 'txt', 'log', ...customExtensions],
+        extensions: [
+          'md', 'markdown', 'puml', 'json', 'txt', 'log', ...Object.keys(CODE_LANGUAGE_BY_EXT), ...customExtensions,
+        ],
       },
       { name: 'Markdown', extensions: ['md', 'markdown'] },
       { name: 'PlantUML', extensions: ['puml'] },
       { name: 'JSON', extensions: ['json'] },
       { name: 'Text', extensions: ['txt', 'log', ...customExtensions] },
+      { name: 'Source Code', extensions: Object.keys(CODE_LANGUAGE_BY_EXT) },
     ],
   });
   if (result.canceled || result.filePaths.length === 0) return null;
@@ -3457,9 +3477,9 @@ ipcMain.handle('json:render-text', (event, text) => {
   }
 });
 
-ipcMain.handle('plaintext:render-text', (event, text) => {
+ipcMain.handle('plaintext:render-text', (event, text, filePath) => {
   try {
-    return { ok: true, html: renderPlainText(text) };
+    return { ok: true, html: renderPlainText(text, filePath) };
   } catch (err) {
     return { ok: false, error: err.message };
   }

@@ -152,6 +152,10 @@ vite.config.ts.timestamp-*
 # scripts/prepare-plantuml.js — not committed, regenerated on demand.
 /thirdparty/
 
+# Browser build of highlight.js for the editor, generated from node_modules
+# by scripts/prepare-highlight.js.
+/src/vendor/highlight/
+
 # Local scratch and build output, not shared: a throwaway project folder used
 # to try the viewer against, the packaged installer, and npm start's captured
 # console output (not matched by *.log above).

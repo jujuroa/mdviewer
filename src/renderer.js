@@ -18,6 +18,7 @@
     projectRootIn,
     escapeHtml,
     isPlainTextPathWith,
+    CODE_FILE_EXTENSIONS,
     fileBadgeSvg,
     treeAgeStep,
     TREE_AGE_STEPS_DAYS,
@@ -129,7 +130,7 @@
   // Custom text extensions settings
   // ---------------------------------------------------------------------
 
-  const BUILTIN_KIND_EXTENSIONS = new Set(['md', 'markdown', 'puml', 'json', 'txt', 'log']);
+  const BUILTIN_KIND_EXTENSIONS = new Set(['md', 'markdown', 'puml', 'json', 'txt', 'log', ...CODE_FILE_EXTENSIONS]);
 
   async function loadCustomExtensions() {
     const result = await window.mdviewer.getCustomExtensions();

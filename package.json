@@ -6,7 +6,8 @@
   "scripts": {
     "prepare:plantuml": "node scripts/prepare-plantuml.js",
     "prepare:mermaid": "node scripts/prepare-mermaid.js",
-    "prepare:runtimes": "npm run prepare:plantuml && npm run prepare:mermaid",
+    "prepare:highlight": "node scripts/prepare-highlight.js",
+    "prepare:runtimes": "npm run prepare:plantuml && npm run prepare:mermaid && npm run prepare:highlight",
     "prestart": "npm run prepare:runtimes",
     "start": "node scripts/start.js",
     "prepack": "npm run prepare:runtimes",
