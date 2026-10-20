@@ -246,6 +246,11 @@ const STRINGS = {
     'terminal.closeTitle': 'Close terminal',
     'terminal.newTabTitle': 'New terminal tab',
     'terminal.closeTabTitle': 'Close this tab',
+    'terminal.duplicateTab': 'Duplicate',
+    'terminal.newProjectTabTitle': 'New terminal at the root of {name}',
+    'terminal.restartTab': 'Restart',
+    'terminal.closeTab': 'Close',
+    'terminal.closeOtherTabs': 'Close Others',
     'terminal.shellExited': 'Shell exited (code {code})',
 
     'preview.emptyState': 'Open a folder and select a markdown file',
@@ -535,6 +540,11 @@ const STRINGS = {
     'terminal.closeTitle': '터미널 닫기',
     'terminal.newTabTitle': '새 터미널 탭',
     'terminal.closeTabTitle': '이 탭 닫기',
+    'terminal.duplicateTab': '복제',
+    'terminal.newProjectTabTitle': '{name} 루트에서 새 터미널',
+    'terminal.restartTab': '다시 시작',
+    'terminal.closeTab': '닫기',
+    'terminal.closeOtherTabs': '다른 탭 닫기',
     'terminal.shellExited': '셸이 종료되었습니다 (code {code})',
 
     'preview.emptyState': '폴더를 열고 마크다운 파일을 선택하세요',

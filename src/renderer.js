@@ -2550,7 +2550,10 @@
   // while no project is open) and goes when that project is closed.
   // Switching projects brings up the tab last used in that project. The
   // tab's id is the key main.js files its PTY under.
-  const terminalSessions = new Map(); // id -> { id, cwd, projectKey, term, fitAddon, container, tab, started }
+  // The tabs are shown grouped by project, in the explorer's project
+  // order, and in this map's order within a group (see
+  // renderTerminalTabLabels).
+  const terminalSessions = new Map(); // id -> { id, cwd, liveCwd, projectKey, term, fitAddon, container, tab, started }
   const lastTerminalByProject = new Map(); // projectKey -> id
   let activeTerminalId = null;
   let terminalSeq = 0;
@@ -2567,7 +2570,9 @@
     return terminalSessions.get(activeTerminalId) || null;
   }
 
-  function createTerminalSession({ cwd, projectKey }) {
+  // after: a session to place the new tab right behind (see
+  // duplicateTerminalTab); otherwise it goes last.
+  function createTerminalSession({ cwd, projectKey, after = null }) {
     const id = `term-${++terminalSeq}`;
     const container = document.createElement('div');
     container.className = 'terminal-session hidden';
@@ -2626,9 +2631,40 @@
       }
     });
 
-    const session = { id, cwd, projectKey, term, fitAddon, container, tab: null, started: false };
+    const session = { id, cwd, liveCwd: null, projectKey, term, fitAddon, container, tab: null, started: false };
+    // The shell's current folder, as the shell reports it: OSC 9;9 (the
+    // PowerShell prompt main.js sets up) or OSC 7 (file://host/path, sent
+    // by many POSIX shell setups). Without either, liveCwd stays null and
+    // the tab's starting folder stands in for it.
+    term.parser.registerOscHandler(9, (data) => {
+      const m = /^9;(.*)$/s.exec(data);
+      if (!m) return false;
+      const dir = m[1].replace(/^"(.*)"$/s, '$1');
+      if (dir) session.liveCwd = dir;
+      return true;
+    });
+    term.parser.registerOscHandler(7, (data) => {
+      try {
+        const url = new URL(data);
+        if (url.protocol !== 'file:') return false;
+        let dir = decodeURIComponent(url.pathname);
+        if (/^\/[A-Za-z]:/.test(dir)) dir = dir.slice(1).replace(/\//g, '\\');
+        if (dir) session.liveCwd = dir;
+      } catch (err) {
+        return false;
+      }
+      return true;
+    });
     session.tab = createTerminalTab(session);
-    terminalSessions.set(id, session);
+    if (after && terminalSessions.has(after.id)) {
+      const entries = [...terminalSessions.entries()];
+      const at = entries.findIndex(([key]) => key === after.id) + 1;
+      entries.splice(at, 0, [id, session]);
+      terminalSessions.clear();
+      for (const [key, value] of entries) terminalSessions.set(key, value);
+    } else {
+      terminalSessions.set(id, session);
+    }
     return session;
   }
 
@@ -2657,13 +2693,66 @@
     tab.addEventListener('auxclick', (e) => {
       if (e.button === 1) closeTerminalTab(session.id);
     });
-    el.terminalTabs.appendChild(tab);
+    tab.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      window.mdviewer.showTerminalTabContextMenu(session.id, { hasOthers: terminalSessions.size > 1 });
+    });
     return tab;
+  }
+
+  // The tabs of each project sit together in a group of their own, in the
+  // explorer's project order (the home-folder shell's group, used while no
+  // project is open, comes last). With more than one group, each starts
+  // with its project's name, and a "+" beside it for a new shell at that
+  // project's root, and a divider sets it off from the one before; the
+  // active project's name is highlighted. Tab elements are moved, not
+  // rebuilt, so a tab keeps its listeners and its place in the scroll.
+  function layoutTerminalTabGroups() {
+    const keys = [...state.projects, ''];
+    for (const session of terminalSessions.values()) {
+      if (!keys.includes(session.projectKey)) keys.push(session.projectKey);
+    }
+    const used = keys.filter((key) => [...terminalSessions.values()].some((s) => s.projectKey === key));
+    const groups = new Map();
+    for (const group of el.terminalTabs.querySelectorAll(':scope > .terminal-tab-group')) {
+      groups.set(group.dataset.projectKey, group);
+    }
+    for (const [key, group] of groups) {
+      if (!used.includes(key)) group.remove();
+    }
+    for (const key of used) {
+      let group = groups.get(key);
+      if (!group) {
+        group = document.createElement('div');
+        group.className = 'terminal-tab-group';
+        group.dataset.projectKey = key;
+        const name = document.createElement('span');
+        name.className = 'terminal-tab-group-label';
+        const add = document.createElement('button');
+        add.className = 'terminal-tab-group-new';
+        add.textContent = '+';
+        add.addEventListener('click', () => newTerminalTabAtRoot(key));
+        group.append(name, add);
+      }
+      const name = group.querySelector('.terminal-tab-group-label');
+      name.textContent = key ? basenameOf(key) || key : '~';
+      name.title = key || '~';
+      name.classList.toggle('hidden', used.length < 2);
+      const add = group.querySelector('.terminal-tab-group-new');
+      add.title = t('terminal.newProjectTabTitle', { name: name.textContent });
+      add.classList.toggle('hidden', used.length < 2);
+      group.classList.toggle('active-project', used.length > 1 && key === activeTerminalKey());
+      for (const session of terminalSessions.values()) {
+        if (session.projectKey === key) group.appendChild(session.tab);
+      }
+      el.terminalTabs.appendChild(group);
+    }
   }
 
   // Tabs are named after their folder; two tabs on the same folder are
   // told apart by a number.
   function renderTerminalTabLabels() {
+    layoutTerminalTabGroups();
     const seen = new Map();
     for (const session of terminalSessions.values()) {
       const name = session.cwd ? basenameOf(session.cwd) || session.cwd : '~';
@@ -2918,9 +3007,40 @@
     await startTerminalSession(session);
   }
 
-  // Restarts only the shell on screen; the other tabs keep running.
-  async function restartTerminal() {
-    const session = activeTerminal();
+  // A group's "+": another shell at its project's root, last in the group.
+  async function newTerminalTabAtRoot(projectKey) {
+    const session = createTerminalSession({ cwd: projectKey, projectKey });
+    activateTerminal(session.id);
+    await startTerminalSession(session);
+  }
+
+  // Duplicate (tab right-click): another shell for the same project, in
+  // the folder the shell has moved to if it has reported one (see liveCwd
+  // in createTerminalSession), placed right after the original.
+  async function duplicateTerminalTab(id) {
+    const original = terminalSessions.get(id);
+    if (!original) return;
+    const session = createTerminalSession({
+      cwd: original.liveCwd || original.cwd,
+      projectKey: original.projectKey,
+      after: original,
+    });
+    activateTerminal(session.id);
+    await startTerminalSession(session);
+  }
+
+  function closeOtherTerminalTabs(id) {
+    if (!terminalSessions.has(id)) return;
+    for (const session of [...terminalSessions.values()]) {
+      if (session.id !== id) disposeTerminalSession(session);
+    }
+    activateTerminal(id);
+  }
+
+  // Restarts only the given shell (the one on screen by default); the
+  // other tabs keep running.
+  async function restartTerminal(id = activeTerminalId) {
+    const session = terminalSessions.get(id);
     if (!session) return;
     await window.mdviewer.stopTerminal(session.id);
     session.term.reset();
@@ -2936,7 +3056,13 @@
     const session = activeTerminal();
     if (session) session.term.clear();
   });
-  el.btnTerminalRestart.addEventListener('click', restartTerminal);
+  el.btnTerminalRestart.addEventListener('click', () => restartTerminal());
+  window.mdviewer.onTerminalTabAction(({ key, action }) => {
+    if (action === 'duplicate') duplicateTerminalTab(key);
+    else if (action === 'restart') restartTerminal(key);
+    else if (action === 'close') closeTerminalTab(key);
+    else if (action === 'close-others') closeOtherTerminalTabs(key);
+  });
   window.mdviewer.onOpenInTerminal(({ dir }) => openTerminalAt(dir));
 
   window.mdviewer.onTerminalData((id, data) => {

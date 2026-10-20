@@ -2847,12 +2847,21 @@ function spawnTerminalFor(event, key, cwd, cols, rows) {
   // OEM/ANSI codepage, not UTF-8, which garbles non-ASCII (e.g. Korean)
   // output/filenames even under ConPTY. Force UTF-8 before dropping into
   // the interactive session.
+  // The prompt is also wrapped to report the shell's current folder before
+  // each prompt (OSC 9;9, as Windows Terminal reads it), so "Duplicate" on
+  // a terminal tab can start the copy where the shell has cd'd to. -Command
+  // runs after the profile, so this wraps whatever prompt the profile set.
   const shellArgs = isWin
     ? [
         '-NoLogo',
         '-NoExit',
         '-Command',
-        '[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; chcp 65001 | Out-Null',
+        '[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; chcp 65001 | Out-Null; ' +
+          '$global:__mdvPrompt = $function:prompt; ' +
+          'function global:prompt { ' +
+          "$loc = $executionContext.SessionState.Path.CurrentLocation; $out = ''; " +
+          "if ($loc.Provider.Name -eq 'FileSystem') { $out = [char]27 + ']9;9;' + [char]34 + $loc.ProviderPath + [char]34 + [char]7 }; " +
+          '$out + (& $global:__mdvPrompt) }',
       ]
     : [];
 
@@ -4159,6 +4168,24 @@ ipcMain.handle('term:resize', (event, key, cols, rows) => {
 
 ipcMain.handle('term:stop', (event, key) => {
   killTerminal(event.sender.id, key || '');
+  return { ok: true };
+});
+
+// Right-click on a terminal tab. The window page owns the tabs, so the
+// choice goes back to it (terminal:tab-action) to carry out.
+ipcMain.handle('term:show-tab-context-menu', (event, key, { hasOthers } = {}) => {
+  const sender = event.sender;
+  const action = (name) => () => {
+    if (!sender.isDestroyed()) sender.send('terminal:tab-action', { key, action: name });
+  };
+  const menu = Menu.buildFromTemplate([
+    { label: t('terminal.duplicateTab'), click: action('duplicate') },
+    { label: t('terminal.restartTab'), click: action('restart') },
+    { type: 'separator' },
+    { label: t('terminal.closeTab'), click: action('close') },
+    { label: t('terminal.closeOtherTabs'), enabled: !!hasOthers, click: action('close-others') },
+  ]);
+  menu.popup({ window: windowFor(sender) });
   return { ok: true };
 });
 

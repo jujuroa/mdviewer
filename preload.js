@@ -118,6 +118,7 @@ if (PAGE === 'index.html' || TAB_ID) contextBridge.exposeInMainWorld('mdviewer',
   sendTerminalInput: (key, data) => ipcRenderer.invoke('term:input', key, data),
   resizeTerminal: (key, cols, rows) => ipcRenderer.invoke('term:resize', key, cols, rows),
   stopTerminal: (key) => ipcRenderer.invoke('term:stop', key),
+  showTerminalTabContextMenu: (key, options) => ipcRenderer.invoke('term:show-tab-context-menu', key, options),
 
   clipboardWriteText: (text) => ipcRenderer.invoke('clipboard:write-text', text),
   clipboardWriteImage: (pngDataUrl) => ipcRenderer.invoke('clipboard:write-image', pngDataUrl),
@@ -225,5 +226,10 @@ if (PAGE === 'index.html' || TAB_ID) contextBridge.exposeInMainWorld('mdviewer',
     const listener = (event, key, code) => callback(key, code);
     ipcRenderer.on('term:exit', listener);
     return () => ipcRenderer.removeListener('term:exit', listener);
+  },
+  onTerminalTabAction: (callback) => {
+    const listener = (event, payload) => callback(payload);
+    ipcRenderer.on('terminal:tab-action', listener);
+    return () => ipcRenderer.removeListener('terminal:tab-action', listener);
   },
 });

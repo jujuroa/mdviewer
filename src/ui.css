@@ -1796,6 +1796,50 @@ body.tab-window .doc-tab { -webkit-app-region: no-drag; }
 }
 .terminal-tabs::-webkit-scrollbar { display: none; }
 
+/* A project's tabs, kept together; with several projects each group opens
+   with the project's name and a divider sets it off from the one before. */
+.terminal-tab-group {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+}
+.terminal-tab-group + .terminal-tab-group {
+  margin-left: 4px;
+  padding-left: 6px;
+  border-left: 1px solid #4a4a4a;
+}
+.terminal-tab-group-label {
+  flex-shrink: 0;
+  max-width: 140px;
+  padding: 0 4px 0 2px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: #6f6f6f;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: default;
+}
+.terminal-tab-group.active-project .terminal-tab-group-label { color: #4fc1ff; }
+.terminal-tab-group-label.hidden { display: none; }
+.terminal-tab-group-new {
+  flex-shrink: 0;
+  width: 18px;
+  height: 18px;
+  margin-right: 2px;
+  padding: 0;
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+  color: #8a8a8a;
+  font-size: 13px;
+  line-height: 16px;
+  cursor: pointer;
+}
+.terminal-tab-group-new:hover { background: #2d2d2d; color: #d4d4d4; }
+.terminal-tab-group-new.hidden { display: none; }
+
 .terminal-tab {
   display: flex;
   align-items: center;
