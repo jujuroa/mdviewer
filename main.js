@@ -16,6 +16,7 @@ const { DEFAULT_LANGUAGE, SUPPORTED_LANGUAGES, STRINGS, translate } = require('.
 const { samePath, isPathInside, openArgFromArgv } = require('./lib/paths.js');
 const { neighbourIndex, reorderIndex, insertIndex } = require('./lib/tab-strip.js');
 const { contentVersion, writeIfUnchanged } = require('./lib/doc-version.js');
+const { isAppPageUrl, docTabIdOf, subframeNavigationAllowed } = require('./lib/app-frames.js');
 
 // A preview build (`npm run dist:preview`) carries a prerelease version such
 // as 1.3.0-preview.3 and installs over the released app, so once it is running
@@ -2356,6 +2357,73 @@ function closeTabWindowIfEmpty(host) {
   host.win.close();
 }
 
+// ---- The app's IPC and its pages ----
+// Only the app's own pages talk to main: a program window's page (its top
+// frame, src/index.html) and the document tab pages in it (iframes right
+// under that page, at doc.html?tab=N for a tab of that window). Every
+// handler is registered through appIpc, which turns anything else away —
+// a frame inside a document, and from 2.x add-on frames, which get their
+// own bridge instead. Frames are also kept from reaching the app's pages
+// by navigating (see guardFrameNavigation), so a frame cannot become one.
+
+const WINDOW_PAGE_URL = pathToFileURL(path.join(__dirname, 'src', 'index.html')).href;
+const APP_PAGES = { docPageUrl: DOC_PAGE_URL, appPageUrls: [WINDOW_PAGE_URL, DOC_PAGE_URL] };
+
+function isAppSender(event) {
+  const frame = event.senderFrame;
+  const win = windowFor(event.sender);
+  if (!frame || !win) return false;
+  const owner = ownerOf(win);
+  if (!appWindows.has(owner)) return false;
+  if (!frame.parent) return win === owner && isAppPageUrl(frame.url, [WINDOW_PAGE_URL]);
+  if (frame.parent.parent) return false;
+  const tab = tabsById.get(docTabIdOf(frame.url, DOC_PAGE_URL));
+  return !!tab && tab.kind === 'doc' && tab.host.owner === owner;
+}
+
+// Logged once per channel and address, so a frame that keeps trying
+// doesn't flood the log.
+const refusedIpc = new Set();
+function refuseIpc(event, channel) {
+  const url = event.senderFrame ? event.senderFrame.url : '?';
+  const key = `${channel} ${url}`;
+  if (refusedIpc.has(key)) return;
+  refusedIpc.add(key);
+  console.warn(`[ipc] refused ${channel} from ${url}`);
+}
+
+const appIpc = {
+  handle(channel, listener) {
+    ipcMain.handle(channel, (event, ...args) => {
+      if (isAppSender(event)) return listener(event, ...args);
+      refuseIpc(event, channel);
+      throw new Error(`${channel} is not available to this frame`);
+    });
+  },
+  on(channel, listener) {
+    ipcMain.on(channel, (event, ...args) => {
+      if (isAppSender(event)) return listener(event, ...args);
+      refuseIpc(event, channel);
+      // A sendSync caller waits for this.
+      event.returnValue = null;
+    });
+  },
+};
+
+// Frames below a window's page (tabs, and whatever is inside them) never
+// navigate to an app page, and a tab's page never navigates away.
+function guardFrameNavigation(win) {
+  win.webContents.on('will-frame-navigate', (details) => {
+    if (details.isMainFrame) return;
+    const frame = details.frame;
+    const fromUrl = frame ? frame.url : '';
+    const tabLevel = !!frame && !!frame.parent && !frame.parent.parent;
+    if (subframeNavigationAllowed({ fromUrl, targetUrl: details.url, tabLevel }, APP_PAGES)) return;
+    details.preventDefault();
+    console.warn(`[nav] blocked a frame going from ${fromUrl || 'nothing'} to ${details.url}`);
+  });
+}
+
 // ---- Asking a tab's page ----
 // tab:ask { id, kind } → tab:answer (id, value). kind 'close': may it close
 // (unsaved text saved or let go)? kind 'snapshot': what it holds, for the
@@ -2391,7 +2459,7 @@ function settleTabAsksOf(owner) {
 }
 
 // Only the page that was asked answers.
-ipcMain.on('tab:answer', (event, id, value) => {
+appIpc.on('tab:answer', (event, id, value) => {
   const ask = tabAsks.get(id);
   if (ask && senderTab(event) === ask.tab) ask.settle(value);
 });
@@ -2627,6 +2695,8 @@ async function returnTabsToOwner(host) {
 // What a program window and a tab window both do for the document on
 // screen in them.
 function wireDocWindowEvents(win, host) {
+  guardFrameNavigation(win);
+
   // Mouse "back"/"forward" buttons (Windows: XButton1/XButton2) — the app
   // has no real browser-style navigation for webContents.goBack() to
   // operate on (every document switch is a same-page innerHTML swap, not a
@@ -2700,26 +2770,26 @@ function tabFromEvent(event, id) {
 
 // ---- The window page's side ----
 
-ipcMain.handle('tabs:open', (event, filePath, options = {}) => {
+appIpc.handle('tabs:open', (event, filePath, options = {}) => {
   const host = senderHost(event);
   if (!host || typeof filePath !== 'string' || !filePath) return { ok: false };
   const tab = openDocumentInTab(host, filePath, options || {});
   return { ok: true, id: tab.id };
 });
 
-ipcMain.handle('tabs:new-draft', (event, container) => {
+appIpc.handle('tabs:new-draft', (event, container) => {
   const host = senderHost(event, container);
   if (!host) return { ok: false };
   createTab(host, { draft: true });
   return { ok: true };
 });
 
-ipcMain.handle('tabs:activate', (event, id) => {
+appIpc.handle('tabs:activate', (event, id) => {
   const tab = tabFromEvent(event, id);
   if (tab) activateTab(tab.host, id);
 });
 
-ipcMain.handle('tabs:close', async (event, id) => {
+appIpc.handle('tabs:close', async (event, id) => {
   const tab = tabFromEvent(event, id);
   return { closed: tab ? await closeTab(tab) : false };
 });
@@ -2727,7 +2797,7 @@ ipcMain.handle('tabs:close', async (event, id) => {
 // A tab dropped on a tab strip (container: which of the window page's) or
 // on a document (into that document's window): from the same window it
 // just changes place, from another one it moves in.
-ipcMain.handle('tabs:move-here', async (event, id, index, container) => {
+appIpc.handle('tabs:move-here', async (event, id, index, container) => {
   const dropTarget = senderTab(event);
   const host = dropTarget ? dropTarget.host : senderHost(event, container);
   const tab = tabsById.get(id);
@@ -2736,14 +2806,14 @@ ipcMain.handle('tabs:move-here', async (event, id, index, container) => {
   return { ok: true };
 });
 
-ipcMain.handle('tabs:detach', async (event, id, screenPoint) => {
+appIpc.handle('tabs:detach', async (event, id, screenPoint) => {
   const tab = tabFromEvent(event, id);
   if (!tab) return { ok: false };
   await detachTab(tab, screenPoint);
   return { ok: true };
 });
 
-ipcMain.handle('tabs:show-context-menu', (event, id) => {
+appIpc.handle('tabs:show-context-menu', (event, id) => {
   const tab = tabFromEvent(event, id);
   if (!tab) return { ok: false };
   const host = tab.host;
@@ -2781,7 +2851,7 @@ ipcMain.handle('tabs:show-context-menu', (event, id) => {
 
 // After a relaunch: the window's tabs as they were. Only the active one
 // is focused; all of them load.
-ipcMain.handle('tabs:restore', (event, tabs, activeIndex) => {
+appIpc.handle('tabs:restore', (event, tabs, activeIndex) => {
   const host = senderHost(event);
   if (!host || !Array.isArray(tabs)) return { ok: false };
   let activeTab = null;
@@ -2798,7 +2868,7 @@ ipcMain.handle('tabs:restore', (event, tabs, activeIndex) => {
 // Closing projects closes their documents' tabs (in tab windows too),
 // unsaved edits asked about one at a time. Resolves to whether they all
 // closed.
-ipcMain.handle('tabs:close-under', async (event, roots) => {
+appIpc.handle('tabs:close-under', async (event, roots) => {
   const owner = ownerOf(windowFor(event.sender));
   if (!owner || !Array.isArray(roots)) return false;
   const inside = tabsOwnedBy(owner).filter(
@@ -2811,20 +2881,20 @@ ipcMain.handle('tabs:close-under', async (event, roots) => {
   return closeTabs(inside);
 });
 
-ipcMain.on('css:live', (event, rootPath, css, enabled) => {
+appIpc.on('css:live', (event, rootPath, css, enabled) => {
   if (!rootPath) return;
   liveCssByRoot.set(path.resolve(rootPath).toLowerCase(), { css: String(css || ''), enabled: enabled !== false });
   sendToAllTabs('css:live', { root: rootPath, css: String(css || ''), enabled: enabled !== false });
 });
 
-ipcMain.handle('css:get-live', (event, rootPath) => {
+appIpc.handle('css:get-live', (event, rootPath) => {
   if (!rootPath) return null;
   return liveCssByRoot.get(path.resolve(rootPath).toLowerCase()) || null;
 });
 
 // Brings the program window forward with the keyboard on its page (the
 // terminal, from a tab in a tab window).
-ipcMain.handle('window:focus-page', (event) => {
+appIpc.handle('window:focus-page', (event) => {
   const owner = ownerOf(windowFor(event.sender));
   if (!owner || owner.isDestroyed()) return;
   if (!owner.isFocused()) owner.focus();
@@ -2835,7 +2905,7 @@ ipcMain.handle('window:focus-page', (event) => {
 
 // A tab's page has loaded — the tab is new, moved, or its window's page
 // reloaded — and asks what to show.
-ipcMain.on('tab:hello', (event, id) => {
+appIpc.on('tab:hello', (event, id) => {
   const tab = tabsById.get(Number(id));
   if (!tab || !event.senderFrame) return;
   if (ownerOf(windowFor(event.sender)) !== tab.host.owner) return;
@@ -2843,7 +2913,7 @@ ipcMain.on('tab:hello', (event, id) => {
   TAB_KINDS[tab.kind].hello(tab);
 });
 
-ipcMain.on('doc:state', (event, docState) => {
+appIpc.on('doc:state', (event, docState) => {
   const tab = senderTab(event);
   if (!tab || tab.kind !== 'doc' || !docState) return;
   tab.doc = {
@@ -2860,7 +2930,7 @@ ipcMain.on('doc:state', (event, docState) => {
 // A link to another document: when another tab of the program window (or
 // its tab windows) already shows it, that tab comes forward (and shows the
 // spot linked to) instead of this one navigating away.
-ipcMain.handle('doc:open', (event, filePath, target) => {
+appIpc.handle('doc:open', (event, filePath, target) => {
   const tab = senderTab(event);
   if (!tab || !filePath) return { handled: false };
   const other = findTabForPath(tab.host.owner, filePath);
@@ -2872,7 +2942,7 @@ ipcMain.handle('doc:open', (event, filePath, target) => {
 
 // Leaving edit mode on a draft discards it, and its tab with it (the page
 // has settled its text already).
-ipcMain.handle('doc:close-self', (event) => {
+appIpc.handle('doc:close-self', (event) => {
   const tab = senderTab(event);
   if (tab) closeTab(tab, { force: true });
 });
@@ -2880,7 +2950,7 @@ ipcMain.handle('doc:close-self', (event) => {
 // A tab closing with unsaved text that auto save couldn't write.
 // Saving would write over a file changed on disk since it was read:
 // 'overwrite', 'reload' (take the disk's text) or 'cancel'.
-ipcMain.handle('doc:confirm-save-conflict', (event, filePath) => {
+appIpc.handle('doc:confirm-save-conflict', (event, filePath) => {
   const win = windowFor(event.sender);
   const choice = dialog.showMessageBoxSync(win, {
     type: 'warning',
@@ -2895,7 +2965,7 @@ ipcMain.handle('doc:confirm-save-conflict', (event, filePath) => {
   return ['overwrite', 'reload', 'cancel'][choice] || 'cancel';
 });
 
-ipcMain.handle('doc:confirm-discard', (event) => {
+appIpc.handle('doc:confirm-discard', (event) => {
   const win = windowFor(event.sender);
   const choice = dialog.showMessageBoxSync(win, {
     type: 'warning',
@@ -2909,7 +2979,7 @@ ipcMain.handle('doc:confirm-discard', (event) => {
   return choice === 0;
 });
 
-ipcMain.on('doc:shell-request', (event, action, payload) => {
+appIpc.on('doc:shell-request', (event, action, payload) => {
   const owner = ownerOf(windowFor(event.sender));
   if (!owner || owner.isDestroyed()) return;
   owner.webContents.send('shell:request', { action, payload });
@@ -3041,7 +3111,7 @@ if (!gotSingleInstanceLock) {
 
 // ---- IPC handlers ----
 
-ipcMain.handle('dialog:open-folder', async (event) => {
+appIpc.handle('dialog:open-folder', async (event) => {
   const result = await dialog.showOpenDialog(windowFor(event.sender), {
     properties: ['openDirectory'],
   });
@@ -3049,7 +3119,7 @@ ipcMain.handle('dialog:open-folder', async (event) => {
   return result.filePaths[0];
 });
 
-ipcMain.handle('dialog:open-file', async (event) => {
+appIpc.handle('dialog:open-file', async (event) => {
   const customExtensions = getCustomTextExtensions();
   const result = await dialog.showOpenDialog(windowFor(event.sender), {
     properties: ['openFile'],
@@ -3073,7 +3143,7 @@ ipcMain.handle('dialog:open-file', async (event) => {
 
 // Save As for an untitled draft: the draft has no path until the user
 // picks one here.
-ipcMain.handle('dialog:save-file', async (event, defaultDir, defaultName) => {
+appIpc.handle('dialog:save-file', async (event, defaultDir, defaultName) => {
   const result = await dialog.showSaveDialog(windowFor(event.sender), {
     title: t('draft.saveDialogTitle'),
     defaultPath: defaultDir ? path.join(defaultDir, defaultName) : defaultName,
@@ -3086,7 +3156,7 @@ ipcMain.handle('dialog:save-file', async (event, defaultDir, defaultName) => {
   return result.filePath;
 });
 
-ipcMain.handle('fs:list-dir', (event, dirPath) => {
+appIpc.handle('fs:list-dir', (event, dirPath) => {
   try {
     return { ok: true, items: listDir(dirPath) };
   } catch (err) {
@@ -3094,7 +3164,7 @@ ipcMain.handle('fs:list-dir', (event, dirPath) => {
   }
 });
 
-ipcMain.handle('search:project', async (event, rootPath, query, options) => {
+appIpc.handle('search:project', async (event, rootPath, query, options) => {
   try {
     return await searchProjectDocuments(rootPath, query, options || {});
   } catch (err) {
@@ -3102,7 +3172,7 @@ ipcMain.handle('search:project', async (event, rootPath, query, options) => {
   }
 });
 
-ipcMain.handle('search:cancel', (event, searchId) => {
+appIpc.handle('search:cancel', (event, searchId) => {
   if (searchId) {
     // A cancel that lands after its search already finished leaves the id
     // behind (nothing is left to delete it); keep the set from growing
@@ -3113,7 +3183,7 @@ ipcMain.handle('search:cancel', (event, searchId) => {
   return { ok: true };
 });
 
-ipcMain.handle('fs:render-markdown', async (event, filePath, requestId) => {
+appIpc.handle('fs:render-markdown', async (event, filePath, requestId) => {
   try {
     const html = await renderMarkdownFile(filePath, requestId);
     return { ok: true, html, name: path.basename(filePath) };
@@ -3122,7 +3192,7 @@ ipcMain.handle('fs:render-markdown', async (event, filePath, requestId) => {
   }
 });
 
-ipcMain.handle('fs:render-plantuml', async (event, filePath, requestId) => {
+appIpc.handle('fs:render-plantuml', async (event, filePath, requestId) => {
   try {
     const html = await renderPlantUmlFile(filePath, requestId);
     return { ok: true, html, name: path.basename(filePath) };
@@ -3131,7 +3201,7 @@ ipcMain.handle('fs:render-plantuml', async (event, filePath, requestId) => {
   }
 });
 
-ipcMain.handle('fs:render-json', (event, filePath) => {
+appIpc.handle('fs:render-json', (event, filePath) => {
   try {
     const html = renderJsonFile(filePath);
     return { ok: true, html, name: path.basename(filePath) };
@@ -3140,7 +3210,7 @@ ipcMain.handle('fs:render-json', (event, filePath) => {
   }
 });
 
-ipcMain.handle('fs:render-plaintext', (event, filePath) => {
+appIpc.handle('fs:render-plaintext', (event, filePath) => {
   try {
     const html = renderPlainTextFile(filePath);
     return { ok: true, html, name: path.basename(filePath) };
@@ -3152,7 +3222,7 @@ ipcMain.handle('fs:render-plaintext', (event, filePath) => {
 // version: see lib/doc-version.js. Passed back to fs:write-file, it keeps
 // a save from writing over what changed on disk since the read
 // ({ ok: false, conflict: true }).
-ipcMain.handle('fs:read-file', (event, filePath) => {
+appIpc.handle('fs:read-file', (event, filePath) => {
   try {
     const content = fs.readFileSync(filePath, 'utf-8');
     return { ok: true, content, version: contentVersion(content) };
@@ -3161,7 +3231,7 @@ ipcMain.handle('fs:read-file', (event, filePath) => {
   }
 });
 
-ipcMain.handle('fs:write-file', (event, filePath, content, expectedVersion) => {
+appIpc.handle('fs:write-file', (event, filePath, content, expectedVersion) => {
   try {
     return writeIfUnchanged(fs, filePath, content, expectedVersion);
   } catch (err) {
@@ -3195,8 +3265,8 @@ function createTreeEntry(dirPath, name, kind) {
   }
 }
 
-ipcMain.handle('fs:create-file', (event, dirPath, name) => createTreeEntry(dirPath, name, 'file'));
-ipcMain.handle('fs:create-folder', (event, dirPath, name) => createTreeEntry(dirPath, name, 'folder'));
+appIpc.handle('fs:create-file', (event, dirPath, name) => createTreeEntry(dirPath, name, 'file'));
+appIpc.handle('fs:create-folder', (event, dirPath, name) => createTreeEntry(dirPath, name, 'folder'));
 
 // ---------------------------------------------------------------------
 // Drag-and-drop copy into the project
@@ -3274,7 +3344,7 @@ async function copyEntriesInto(targetDir, sourcePaths) {
   return { ok: true, copied, skipped };
 }
 
-ipcMain.handle('fs:copy-entries', async (event, targetDir, sourcePaths) => {
+appIpc.handle('fs:copy-entries', async (event, targetDir, sourcePaths) => {
   try {
     return await copyEntriesInto(targetDir, Array.isArray(sourcePaths) ? sourcePaths : []);
   } catch (err) {
@@ -3324,7 +3394,7 @@ async function moveEntryInto(sourcePath, targetDir) {
   return { ok: true, path: dest };
 }
 
-ipcMain.handle('fs:move-entry', async (event, sourcePath, targetDir) => {
+appIpc.handle('fs:move-entry', async (event, sourcePath, targetDir) => {
   // On Windows an open document's watcher holds a handle on its folder,
   // which makes renaming that folder (or one above it) fail with EPERM. Any
   // tab in any window may have one, so all go; every tab is then told where
@@ -3342,7 +3412,7 @@ ipcMain.handle('fs:move-entry', async (event, sourcePath, targetDir) => {
   return result;
 });
 
-ipcMain.handle('fs:stat-path', async (event, targetPath) => {
+appIpc.handle('fs:stat-path', async (event, targetPath) => {
   try {
     const stat = await fs.promises.stat(targetPath);
     return { ok: true, isDir: stat.isDirectory(), isFile: stat.isFile() };
@@ -3442,7 +3512,7 @@ async function resolveLinkPath(candidate, baseDirs, rootPath) {
   });
 }
 
-ipcMain.handle('fs:resolve-link-paths', async (event, candidates, baseDirs, rootPath) => {
+appIpc.handle('fs:resolve-link-paths', async (event, candidates, baseDirs, rootPath) => {
   const results = [];
   for (const candidate of candidates) {
     try {
@@ -3456,7 +3526,7 @@ ipcMain.handle('fs:resolve-link-paths', async (event, candidates, baseDirs, root
 
 // A popup listing the files a link could mean; resolves with the picked
 // index, or -1 when the menu was dismissed.
-ipcMain.handle('menu:pick-path', (event, labels) => {
+appIpc.handle('menu:pick-path', (event, labels) => {
   const win = windowFor(event.sender);
   return new Promise((resolve) => {
     let picked = -1;
@@ -3474,7 +3544,7 @@ ipcMain.handle('menu:pick-path', (event, labels) => {
   });
 });
 
-ipcMain.handle('md:render-text', async (event, text, baseDir, requestId) => {
+appIpc.handle('md:render-text', async (event, text, baseDir, requestId) => {
   try {
     return { ok: true, html: await renderMarkdownText(text, baseDir, requestId) };
   } catch (err) {
@@ -3482,7 +3552,7 @@ ipcMain.handle('md:render-text', async (event, text, baseDir, requestId) => {
   }
 });
 
-ipcMain.handle('puml:render-text', async (event, text, requestId) => {
+appIpc.handle('puml:render-text', async (event, text, requestId) => {
   try {
     return { ok: true, html: await renderPlantUmlText(text, requestId) };
   } catch (err) {
@@ -3494,7 +3564,7 @@ ipcMain.handle('puml:render-text', async (event, text, requestId) => {
 // render request once the user has navigated away from it (see
 // activeRenderAborts above) — otherwise a huge diagram nobody's looking at
 // anymore would keep burning CPU until it finishes on its own.
-ipcMain.handle('render:cancel', (event, requestId) => {
+appIpc.handle('render:cancel', (event, requestId) => {
   const controllers = activeRenderAborts.get(requestId);
   if (controllers) {
     for (const controller of controllers) controller.abort();
@@ -3502,7 +3572,7 @@ ipcMain.handle('render:cancel', (event, requestId) => {
   return { ok: true };
 });
 
-ipcMain.handle('json:render-text', (event, text) => {
+appIpc.handle('json:render-text', (event, text) => {
   try {
     return { ok: true, html: renderJsonText(text) };
   } catch (err) {
@@ -3510,7 +3580,7 @@ ipcMain.handle('json:render-text', (event, text) => {
   }
 });
 
-ipcMain.handle('plaintext:render-text', (event, text, filePath) => {
+appIpc.handle('plaintext:render-text', (event, text, filePath) => {
   try {
     return { ok: true, html: renderPlainText(text, filePath) };
   } catch (err) {
@@ -3518,7 +3588,7 @@ ipcMain.handle('plaintext:render-text', (event, text, filePath) => {
   }
 });
 
-ipcMain.handle('fs:load-project-css', (event, rootPath) => {
+appIpc.handle('fs:load-project-css', (event, rootPath) => {
   try {
     return { ok: true, css: loadProjectCss(rootPath) };
   } catch (err) {
@@ -3526,7 +3596,7 @@ ipcMain.handle('fs:load-project-css', (event, rootPath) => {
   }
 });
 
-ipcMain.handle('fs:save-project-css', (event, rootPath, css) => {
+appIpc.handle('fs:save-project-css', (event, rootPath, css) => {
   try {
     saveProjectCss(rootPath, css);
     return { ok: true };
@@ -3535,9 +3605,9 @@ ipcMain.handle('fs:save-project-css', (event, rootPath, css) => {
   }
 });
 
-ipcMain.handle('fs:find-project-root', (event, filePath) => findProjectRootForFile(filePath));
+appIpc.handle('fs:find-project-root', (event, filePath) => findProjectRootForFile(filePath));
 
-ipcMain.handle('fs:load-project-state', (event, rootPath) => {
+appIpc.handle('fs:load-project-state', (event, rootPath) => {
   try {
     return { ok: true, state: loadProjectState(rootPath) };
   } catch (err) {
@@ -3545,7 +3615,7 @@ ipcMain.handle('fs:load-project-state', (event, rootPath) => {
   }
 });
 
-ipcMain.handle('fs:save-project-state', (event, rootPath, projectState) => {
+appIpc.handle('fs:save-project-state', (event, rootPath, projectState) => {
   try {
     saveProjectState(rootPath, projectState);
     return { ok: true };
@@ -3554,10 +3624,10 @@ ipcMain.handle('fs:save-project-state', (event, rootPath, projectState) => {
   }
 });
 
-ipcMain.handle('fs:get-base-styles', () => getBaseStyles());
+appIpc.handle('fs:get-base-styles', () => getBaseStyles());
 
 // One watched file per tab (the document it shows).
-ipcMain.handle('fs:watch-file', (event, filePath) => {
+appIpc.handle('fs:watch-file', (event, filePath) => {
   const tab = senderTab(event);
   const key = tab ? tabWatchKey(tab) : event.sender.id;
   const frame = event.senderFrame;
@@ -3573,7 +3643,7 @@ ipcMain.handle('fs:watch-file', (event, filePath) => {
   }
 });
 
-ipcMain.handle('shell:open-external', async (event, url) => {
+appIpc.handle('shell:open-external', async (event, url) => {
   try {
     await shell.openExternal(url);
     return { ok: true };
@@ -3582,12 +3652,12 @@ ipcMain.handle('shell:open-external', async (event, url) => {
   }
 });
 
-ipcMain.handle('shell:open-path', async (event, folderPath) => {
+appIpc.handle('shell:open-path', async (event, folderPath) => {
   const errorMessage = await shell.openPath(folderPath);
   return errorMessage ? { ok: false, error: errorMessage } : { ok: true };
 });
 
-ipcMain.handle('shell:show-in-folder', (event, itemPath) => {
+appIpc.handle('shell:show-in-folder', (event, itemPath) => {
   shell.showItemInFolder(itemPath);
 });
 
@@ -3595,7 +3665,7 @@ ipcMain.handle('shell:show-in-folder', (event, itemPath) => {
 // bar goes with it: on Windows it would otherwise keep sitting above a view
 // whose whole point is that nothing surrounds the document. Its
 // accelerators (F11 included) keep working while it is hidden.
-ipcMain.handle('window:set-fullscreen', (event, enabled) => {
+appIpc.handle('window:set-fullscreen', (event, enabled) => {
   const win = windowFor(event.sender);
   if (!win) return { ok: false, error: 'no window' };
   const host = hostOf(win);
@@ -3624,7 +3694,7 @@ function projectRelativePath(itemPath, rootPath) {
   return rel.replace(/\\/g, '/');
 }
 
-ipcMain.handle('tree:show-context-menu', (event, itemPath, rootPath, options = {}) => {
+appIpc.handle('tree:show-context-menu', (event, itemPath, rootPath, options = {}) => {
   const win = windowFor(event.sender);
   const isDir = fs.statSync(itemPath).isDirectory();
   // New File/Folder/Refresh act on whatever was right-clicked: inside it for
@@ -3705,7 +3775,7 @@ ipcMain.handle('tree:show-context-menu', (event, itemPath, rootPath, options = {
 
 // Right-click on empty explorer space, below every project: the menu for
 // the explorer as a whole rather than for any one folder in it.
-ipcMain.handle('tree:show-empty-context-menu', (event, { hasProjects }) => {
+appIpc.handle('tree:show-empty-context-menu', (event, { hasProjects }) => {
   const win = windowFor(event.sender);
   const menu = Menu.buildFromTemplate([
     {
@@ -3789,7 +3859,7 @@ async function convertPumlToSvg(filePath, parentWindow) {
   }
 }
 
-ipcMain.handle('export:pdf', (event, filePath, rootPath) => {
+appIpc.handle('export:pdf', (event, filePath, rootPath) => {
   const win = windowFor(event.sender);
   return exportMarkdownToPdf(filePath, win, rootPath);
 });
@@ -4182,25 +4252,25 @@ function getBaseStyles() {
   return { defaultCss, hljsCss };
 }
 
-ipcMain.handle('i18n:get', () => {
+appIpc.handle('i18n:get', () => {
   return { language: currentLanguage, strings: STRINGS[currentLanguage] };
 });
 
-ipcMain.handle('settings:set-language', (event, lang) => {
+appIpc.handle('settings:set-language', (event, lang) => {
   setLanguage(lang);
   return { ok: true, language: currentLanguage };
 });
 
-ipcMain.handle('settings:get-auto-save', () => getAutoSave());
-ipcMain.handle('settings:get-preview-width-limit', () => getPreviewWidthLimit());
-ipcMain.handle('settings:get-editor-layout', () => getEditorLayout());
-ipcMain.handle('settings:set-editor-layout', (event, layout) => setEditorLayout(layout));
-ipcMain.handle('settings:get-scroll-sync', () => getScrollSync());
-ipcMain.handle('settings:set-scroll-sync', (event, enabled) => setScrollSync(enabled));
+appIpc.handle('settings:get-auto-save', () => getAutoSave());
+appIpc.handle('settings:get-preview-width-limit', () => getPreviewWidthLimit());
+appIpc.handle('settings:get-editor-layout', () => getEditorLayout());
+appIpc.handle('settings:set-editor-layout', (event, layout) => setEditorLayout(layout));
+appIpc.handle('settings:get-scroll-sync', () => getScrollSync());
+appIpc.handle('settings:set-scroll-sync', (event, enabled) => setScrollSync(enabled));
 
 // Synchronous on purpose: the renderer saves from 'beforeunload', where an
 // async write would be cut off by the page going away.
-ipcMain.on('fs:write-file-sync', (event, filePath, content, expectedVersion) => {
+appIpc.on('fs:write-file-sync', (event, filePath, content, expectedVersion) => {
   try {
     event.returnValue = writeIfUnchanged(fs, filePath, content, expectedVersion);
   } catch (err) {
@@ -4208,25 +4278,25 @@ ipcMain.on('fs:write-file-sync', (event, filePath, content, expectedVersion) => 
   }
 });
 
-ipcMain.handle('settings:get-custom-extensions', () => {
+appIpc.handle('settings:get-custom-extensions', () => {
   return { ok: true, extensions: getCustomTextExtensions() };
 });
 
-ipcMain.handle('settings:set-custom-extensions', (event, list) => {
+appIpc.handle('settings:set-custom-extensions', (event, list) => {
   const extensions = setCustomTextExtensions(list);
   sendToAllTabs('settings:custom-extensions-changed', extensions);
   return { ok: true, extensions };
 });
 
-ipcMain.handle('settings:get-hidden-names', () => {
+appIpc.handle('settings:get-hidden-names', () => {
   return { ok: true, names: getHiddenNames(), defaults: [...DEFAULT_HIDDEN_NAMES] };
 });
 
-ipcMain.handle('settings:set-hidden-names', (event, list) => {
+appIpc.handle('settings:set-hidden-names', (event, list) => {
   return { ok: true, names: setHiddenNames(list) };
 });
 
-ipcMain.handle('recent:list', () => {
+appIpc.handle('recent:list', () => {
   return loadRecentProjects().map((p) => ({
     path: p,
     name: path.basename(p),
@@ -4234,7 +4304,7 @@ ipcMain.handle('recent:list', () => {
   }));
 });
 
-ipcMain.handle('project:set-open', (event, roots, active) => {
+appIpc.handle('project:set-open', (event, roots, active) => {
   windowProjects.set(event.sender.id, {
     roots: Array.isArray(roots) ? roots : [],
     active: active || null,
@@ -4246,17 +4316,17 @@ ipcMain.handle('project:set-open', (event, roots, active) => {
   return { ok: true };
 });
 
-ipcMain.handle('recent:add', (event, rootPath) => {
+appIpc.handle('recent:add', (event, rootPath) => {
   addRecentProject(rootPath);
   buildAppMenu();
 });
 
-ipcMain.handle('recent:remove', (event, rootPath) => {
+appIpc.handle('recent:remove', (event, rootPath) => {
   removeRecentProject(rootPath);
   buildAppMenu();
 });
 
-ipcMain.handle('term:start', (event, key, cwd, cols, rows) => {
+appIpc.handle('term:start', (event, key, cwd, cols, rows) => {
   try {
     spawnTerminalFor(event, key || '', cwd || app.getPath('home'), cols, rows);
     return { ok: true };
@@ -4265,7 +4335,7 @@ ipcMain.handle('term:start', (event, key, cwd, cols, rows) => {
   }
 });
 
-ipcMain.handle('term:input', (event, key, data) => {
+appIpc.handle('term:input', (event, key, data) => {
   const t = getTerminal(event.sender.id, key || '');
   if (!t) return { ok: false, error: translate(currentLanguage, 'term.noRunningTerminal') };
   try {
@@ -4276,7 +4346,7 @@ ipcMain.handle('term:input', (event, key, data) => {
   }
 });
 
-ipcMain.handle('term:resize', (event, key, cols, rows) => {
+appIpc.handle('term:resize', (event, key, cols, rows) => {
   const t = getTerminal(event.sender.id, key || '');
   if (t) {
     try {
@@ -4288,14 +4358,14 @@ ipcMain.handle('term:resize', (event, key, cols, rows) => {
   return { ok: true };
 });
 
-ipcMain.handle('term:stop', (event, key) => {
+appIpc.handle('term:stop', (event, key) => {
   killTerminal(event.sender.id, key || '');
   return { ok: true };
 });
 
 // Right-click on a terminal tab. The window page owns the tabs, so the
 // choice goes back to it (terminal:tab-action) to carry out.
-ipcMain.handle('term:show-tab-context-menu', (event, key, { hasOthers } = {}) => {
+appIpc.handle('term:show-tab-context-menu', (event, key, { hasOthers } = {}) => {
   const sender = event.sender;
   const action = (name) => () => {
     if (!sender.isDestroyed()) sender.send('terminal:tab-action', { key, action: name });
@@ -4315,7 +4385,7 @@ ipcMain.handle('term:show-tab-context-menu', (event, key, { hasOthers } = {}) =>
 // as an image. Only the items that apply to what was right-clicked are
 // built, and each one hands the work back to the tab's page, which is where
 // the selection and the diagram's <img> actually are.
-ipcMain.handle('viewer:show-context-menu', (event, payload) => {
+appIpc.handle('viewer:show-context-menu', (event, payload) => {
   const win = windowFor(event.sender);
   if (!win) return { ok: false };
   const page = event.senderFrame;
@@ -4414,7 +4484,7 @@ function sendToTerminalItems(page, source, hasLocation) {
 
 // The split-view source editor's menu. A textarea gets no menu of its own
 // in Electron, so cut/copy/paste come along with the terminal items.
-ipcMain.handle('editor:show-context-menu', (event, payload) => {
+appIpc.handle('editor:show-context-menu', (event, payload) => {
   const win = windowFor(event.sender);
   if (!win) return { ok: false };
   const hasSelection = !!(payload && payload.hasSelection);
@@ -4432,7 +4502,7 @@ ipcMain.handle('editor:show-context-menu', (event, payload) => {
 
 // Diagrams are SVG, which nativeImage cannot read — the renderer rasterises
 // them to a PNG data URL first (see copyImageAsBitmap in renderer.js).
-ipcMain.handle('clipboard:write-image', (event, pngDataUrl) => {
+appIpc.handle('clipboard:write-image', (event, pngDataUrl) => {
   try {
     const image = nativeImage.createFromDataURL(pngDataUrl);
     if (image.isEmpty()) return { ok: false, error: 'image could not be read' };
@@ -4471,7 +4541,7 @@ async function readImageSource(src) {
 //
 // An SVG is the exception: nothing can put one on the clipboard usefully, so
 // it goes back to the renderer as a data URL to be rasterised like a diagram.
-ipcMain.handle('image:copy-source', async (event, src) => {
+appIpc.handle('image:copy-source', async (event, src) => {
   try {
     const { bytes, name } = await readImageSource(src);
     const looksLikeSvg = /\.svg($|[?#])/i.test(name) || /^\s*(<\?xml|<svg)/i.test(bytes.slice(0, 200).toString('utf-8'));
@@ -4487,11 +4557,11 @@ ipcMain.handle('image:copy-source', async (event, src) => {
   }
 });
 
-ipcMain.handle('clipboard:write-text', (event, text) => {
+appIpc.handle('clipboard:write-text', (event, text) => {
   clipboard.writeText(text || '');
 });
 
-ipcMain.handle('clipboard:read-text', () => {
+appIpc.handle('clipboard:read-text', () => {
   return clipboard.readText();
 });
 
@@ -4501,7 +4571,7 @@ ipcMain.handle('clipboard:read-text', () => {
 // editor's paste handler (see the 'paste' listener on #md-source-editor in
 // renderer.js) so pasting a screenshot/copied image inserts a working link
 // instead of dumping raw image data into the text.
-ipcMain.handle('fs:save-pasted-image', (event, targetFilePath) => {
+appIpc.handle('fs:save-pasted-image', (event, targetFilePath) => {
   try {
     const image = clipboard.readImage();
     if (image.isEmpty()) return { ok: false, error: 'Clipboard has no image' };
