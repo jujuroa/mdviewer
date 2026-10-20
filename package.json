@@ -11,6 +11,7 @@
     "prestart": "npm run prepare:runtimes",
     "start": "node scripts/start.js",
     "test": "node --test \"test/*.test.js\"",
+    "test:app": "node test/app/run-all.mjs",
     "prepack": "npm run prepare:runtimes",
     "pack": "electron-builder --dir",
     "predist": "npm run prepare:runtimes",
