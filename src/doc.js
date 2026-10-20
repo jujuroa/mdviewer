@@ -4673,7 +4673,7 @@
     }
   }
 
-  // Questions from the tab host (see askDoc in main.js).
+  // Questions from the tab host (see askTab in main.js).
   window.mdviewer.onDocAsk(async ({ id, kind } = {}) => {
     await appReady;
     let value = null;
