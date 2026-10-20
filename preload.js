@@ -3,9 +3,57 @@ const { contextBridge, ipcRenderer, webUtils } = require('electron');
 // This runs in every frame of a program window (its tabs are iframes, see
 // the tab host in main.js), but only the app's own two pages get the
 // bridge: the window page and the tab page. The rendered documents inside
-// a tab, and the tab windows the window page fills itself, get nothing.
+// a tab, and the tab windows the window page fills itself, get nothing;
+// an add-on's page gets the add-on bridge below.
 const PAGE = location.protocol === 'file:' ? location.pathname.split('/').pop() : '';
 const TAB_ID = PAGE === 'doc.html' ? Number(new URLSearchParams(location.search).get('tab')) || 0 : 0;
+
+// An add-on's page in a tab (mdviewer-addon://<id>/...?tab=N) gets a bridge
+// of its own, mdviewerAddon — nothing of the app's — once main has made
+// sure this frame is that tab's page (addon:hello, synchronous so the
+// bridge is there before the page's scripts run).
+const ADDON_SNAPSHOT_TIMEOUT_MS = 2000;
+if (location.protocol === 'mdviewer-addon:' && window.top !== window) {
+  const hint = Number(new URLSearchParams(location.search).get('tab')) || 0;
+  const hello = ipcRenderer.sendSync('addon:hello', hint);
+  if (hello && hello.ok) {
+    let snapshotHandler = null;
+    // The tab host asks before the tab moves or its window reloads: the
+    // page's onSnapshot handler gets ADDON_SNAPSHOT_TIMEOUT_MS to give
+    // what it wants back (tabs.getRestoreState() in the new page).
+    ipcRenderer.on('tab:ask', async (event, { id, kind } = {}) => {
+      let value = null;
+      if (kind === 'close') {
+        value = true;
+      } else if (kind === 'snapshot' && snapshotHandler) {
+        try {
+          const timeout = new Promise((resolve) => setTimeout(resolve, ADDON_SNAPSHOT_TIMEOUT_MS));
+          const state = await Promise.race([Promise.resolve().then(snapshotHandler), timeout]);
+          if (state !== undefined) value = { state };
+        } catch (err) {
+          value = null;
+        }
+      }
+      try {
+        ipcRenderer.send('tab:answer', id, value);
+      } catch (err) {
+        ipcRenderer.send('tab:answer', id, null); // not cloneable
+      }
+    });
+    contextBridge.exposeInMainWorld('mdviewerAddon', {
+      app: hello.app,
+      call: (method, params) => ipcRenderer.invoke('addon:call', method, params),
+      lifecycle: {
+        onSnapshot: (handler) => {
+          snapshotHandler = typeof handler === 'function' ? handler : null;
+        },
+      },
+      tabs: {
+        getRestoreState: () => hello.restore,
+      },
+    });
+  }
+}
 
 if (PAGE === 'index.html' || TAB_ID) contextBridge.exposeInMainWorld('mdviewer', {
   openFolderDialog: () => ipcRenderer.invoke('dialog:open-folder'),

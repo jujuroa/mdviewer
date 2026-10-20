@@ -16,7 +16,7 @@ const { DEFAULT_LANGUAGE, SUPPORTED_LANGUAGES, STRINGS, translate } = require('.
 const { samePath, isPathInside, openArgFromArgv } = require('./lib/paths.js');
 const { neighbourIndex, reorderIndex, insertIndex } = require('./lib/tab-strip.js');
 const { contentVersion, writeIfUnchanged } = require('./lib/doc-version.js');
-const { isAppPageUrl, docTabIdOf, subframeNavigationAllowed } = require('./lib/app-frames.js');
+const { isAppPageUrl, docTabIdOf, originIn, subframeNavigationAllowed } = require('./lib/app-frames.js');
 const { registerAddonScheme, serveAddonPages, limitPermissionsToAppPages, refuseAddonDownloads } = require('./addons/protocol.js');
 const { SCHEME: ADDON_SCHEME } = require('./addons/pages.js');
 
@@ -2082,6 +2082,24 @@ const FILE_BADGES = { markdown: 'md', puml: 'puml', json: 'json', text: 'text' }
 // — no popups, no navigating the window, no dialogs.
 const FOREIGN_TAB_SANDBOX = 'allow-scripts allow-same-origin allow-forms';
 
+function withTabHint(url, id) {
+  const at = url.search(/#|$/);
+  return `${url.slice(0, at)}${url.slice(0, at).includes('?') ? '&' : '?'}tab=${id}${url.slice(at)}`;
+}
+
+// What an add-on page handed over (`{ state }`, see preload.js), as long as
+// it stays within ADDON_SNAPSHOT_MAX_BYTES as JSON; else nothing.
+const ADDON_SNAPSHOT_MAX_BYTES = 1024 * 1024;
+function addonStateIn(answer) {
+  if (!answer || typeof answer !== 'object' || !('state' in answer)) return null;
+  try {
+    const json = JSON.stringify(answer.state);
+    return json !== undefined && Buffer.byteLength(json, 'utf8') <= ADDON_SNAPSHOT_MAX_BYTES ? JSON.parse(json) : null;
+  } catch (err) {
+    return null;
+  }
+}
+
 // A page's file name, as a tab title.
 function pageTitleOf(url) {
   const name = url.replace(/[?#].*$/, '').split('/').pop() || url;
@@ -2098,8 +2116,14 @@ function pageTitleOf(url) {
 // page builds each tab's strip entry and iframe from what this gives (see
 // tabForPage), without knowing the kinds itself.
 //   state: the kind's own state for a new tab (tab[kind]), from its init.
-//   reopen: what its page opens on when it loads again with nothing
-//     handed over (moved without a snapshot, its window gone).
+//   reopen: what its page opens on when it loads again on its own (its
+//     window gone).
+//   handOver: what its page opens on after being asked for a snapshot
+//     before it moves or its window reloads (`reason`: 'moved',
+//     'reloaded'); `answer` is the page's answer, null when it gave none.
+//   closeTimeout: how long its page gets to answer tab:ask 'close' before
+//     the tab closes anyway (0: as long as it takes — a document tab may
+//     be asking the user).
 //   page: the iframe's address (and sandbox attribute, when it has one).
 //   view: the strip entry — title, tooltip, icon, unsaved mark.
 //   restoreEntry: what brings the tab back after a relaunch, or null.
@@ -2114,6 +2138,8 @@ const TAB_KINDS = {
       instantView: !!init.instantView,
     }),
     reopen: (tab) => initFromDoc(tab),
+    handOver: (tab, answer) => answer || initFromDoc(tab),
+    closeTimeout: 0,
     page: (tab) => ({ url: `${DOC_PAGE_URL}?tab=${tab.id}` }),
     view: (tab) => {
       const { path: filePath, fileKind, draft, dirty } = tab.doc;
@@ -2143,7 +2169,16 @@ const TAB_KINDS = {
   test: {
     state: (init) => ({ url: String(init.url || 'about:blank') }),
     reopen: (tab) => ({ url: tab.test.url }),
-    page: (tab) => ({ url: tab.test.url, sandbox: FOREIGN_TAB_SANDBOX }),
+    // The add-on page gets back what it handed over (see addon:hello).
+    handOver: (tab, answer, reason) => ({ url: tab.test.url, restore: { reason, state: addonStateIn(answer) } }),
+    // An add-on page cannot hold its tab open (onWillClose, protocol 7.4).
+    closeTimeout: 3000,
+    // An add-on page's address carries its tab id, which it gives back in
+    // addon:hello as a hint (main checks the frame itself).
+    page: (tab) => ({
+      url: originIn(tab.test.url, ADDON_SCHEME) ? withTabHint(tab.test.url, tab.id) : tab.test.url,
+      sandbox: FOREIGN_TAB_SANDBOX,
+    }),
     view: (tab) => ({
       title: pageTitleOf(tab.test.url),
       tooltip: tab.test.url,
@@ -2504,8 +2539,9 @@ function settleTabAsksOf(owner) {
   }
 }
 
-// Only the page that was asked answers.
-appIpc.on('tab:answer', (event, id, value) => {
+// Only the page that was asked answers — an add-on's page as well as the
+// app's (so not through appIpc).
+ipcMain.on('tab:answer', (event, id, value) => {
   const ask = tabAsks.get(id);
   if (ask && senderTab(event) === ask.tab) ask.settle(value);
 });
@@ -2517,7 +2553,7 @@ function closeTab(tab, { force = false } = {}) {
   if (!tab || !tabsById.has(tab.id)) return Promise.resolve(true);
   if (tab.closing) return tab.closing;
   tab.closing = (async () => {
-    const answer = force ? true : await askTab(tab, 'close');
+    const answer = force ? true : await askTab(tab, 'close', { timeout: TAB_KINDS[tab.kind].closeTimeout });
     tab.closing = null;
     if (answer === false) {
       // Kept: so is its window, and a pending Reload Program is off.
@@ -2575,7 +2611,7 @@ async function moveTab(tab, toHost, index) {
   tab.moving = false;
   // Closed, or the window it was going to closed, while it packed up.
   if (!tabsById.has(tab.id) || tab.host !== fromHost || toHost.win.isDestroyed()) return;
-  tab.init = snapshot && typeof snapshot === 'object' ? snapshot : TAB_KINDS[tab.kind].reopen(tab);
+  tab.init = TAB_KINDS[tab.kind].handOver(tab, snapshot && typeof snapshot === 'object' ? snapshot : null, 'moved');
   tab.frame = null;
   stopWatching(tabWatchKey(tab));
   const from = fromHost.tabs.indexOf(tab);
@@ -2804,7 +2840,9 @@ async function snapshotTabsOf(owner) {
     tabs.map((tab) => askTab(tab, 'snapshot', { timeout: TAB_SNAPSHOT_TIMEOUT_MS }))
   );
   tabs.forEach((tab, i) => {
-    if (snapshots[i] && typeof snapshots[i] === 'object') tab.init = snapshots[i];
+    const answer = snapshots[i] && typeof snapshots[i] === 'object' ? snapshots[i] : null;
+    // A document tab that gave nothing keeps what it opens on already.
+    if (answer || tab.kind !== 'doc') tab.init = TAB_KINDS[tab.kind].handOver(tab, answer, 'reloaded');
   });
 }
 
@@ -2852,6 +2890,66 @@ async function openTestTabFromDialog(win) {
 appIpc.handle('tabs:open-test', (event, url, container) => {
   const tab = openTestTab(senderHost(event, container), url);
   return tab ? { ok: true, id: tab.id } : { ok: false };
+});
+
+// ---- Add-on tab frames (F0-b) ----
+// An add-on's page in a tab gets a bridge of its own (mdviewerAddon, see
+// preload.js) once main has made sure the frame really is that tab's
+// page: an add-on page right under a program window's page (or one of its
+// tab windows), in the origin of the add-on the tab is for. Until add-on
+// tabs come (F2), test tabs are the ones that show add-on pages. These
+// channels are outside appIpc, which keeps add-on frames away from the
+// app's own.
+
+function addonIdOf(url) {
+  const origin = originIn(url, ADDON_SCHEME);
+  return origin ? origin.slice(ADDON_SCHEME.length + 3) : '';
+}
+
+function addonTabFor(event, hint) {
+  const frame = event.senderFrame;
+  const win = windowFor(event.sender);
+  if (!frame || !win || !frame.parent || frame.parent.parent) return null;
+  const owner = ownerOf(win);
+  const tab = tabsById.get(Number(hint));
+  if (!appWindows.has(owner) || !tab || tab.kind !== 'test' || tab.host.owner !== owner) return null;
+  const id = addonIdOf(frame.url);
+  return id && addonIdOf(tab.test.url) === id ? tab : null;
+}
+
+// Synchronous: the page's scripts must find the bridge in place. restore:
+// what the page handed over before it moved or its window reloaded
+// ({ reason: 'moved' | 'reloaded', state }), else { reason: 'new' }.
+ipcMain.on('addon:hello', (event, hint) => {
+  const tab = addonTabFor(event, hint);
+  if (!tab) {
+    refuseIpc(event, 'addon:hello');
+    // A tab's page that reloaded into something refused is no longer the
+    // tab's page: nothing there will answer for it.
+    for (const other of tabsById.values()) {
+      if (sameFrame(other.frame, event.senderFrame)) other.frame = null;
+    }
+    event.returnValue = { ok: false };
+    return;
+  }
+  tab.frame = event.senderFrame;
+  const restore = (tab.init && tab.init.restore) || { reason: 'new', state: null };
+  tab.init = TAB_KINDS[tab.kind].reopen(tab);
+  event.returnValue = { ok: true, app: { version: app.getVersion(), language: currentLanguage }, restore };
+});
+
+// Every add-on API call. The caller is the frame itself (a tab page that
+// said hello), never what it claims.
+ipcMain.handle('addon:call', (event, method) => {
+  const tab = senderTab(event);
+  if (!tab || tab.kind !== 'test') {
+    refuseIpc(event, 'addon:call');
+    throw new Error('NotRegistered: this frame is not an add-on tab page');
+  }
+  if (method === 'app/info') {
+    return { version: app.getVersion(), language: currentLanguage, addon: addonIdOf(tab.test.url), tab: tab.id };
+  }
+  throw new Error(`MethodNotFound: ${method}`);
 });
 
 appIpc.handle('tabs:new-draft', (event, container) => {
