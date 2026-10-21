@@ -55,6 +55,13 @@
     // loaded from or last saved as: a save refuses to write over a file
     // that no longer has it (see saveSource).
     diskVersion: null,
+    // The document pane (see openPane): shown in the editor's place
+    // instead of the source editor; its iframe once made; the sizes the
+    // editor's place had for the source and for the pane.
+    paneOpen: false,
+    paneFrame: null,
+    sourceSize: null,
+    paneSize: null,
     sourceDebounceTimer: null,
     suppressNextWatch: false,
     scrollPositions: {},
@@ -1800,7 +1807,7 @@
   // ---------------------------------------------------------------------
 
   function splitViewActive() {
-    return state.editMode && !el.editorPane.classList.contains('hidden');
+    return state.editMode && !state.paneOpen && !el.editorPane.classList.contains('hidden');
   }
 
   function getEditorLineHeight() {
@@ -2518,17 +2525,30 @@
   }
 
   function setEditModeUI(enabled) {
-    el.editorPane.classList.toggle('hidden', !enabled);
-    el.editorResizer.classList.toggle('hidden', !enabled);
     if (!enabled) {
       // There is no source pane left to search or to mark.
       if (editorFindActive()) closeFindBar();
       renderEditorMirror(null);
     }
-    el.btnToggleEdit.classList.toggle('active', enabled);
-    el.btnSaveSource.classList.toggle('hidden', !enabled);
-    el.btnEditorLayout.classList.toggle('hidden', !enabled);
-    if (enabled) sizeEditorPaneForViewer();
+    applyEditorPlace();
+    if (enabled && !state.paneOpen) sizeEditorPaneForViewer();
+  }
+
+  // What the editor's place shows: nothing (view mode), the source editor
+  // (edit mode), or the document pane, which covers the source editor
+  // without taking it away.
+  function applyEditorPlace() {
+    const pane = state.paneOpen;
+    const shown = pane || state.editMode;
+    el.editorPane.classList.toggle('hidden', !shown);
+    el.editorResizer.classList.toggle('hidden', !shown);
+    el.editorPane.classList.toggle('pane-mode', pane);
+    // The pane has no source lines to keep in step with the viewer.
+    el.btnScrollSync.classList.toggle('hidden', pane);
+    el.btnToggleEdit.classList.toggle('active', state.editMode && !pane);
+    el.btnSaveSource.classList.toggle('hidden', !state.editMode);
+    el.btnEditorLayout.classList.toggle('hidden', !shown);
+    if (state.paneFrame) state.paneFrame.classList.toggle('hidden', !pane);
   }
 
   function editorStacked() {
@@ -2649,7 +2669,107 @@
     }
   }
 
+  // ---------------------------------------------------------------------
+  // Document pane (F0-c)
+  //
+  // The editor's place can show an add-on's pane instead of the source
+  // editor; for now only the test pane, while run from source (main.js
+  // decides which pane, doc:open-pane). The source editor stays underneath
+  // with its text, caret and undo history, and the pane keeps a width (or,
+  // stacked, a height) of its own. Ctrl+Alt+E goes between the source and
+  // the pane, the Edit button from the pane to the source, and
+  // Ctrl+Shift+E from the pane to view mode.
+  // ---------------------------------------------------------------------
+
+  function editorPlaceSize() {
+    return { width: el.editorPane.style.width || '', height: el.editorPane.style.height || '' };
+  }
+
+  function setEditorPlaceSize(size) {
+    if (!size) return;
+    el.editorPane.style.width = size.width || '';
+    el.editorPane.style.height = size.height || '';
+  }
+
+  function ensurePaneFrame({ url, sandbox }) {
+    if (state.paneFrame) return;
+    const frame = document.createElement('iframe');
+    frame.id = 'pane-frame';
+    frame.className = 'hidden';
+    frame.title = t('pane.testName');
+    frame.setAttribute('sandbox', sandbox);
+    frame.src = url;
+    el.editorPane.appendChild(frame);
+    state.paneFrame = frame;
+  }
+
+  async function openPane() {
+    if (state.paneOpen) return;
+    if (!state.currentFilePath && !state.untitledDraft) {
+      el.editStatus.textContent = t('edit.selectFirst');
+      return;
+    }
+    // A file outside every project has no pane (protocol: documents out
+    // of a project's reach).
+    if (state.instantViewPath) {
+      el.editStatus.textContent = t('pane.notHere');
+      return;
+    }
+    const pane = await window.mdviewer.openPane();
+    if (!pane || state.paneOpen) return;
+    exitDocFullscreen();
+    if (state.editMode) state.sourceSize = editorPlaceSize();
+    if (editorFindActive()) closeFindBar();
+    ensurePaneFrame(pane);
+    state.paneOpen = true;
+    applyEditorPlace();
+    if (state.paneSize) setEditorPlaceSize(state.paneSize);
+    else if (!state.editMode) sizeEditorPaneForViewer();
+    el.editStatus.textContent = t('pane.status', { name: t('pane.testName') });
+    state.paneFrame.focus();
+  }
+
+  // From the pane to the source editor.
+  async function showSource() {
+    if (!state.paneOpen) return;
+    state.paneSize = editorPlaceSize();
+    state.paneOpen = false;
+    if (!state.editMode) {
+      await enterEditMode();
+      if (!state.editMode) applyEditorPlace();
+    } else {
+      applyEditorPlace();
+      el.editStatus.textContent = state.sourceDirty ? t('edit.unsavedChanges') : '';
+      el.mdSourceEditor.focus();
+    }
+    setEditorPlaceSize(state.sourceSize);
+  }
+
+  // From the pane to view mode: the source editor goes too (unsaved text
+  // saved or asked about, as leaving edit mode always does).
+  async function closePane() {
+    if (!state.paneOpen) return;
+    state.paneSize = editorPlaceSize();
+    state.paneOpen = false;
+    if (state.editMode) {
+      setEditorPlaceSize(state.sourceSize);
+      await exitEditMode();
+    }
+    applyEditorPlace();
+    if (!state.editMode) el.editStatus.textContent = '';
+  }
+
+  function togglePane() {
+    return state.paneOpen ? showSource() : openPane();
+  }
+
+  async function onEditButton() {
+    if (state.paneOpen) return showSource();
+    return toggleEditMode();
+  }
+
   async function toggleEditMode() {
+    if (state.paneOpen) return closePane();
     if (state.editMode) {
       exitEditMode();
     } else {
@@ -3042,11 +3162,12 @@
     e.returnValue = '';
   });
 
-  el.btnToggleEdit.addEventListener('click', toggleEditMode);
+  el.btnToggleEdit.addEventListener('click', onEditButton);
   el.btnSaveSource.addEventListener('click', () => saveSource());
   el.btnRefreshPuml.addEventListener('click', refreshCurrentFile);
 
   window.mdviewer.onMenuToggleEditMode(toggleEditMode);
+  window.mdviewer.onMenuTogglePane(togglePane);
   window.mdviewer.onMenuSaveFile(() => {
     if (state.editMode) saveSource();
   });
@@ -3520,7 +3641,7 @@
   const EDITOR_SYNC_CONTEXT_LINES = 8;
 
   function syncEditorToDocFindMatch(mark) {
-    if (!state.editMode || el.editorPane.classList.contains('hidden')) return;
+    if (!splitViewActive()) return;
     const lineEl = mark.closest('[data-source-line]');
     if (!lineEl) return;
     const startLine = parseInt(lineEl.getAttribute('data-source-line'), 10);
