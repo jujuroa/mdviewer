@@ -118,6 +118,62 @@ try {
   await sleep(800);
   const again = await p.evaluate(`return !!window.paneInfo`).catch(() => false);
   check('the hidden pane stayed alive (same page on reopening)', again === true);
+
+  // ---- moving the tab in pane mode: comes back in pane mode, with the
+  // unsaved source text, both sizes and the pane's own snapshot
+  await d(`doc.getElementById('btn-toggle-edit').click(); return 1`);
+  await sleep(800);
+  await d(`ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length); doc.execCommand('insertText', false, 'before move\\n'); ta.setSelectionRange(2, 3); return 1`);
+  await key(w, 'e', 69, CTRL | ALT);
+  await sleep(800);
+  await d(`doc.getElementById('editor-pane').style.width = '280px'; return 1`);
+  await p.evaluate(`window.mdviewerAddon.lifecycle.onSnapshot(() => ({ n: 7, note: '칸 상태' })); return 1`);
+  await w.evaluate(`window.__tw = []; const o = window.open; window.open = function (...a) { const r = o.apply(this, a); if (r) window.__tw.push(r); return r; }; return 1`);
+  let seen = new Set((await targets(app.port)).map((t) => t.id));
+  await w.evaluate(`await window.mdviewer.detachTab(${tabId}); return 1`);
+  await sleep(3500);
+  const inTw = (code) =>
+    w.evaluate(`const f = window.__tw[0].document.querySelector('iframe.doc-frame'); const doc = f.contentDocument; const ta = doc.getElementById('md-source-editor'); ${code}`);
+  const tw = await inTw(
+    `const pane = doc.getElementById('pane-frame'); return { pane: !!pane && !pane.classList.contains('hidden'), text: ta.value, sel: [ta.selectionStart, ta.selectionEnd], width: doc.getElementById('editor-pane').getBoundingClientRect().width }`
+  );
+  check('moved to a tab window: still in pane mode', tw.pane, JSON.stringify(tw));
+  check('  unsaved source text and caret came along', tw.text.includes('before move') && tw.sel[0] === 2 && tw.sel[1] === 3, JSON.stringify(tw.sel));
+  check('  the pane kept its width', Math.abs(tw.width - 280) < 2, String(tw.width));
+  let p2 = await connect(app.port, (t) => t.url.startsWith('mdviewer-addon://test/pane.html') && !seen.has(t.id), { type: 'iframe', quiet: true });
+  await waitFor(() => p2.evaluate(`return !!window.paneInfo`));
+  const r1 = await p2.evaluate(`return { restore: window.mdviewerAddon.tabs.getRestoreState(), info: window.paneInfo }`);
+  check('  the pane got its snapshot back (reason moved)', r1.restore.reason === 'moved' && r1.restore.state && r1.restore.state.n === 7 && r1.restore.state.note === '칸 상태', JSON.stringify(r1.restore));
+  check('  and knows it is in the tab window now', r1.info.window !== 'main' && r1.info.tab === tabId, JSON.stringify(r1.info));
+
+  // Back to the main window.
+  await p2.evaluate(`window.mdviewerAddon.lifecycle.onSnapshot(() => ({ n: 8 })); return 1`);
+  seen = new Set((await targets(app.port)).map((t) => t.id));
+  await w.evaluate(`await window.mdviewer.moveTabHere(${tabId}, 0, 'main'); return 1`);
+  await sleep(3500);
+  m = await mode();
+  check('moved back: pane mode', m.pane, JSON.stringify(m));
+  let p3 = await connect(app.port, (t) => t.url.startsWith('mdviewer-addon://test/pane.html') && !seen.has(t.id), { type: 'iframe', quiet: true });
+  await waitFor(() => p3.evaluate(`return !!window.paneInfo`));
+  const r2 = await p3.evaluate(`return window.mdviewerAddon.tabs.getRestoreState()`);
+  check('  pane snapshot again', r2.reason === 'moved' && r2.state && r2.state.n === 8, JSON.stringify(r2));
+
+  // The window page reloads (language change): pane mode and pane state come back.
+  await p3.evaluate(`window.mdviewerAddon.lifecycle.onSnapshot(() => ({ n: 9 })); return 1`);
+  seen = new Set((await targets(app.port)).map((t) => t.id));
+  await w.evaluate(`window.mdviewer.setLanguage('en'); return 1`).catch(() => {});
+  await sleep(5000);
+  const w2 = await connect(app.port, (t) => t.url.endsWith('index.html'), { quiet: true });
+  const d2 = inActiveDoc(w2);
+  const afterReload = await d2(`const pane = doc.getElementById('pane-frame'); return { pane: !!pane && !pane.classList.contains('hidden'), text: ta.value.includes('before move'), status: st.textContent }`);
+  check('language change: pane mode and unsaved text come back', afterReload.pane && afterReload.text, JSON.stringify(afterReload));
+  check('  status line in the new language', /Pane: Test Pane/.test(afterReload.status), afterReload.status);
+  const p4 = await connect(app.port, (t) => t.url.startsWith('mdviewer-addon://test/pane.html') && !seen.has(t.id), { type: 'iframe', quiet: true });
+  await waitFor(() => p4.evaluate(`return !!window.paneInfo`));
+  const r3 = await p4.evaluate(`return window.mdviewerAddon.tabs.getRestoreState()`);
+  check('  pane snapshot back (reason reloaded)', r3.reason === 'reloaded' && r3.state && r3.state.n === 9, JSON.stringify(r3));
+  await w2.evaluate(`window.mdviewer.setLanguage('ko'); return 1`).catch(() => {});
+  await sleep(3000);
   check('no IPC refused from app pages', !/\[ipc\] refused .* from file:/.test(app.logText()));
 } finally {
   await app.stop();

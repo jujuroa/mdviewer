@@ -4884,6 +4884,9 @@
       viewerScroll: win ? win.scrollY : 0,
       history: { back: [...state.docHistoryStack], forward: [...state.docForwardStack] },
     };
+    // In pane mode the editor's place has the pane's size; the source's
+    // was put aside.
+    const sourceSize = state.paneOpen ? state.sourceSize || { width: '', height: '' } : editorPlaceSize();
     if (state.editMode) {
       snapshot.editor = {
         // Text on disk is read again; only what isn't there travels.
@@ -4893,9 +4896,14 @@
         diskVersion: state.diskVersion,
         selection: [ta.selectionStart, ta.selectionEnd, ta.selectionDirection],
         scrollTop: ta.scrollTop,
-        width: el.editorPane.style.width || '',
-        height: el.editorPane.style.height || '',
+        width: sourceSize.width,
+        height: sourceSize.height,
       };
+    }
+    // The pane comes back in the new page if it was open (its own state
+    // goes through main, see snapshotPaneOf there).
+    if (state.paneOpen || state.paneSize) {
+      snapshot.pane = { open: state.paneOpen, size: state.paneOpen ? editorPlaceSize() : state.paneSize };
     }
     return snapshot;
   }
@@ -4922,6 +4930,10 @@
       if (Number.isFinite(editor.scrollTop)) ta.scrollTop = editor.scrollTop;
     } else if (Number.isFinite(init.viewerScroll) && el.frame.contentWindow) {
       el.frame.contentWindow.scrollTo(0, init.viewerScroll);
+    }
+    if (init.pane) {
+      state.paneSize = init.pane.size || null;
+      if (init.pane.open) openPane();
     }
   }
 
