@@ -1752,6 +1752,7 @@ function buildAppMenu() {
       submenu: [
         { label: t('menu.manageAddons'), click: (item, win) => sendToWindow(win, 'menu:manage-addons') },
         { label: t('menu.rescanAddons'), click: () => rescanAddons() },
+        ...addonTabMenuItems((choice, win) => openAddonTab(docHostFor(win), choice.addonId, choice.tabId)),
       ],
     },
     {
@@ -1843,10 +1844,6 @@ function buildAppMenu() {
                 label: t('menu.reloadProgram'),
                 accelerator: 'CmdOrCtrl+Shift+F5',
                 click: () => reloadProgram(),
-              },
-              {
-                label: t('menu.openTestTab'),
-                click: (item, win) => openTestTabFromDialog(win),
               },
               {
                 label: t('menu.toggleTestPane'),
@@ -2120,20 +2117,18 @@ function addonStateIn(answer) {
   }
 }
 
-// A page's file name, as a tab title.
-function pageTitleOf(url) {
-  const name = url.replace(/[?#].*$/, '').split('/').pop() || url;
-  try {
-    return decodeURIComponent(name);
-  } catch (err) {
-    return name;
-  }
+// The tab an add-on contributes under this id (contributes.tabs), with
+// its add-on, while that add-on runs.
+function addonTabContribution(addonId, tabId) {
+  const entry = addonRegistry && addonRegistry.running(addonId);
+  const tabs = entry && entry.manifest.contributes && entry.manifest.contributes.tabs;
+  const contribution = tabs && tabs.find((t) => t.id === tabId);
+  return contribution ? { entry, contribution } : null;
 }
 
-// What differs between kinds of tab: document tabs ('doc'), and while run
-// from source a 'test' kind that shows any page (for trying out what
-// add-on tabs will need); add-on tabs come with add-ons (2.x). The window
-// page builds each tab's strip entry and iframe from what this gives (see
+// What differs between kinds of tab: document tabs ('doc') and add-on tabs
+// ('addon', a tab an add-on contributes, protocol 12.7). The window page
+// builds each tab's strip entry and iframe from what this gives (see
 // tabForPage), without knowing the kinds itself.
 //   state: the kind's own state for a new tab (tab[kind]), from its init.
 //   reopen: what its page opens on when it loads again on its own (its
@@ -2183,30 +2178,31 @@ const TAB_KINDS = {
       tab.init = initFromDoc(tab);
     },
   },
-  // init: { url } — a test add-on's page (mdviewer-addon://<id>/..., in an
-  // origin of its own, as add-on pages will be) or a file: page, which
-  // shares the window page's origin and so is not walled off from it.
-  test: {
-    state: (init) => ({ url: String(init.url || 'about:blank') }),
-    reopen: (tab) => ({ url: tab.test.url }),
-    // The add-on page gets back what it handed over (see addon:hello).
-    handOver: (tab, answer, reason) => ({ url: tab.test.url, restore: { reason, state: addonStateIn(answer) } }),
+  // init: { addonId, tabId } and, when its page loads again, restore (see
+  // addon:hello). The page is the contribution's entry in the add-on's
+  // origin (mdviewer-addon://<id>/<entry>).
+  addon: {
+    state: (init) => ({ id: String(init.addonId), tabId: String(init.tabId) }),
+    reopen: () => ({}),
+    // The add-on page gets back what it handed over.
+    handOver: (tab, answer, reason) => ({ restore: { reason, state: addonStateIn(answer) } }),
     // An add-on page cannot hold its tab open (onWillClose, protocol 7.4).
     closeTimeout: 3000,
-    // An add-on page's address carries its tab id, which it gives back in
+    // The address carries the tab id, which the page gives back in
     // addon:hello as a hint (main checks the frame itself).
-    page: (tab) => ({
-      url: originIn(tab.test.url, ADDON_SCHEME) ? withTabHint(tab.test.url, tab.id) : tab.test.url,
-      sandbox: FOREIGN_TAB_SANDBOX,
-    }),
-    view: (tab) => ({
-      title: pageTitleOf(tab.test.url),
-      tooltip: tab.test.url,
-      icon: { badge: 'text', path: '' },
-      dirty: false,
-    }),
-    restoreEntry: () => null,
-    // Not the app's page: it never says hello.
+    page: (tab) => {
+      const found = addonTabContribution(tab.addon.id, tab.addon.tabId);
+      const entry = found ? found.contribution.entry : 'index.html';
+      return { url: withTabHint(`${ADDON_SCHEME}://${tab.addon.id}/${entry}`, tab.id), sandbox: FOREIGN_TAB_SANDBOX };
+    },
+    view: (tab) => {
+      const found = addonTabContribution(tab.addon.id, tab.addon.tabId);
+      const title = found ? found.contribution.title : tab.addon.tabId;
+      const icon = found && found.contribution.icon ? { url: `${ADDON_SCHEME}://${tab.addon.id}/${found.contribution.icon}` } : { badge: 'ext' };
+      return { title, tooltip: found ? `${found.entry.manifest.name}: ${title}` : title, icon, dirty: false };
+    },
+    restoreEntry: (tab) => ({ addon: tab.addon.id, tab: tab.addon.tabId }),
+    // Not the app's page: it never says tab:hello (addon:hello instead).
     hello: () => {},
   },
 };
@@ -2899,36 +2895,56 @@ appIpc.handle('tabs:open', (event, filePath, options = {}) => {
   return { ok: true, id: tab.id };
 });
 
-// A 'test' tab (see TAB_KINDS) — only while run from source.
-function openTestTab(host, url) {
-  if (app.isPackaged || !host || typeof url !== 'string' || !url) return null;
-  return createTab(host, { url }, { kind: 'test' });
+// ---- Add-on tabs ----
+// Opened from Extensions in the menu bar or the tab strip's "+" (and from
+// commands, F3). instances "single" (the default) brings forward the tab
+// already open in the program window; "multiple" opens another.
+
+function openAddonTab(host, addonId, tabId, { init = {}, activate = true } = {}) {
+  const found = addonTabContribution(addonId, tabId);
+  if (!host || !found) return null;
+  if ((found.contribution.instances || 'single') === 'single') {
+    const open = tabsOwnedBy(host.owner).find((t) => t.kind === 'addon' && t.addon.id === addonId && t.addon.tabId === tabId);
+    if (open) {
+      if (activate) activateTab(open.host, open.id);
+      return open;
+    }
+  }
+  return createTab(host, { ...init, addonId, tabId }, { kind: 'addon', activate });
 }
 
-async function openTestTabFromDialog(win) {
-  const host = docHostFor(win);
-  if (!host) return;
-  const testAddons = path.join(__dirname, 'test', 'addons');
-  const result = await dialog.showOpenDialog(host.win, {
-    defaultPath: testAddons,
-    properties: ['openFile'],
-    filters: [{ name: 'HTML', extensions: ['html', 'htm'] }],
-  });
-  const file = !result.canceled && result.filePaths[0];
-  if (!file) return;
-  // A test add-on's page opens the way add-on pages will: from its scheme.
-  const rel = isPathInside(file, testAddons) ? path.relative(testAddons, file).split(path.sep) : null;
-  const url =
-    rel && rel.length > 1
-      ? `${ADDON_SCHEME}://${rel[0].toLowerCase()}/${rel.slice(1).map(encodeURIComponent).join('/')}`
-      : pathToFileURL(file).href;
-  openTestTab(host, url);
+// One menu item per tab a running add-on contributes: "Add-on: Tab".
+function addonTabMenuItems(onChoose) {
+  if (!addonRegistry) return [];
+  const items = [];
+  for (const entry of addonRegistry.list()) {
+    if (!addonRegistry.running(entry.id)) continue;
+    for (const tab of (entry.manifest.contributes && entry.manifest.contributes.tabs) || []) {
+      items.push({ label: `${entry.manifest.name}: ${tab.title}`, click: (item, win) => onChoose({ addonId: entry.id, tabId: tab.id }, win) });
+    }
+  }
+  return items.length ? [{ type: 'separator' }, ...items] : [];
 }
 
-appIpc.handle('tabs:open-test', (event, url, container) => {
-  const tab = openTestTab(senderHost(event, container), url);
-  return tab ? { ok: true, id: tab.id } : { ok: false };
+// The tab strip's "+": a new document, and the add-on tabs.
+appIpc.handle('tabs:show-new-menu', (event, container) => {
+  const host = senderHost(event, container);
+  if (!host) return { ok: false };
+  const items = [
+    { label: t('menu.newDocument'), click: () => createTab(host, { draft: true }) },
+    ...addonTabMenuItems((choice) => openAddonTab(host, choice.addonId, choice.tabId)),
+  ];
+  Menu.buildFromTemplate(items).popup({ window: host.win });
+  return { ok: true };
 });
+
+// An add-on that stops running (turned off, gone, blocked) takes its tabs
+// with it.
+function closeTabsOfStoppedAddons() {
+  for (const tab of [...tabsById.values()]) {
+    if (tab.kind === 'addon' && !addonRegistry.running(tab.addon.id)) closeTab(tab, { force: true });
+  }
+}
 
 // ---- Add-on tab frames (F0-b) ----
 // An add-on's page in a tab gets a bridge of its own (mdviewerAddon, see
@@ -2959,7 +2975,7 @@ function addonFrameFor(event, hint) {
   const id = addonIdOf(frame.url);
   if (!id) return null;
   if (!frame.parent.parent) {
-    return tab.kind === 'test' && addonIdOf(tab.test.url) === id ? { tab, kind: 'tab' } : null;
+    return tab.kind === 'addon' && tab.addon.id === id ? { tab, kind: 'tab' } : null;
   }
   if (frame.parent.parent.parent) return null;
   const isPane = tab.kind === 'doc' && tab.pane && sameFrame(tab.frame, frame.parent) && addonIdOf(tab.pane.url) === id;
@@ -2972,8 +2988,8 @@ function addonCallerOf(event) {
   const frame = event.senderFrame;
   if (!frame) return null;
   for (const tab of tabsById.values()) {
-    if (tab.kind === 'test' && sameFrame(tab.frame, frame)) return { tab, kind: 'tab', url: tab.test.url };
-    if (tab.pane && sameFrame(tab.pane.frame, frame)) return { tab, kind: 'pane', url: tab.pane.url };
+    if (tab.kind === 'addon' && sameFrame(tab.frame, frame)) return { tab, kind: 'tab', addonId: tab.addon.id };
+    if (tab.pane && sameFrame(tab.pane.frame, frame)) return { tab, kind: 'pane', addonId: addonIdOf(tab.pane.url) };
   }
   return null;
 }
@@ -3062,8 +3078,8 @@ ipcMain.handle('addon:call', (event, method) => {
     throw new Error('NotRegistered: this frame is not an add-on page');
   }
   if (method === 'app/info') {
-    const { tab, kind, url } = caller;
-    return { version: app.getVersion(), language: currentLanguage, addon: addonIdOf(url), kind, tab: tab.id, window: tab.host.key };
+    const { tab, kind, addonId } = caller;
+    return { version: app.getVersion(), language: currentLanguage, addon: addonId, kind, tab: tab.id, window: tab.host.key };
   }
   throw new Error(`MethodNotFound: ${method}`);
 });
@@ -3147,9 +3163,15 @@ appIpc.handle('tabs:restore', (event, tabs, activeIndex) => {
   if (!host || !Array.isArray(tabs)) return { ok: false };
   let activeTab = null;
   tabs.forEach((entry, i) => {
-    if (!entry || typeof entry.path !== 'string' || findTabForPath(host.owner, entry.path)) return;
-    const tab = createTab(host, { filePath: entry.path }, { activate: false });
-    if (i === activeIndex) activeTab = tab;
+    if (!entry) return;
+    let tab = null;
+    if (typeof entry.addon === 'string' && typeof entry.tab === 'string') {
+      // An add-on that no longer runs leaves its tab behind.
+      tab = openAddonTab(host, entry.addon, entry.tab, { init: { restore: { reason: 'restored', state: null } }, activate: false });
+    } else if (typeof entry.path === 'string' && !findTabForPath(host.owner, entry.path)) {
+      tab = createTab(host, { filePath: entry.path }, { activate: false });
+    }
+    if (tab && i === activeIndex) activeTab = tab;
   });
   const target = activeTab || host.tabs[0];
   if (target) activateTab(host, target.id);
@@ -3444,6 +3466,8 @@ function addonListForPage() {
     problems: e.problems,
     warnings: e.warnings,
     activation: e.activation,
+    // The tabs it can open now (for the tab strip's "+").
+    tabs: addonRegistry.running(e.id) ? ((e.manifest.contributes && e.manifest.contributes.tabs) || []).map((tab) => tab.id) : [],
   }));
 }
 
@@ -3459,6 +3483,8 @@ function notifyAddonsChanged() {
 // management screen's button).
 function rescanAddons() {
   addonRegistry.rescan(addonRegistryOptions());
+  closeTabsOfStoppedAddons();
+  buildAppMenu();
   return notifyAddonsChanged();
 }
 

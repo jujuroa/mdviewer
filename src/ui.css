@@ -628,6 +628,22 @@ html, body {
 
 .doc-tab-icon { display: flex; flex-shrink: 0; }
 .doc-tab-icon .file-badge { width: 15px; height: 15px; }
+.doc-tab-icon img { width: 15px; height: 15px; object-fit: contain; }
+.doc-tab-new {
+  flex-shrink: 0;
+  align-self: center;
+  margin: 0 4px;
+  width: 22px;
+  height: 22px;
+  border: none;
+  border-radius: 4px;
+  background: none;
+  color: var(--text-dim);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+}
+.doc-tab-new:hover { background: var(--hover); color: var(--text); }
 
 .doc-tab-label {
   min-width: 0;
