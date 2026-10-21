@@ -549,11 +549,10 @@ html, body {
   background: var(--bg-app);
 }
 
-/* The window's tab bar: the document tabs, then the status line and the
-   buttons for the panes around them. Each tab is one open document (viewer
-   + editor pair), shown by an iframe in #doc-host. The preview tab
-   (replaced by the next explorer click) has its name in italics; an
-   unsaved one shows a dot where the close button goes until hovered. */
+/* The window's tab bar: the tabs, then the status line and the buttons for
+   the panes around them. Each tab (a document's viewer + editor pair, or
+   an add-on's page) is an iframe in #doc-host. An unsaved one shows a dot
+   where the close button goes until hovered. */
 .tab-bar {
   display: flex;
   flex-shrink: 0;
@@ -1294,6 +1293,20 @@ html, body {
   background: var(--bg-app);
 }
 .doc-frame.active { display: block; }
+/* An add-on tab whose page stopped (see onTabFrameGone in renderer.js). */
+.frame-trouble {
+  position: absolute;
+  inset: 0;
+  display: none;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  background: var(--bg-app);
+  color: var(--text);
+}
+.frame-trouble.active { display: flex; }
+.frame-trouble-title { font-weight: 600; }
 
 /* A tab window has no title bar: the tab strip's empty space moves it
    (double-click maximizes), the tabs themselves stay clickable and

@@ -40,3 +40,4 @@ window.probe = {
 };
 document.getElementById('status').textContent = `ready ${location.origin}`;
 window.probeReady = true;
+if (window.mdviewerAddon) window.mdviewerAddon.ready();

@@ -13,22 +13,28 @@ const TAB_ID = PAGE === 'doc.html' ? Number(new URLSearchParams(location.search)
 // sure this frame is that tab's page (addon:hello, synchronous so the
 // bridge is there before the page's scripts run).
 const ADDON_SNAPSHOT_TIMEOUT_MS = 2000;
+const ADDON_WILL_CLOSE_TIMEOUT_MS = 3000;
 if (location.protocol === 'mdviewer-addon:' && window.top !== window) {
   const hint = Number(new URLSearchParams(location.search).get('tab')) || 0;
   const hello = ipcRenderer.sendSync('addon:hello', hint);
   if (hello && hello.ok) {
     let snapshotHandler = null;
+    let willCloseHandler = null;
+    // A handler gets so long, then the host goes on without it.
+    const within = (handler, ms) =>
+      Promise.race([Promise.resolve().then(handler), new Promise((resolve) => setTimeout(resolve, ms))]);
     // The tab host asks before the tab moves or its window reloads: the
     // page's onSnapshot handler gets ADDON_SNAPSHOT_TIMEOUT_MS to give
     // what it wants back (tabs.getRestoreState() in the new page).
     ipcRenderer.on('tab:ask', async (event, { id, kind } = {}) => {
       let value = null;
       if (kind === 'close') {
+        // Closing never waits for long, nor can it be refused (protocol 7.4).
+        if (willCloseHandler) await within(willCloseHandler, ADDON_WILL_CLOSE_TIMEOUT_MS).catch(() => {});
         value = true;
       } else if (kind === 'snapshot' && snapshotHandler) {
         try {
-          const timeout = new Promise((resolve) => setTimeout(resolve, ADDON_SNAPSHOT_TIMEOUT_MS));
-          const state = await Promise.race([Promise.resolve().then(snapshotHandler), timeout]);
+          const state = await within(snapshotHandler, ADDON_SNAPSHOT_TIMEOUT_MS);
           if (state !== undefined) value = { state };
         } catch (err) {
           value = null;
@@ -43,9 +49,14 @@ if (location.protocol === 'mdviewer-addon:' && window.top !== window) {
     contextBridge.exposeInMainWorld('mdviewerAddon', {
       app: hello.app,
       call: (method, params) => ipcRenderer.invoke('addon:call', method, params),
+      // The page has set up what it handles (protocol 7.4).
+      ready: () => ipcRenderer.send('addon:ready'),
       lifecycle: {
         onSnapshot: (handler) => {
           snapshotHandler = typeof handler === 'function' ? handler : null;
+        },
+        onWillClose: (handler) => {
+          willCloseHandler = typeof handler === 'function' ? handler : null;
         },
       },
       tabs: {
@@ -119,6 +130,7 @@ if (PAGE === 'index.html' || TAB_ID) contextBridge.exposeInMainWorld('mdviewer',
   moveTabHere: (id, index, container) => ipcRenderer.invoke('tabs:move-here', id, index, container),
   detachTab: (id, screenPoint) => ipcRenderer.invoke('tabs:detach', id, screenPoint),
   showNewTabMenu: (container) => ipcRenderer.invoke('tabs:show-new-menu', container),
+  onTabFrameGone: (callback) => ipcRenderer.on('tabs:frame-gone', (event, payload) => callback(payload)),
   showTabContextMenu: (id) => ipcRenderer.invoke('tabs:show-context-menu', id),
   restoreTabs: (tabs, activeIndex) => ipcRenderer.invoke('tabs:restore', tabs, activeIndex),
   closeTabsUnder: (roots) => ipcRenderer.invoke('tabs:close-under', roots),
