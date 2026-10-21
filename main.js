@@ -2216,8 +2216,9 @@ const TAB_KINDS = {
     reopen: () => ({}),
     // The add-on page gets back what it handed over.
     handOver: (tab, answer, reason) => ({ restore: { reason, state: addonStateIn(answer) } }),
-    // An add-on page cannot hold its tab open (onWillClose, protocol 7.4).
-    closeTimeout: 3000,
+    // An add-on page cannot hold its tab open: its onWillClose handler gets
+    // 3 s (protocol 7.4, timed in preload.js), the answer a little more.
+    closeTimeout: 3500,
     // The address carries the tab id, which the page gives back in
     // addon:hello as a hint (main checks the frame itself).
     page: (tab) => {
@@ -3035,12 +3036,14 @@ function addonCallerOf(event) {
   return null;
 }
 
-// A pane's process can end on its own (a crash, killed from outside), and
-// no event says so for a frame in another process: its WebFrameMain just
-// stops being usable. So while panes exist they are checked now and then,
-// and a document tab whose pane is gone is told (doc:pane-gone).
-const PANE_CHECK_MS = 1500;
-let paneCheckTimer = null;
+// An add-on page's process can end on its own (a crash, killed from
+// outside), and no event says so for a frame in another process: its
+// WebFrameMain just stops being usable. So while add-on tabs and panes
+// exist their frames are checked now and then. A document tab whose pane
+// is gone is told (doc:pane-gone); for an add-on tab the window page
+// shows that it stopped (tabs:frame-gone).
+const ADDON_FRAME_CHECK_MS = 1500;
+let addonFrameCheckTimer = null;
 
 function frameGone(frame) {
   try {
@@ -3050,11 +3053,18 @@ function frameGone(frame) {
   }
 }
 
-function watchPanes() {
-  if (paneCheckTimer) return;
-  paneCheckTimer = setInterval(() => {
+function watchAddonFrames() {
+  if (addonFrameCheckTimer) return;
+  addonFrameCheckTimer = setInterval(() => {
     let any = false;
     for (const tab of tabsById.values()) {
+      if (tab.kind === 'addon' && tab.frame) {
+        any = true;
+        if (frameGone(tab.frame)) {
+          tab.frame = null;
+          if (!tab.host.owner.isDestroyed()) tab.host.owner.webContents.send('tabs:frame-gone', { container: tab.host.key, id: tab.id });
+        }
+      }
       if (!tab.pane || !tab.pane.frame) continue;
       any = true;
       if (!frameGone(tab.pane.frame)) continue;
@@ -3063,10 +3073,22 @@ function watchPanes() {
       if (tab.frame && !frameGone(tab.frame)) sendToTab(tab, 'doc:pane-gone');
     }
     if (!any) {
-      clearInterval(paneCheckTimer);
-      paneCheckTimer = null;
+      clearInterval(addonFrameCheckTimer);
+      addonFrameCheckTimer = null;
     }
-  }, PANE_CHECK_MS);
+  }, ADDON_FRAME_CHECK_MS);
+}
+
+// A page has 10 s after hello to say it is ready (protocol 7.4); one that
+// doesn't is logged (a background frame is also stopped, see there).
+const ADDON_READY_TIMEOUT_MS = 10000;
+
+function expectReady(holder, what) {
+  clearTimeout(holder.readyTimer);
+  holder.ready = false;
+  holder.readyTimer = setTimeout(() => {
+    if (!holder.ready) console.warn(`[addons] ${what} did not call ready() within ${ADDON_READY_TIMEOUT_MS / 1000} s`);
+  }, ADDON_READY_TIMEOUT_MS);
 }
 
 // While run from source, a document tab's pane is the test add-on's.
@@ -3099,15 +3121,25 @@ ipcMain.on('addon:hello', (event, hint) => {
   let restore;
   if (kind === 'pane') {
     tab.pane.frame = event.senderFrame;
-    watchPanes();
+    expectReady(tab.pane, `${addonIdOf(tab.pane.url)} pane of tab ${tab.id}`);
     restore = tab.paneRestore || { reason: 'new', state: null };
     tab.paneRestore = null;
   } else {
     tab.frame = event.senderFrame;
+    expectReady(tab.addon, `${tab.addon.id} tab ${tab.id}`);
     restore = (tab.init && tab.init.restore) || { reason: 'new', state: null };
     tab.init = TAB_KINDS[tab.kind].reopen(tab);
   }
+  watchAddonFrames();
   event.returnValue = { ok: true, kind, app: { version: app.getVersion(), language: currentLanguage }, restore };
+});
+
+ipcMain.on('addon:ready', (event) => {
+  const caller = addonCallerOf(event);
+  if (!caller) return;
+  const holder = caller.kind === 'pane' ? caller.tab.pane : caller.tab.addon;
+  holder.ready = true;
+  clearTimeout(holder.readyTimer);
 });
 
 // Every add-on API call. The caller is the frame itself (a tab page that

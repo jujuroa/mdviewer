@@ -1,7 +1,7 @@
 // Add-on tabs (F2): the tabs add-ons contribute — opened from Extensions,
 // single or multiple instances, their strip entry, the strip's "+", closed
 // when the add-on stops, brought back after a relaunch.
-import { launch, checker, connect, sleep, openWindowWith, openAddonTab, targets } from './harness.mjs';
+import { launch, checker, connect, sleep, openWindowWith, openAddonTab, targets, waitFor } from './harness.mjs';
 
 const { check, done } = checker();
 const strip = (w) =>
@@ -59,6 +59,46 @@ try {
   const o = await connect(app.port, (t) => t.url.startsWith('mdviewer-addon://other/probe.html'), { type: 'iframe', quiet: true });
   const restore = await o.evaluate(`return window.mdviewerAddon.tabs.getRestoreState()`);
   check('  told it was restored', restore && restore.reason === 'restored', JSON.stringify(restore));
+
+  // ready(): the test probe calls it, the other one doesn't (logged after 10 s).
+  await sleep(10500);
+  check('a page that calls ready() is not reported', !/test tab \d+ did not call ready/.test(app.logText()));
+  check('one that does not is logged', /other tab \d+ did not call ready\(\) within 10 s/.test(app.logText()));
+
+  // onWillClose runs before the tab goes (it reaches the test add-on's allowed host).
+  const hits = [];
+  const http = await import('node:http');
+  const srv = http.createServer((req, res) => { hits.push(req.url); res.writeHead(200, { 'Access-Control-Allow-Origin': '*' }); res.end('ok'); }).listen(45678, '127.0.0.1');
+  try {
+    const t1 = await openAddonTab(app, w, 'Test: Probe');
+    const f1 = await connect(app.port, (t) => t.url === `mdviewer-addon://test/probe.html?tab=${t1.id}`, { type: 'iframe', quiet: true });
+    await f1.evaluate(`window.mdviewerAddon.lifecycle.onWillClose(async () => { await fetch('http://127.0.0.1:45678/closing'); }); return 1`);
+    const t0 = Date.now();
+    await w.evaluate(`return await window.mdviewer.closeTab(${t1.id})`);
+    check('onWillClose runs before the tab closes', hits.includes('/closing'), JSON.stringify(hits));
+    // A handler that never finishes holds closing for 3 s at most.
+    const t2 = await openAddonTab(app, w, 'Test: Probe');
+    const f2 = await connect(app.port, (t) => t.url === `mdviewer-addon://test/probe.html?tab=${t2.id}`, { type: 'iframe', quiet: true });
+    await f2.evaluate(`window.mdviewerAddon.lifecycle.onWillClose(() => new Promise(() => {})); return 1`);
+    const t3 = Date.now();
+    const closed = await w.evaluate(`return await window.mdviewer.closeTab(${t2.id})`);
+    const took = Date.now() - t3;
+    check('  a handler that never ends cannot hold the tab (closes in ~3 s)', closed && closed.closed && took >= 2500 && took < 5000, `${took} ms`);
+  } finally {
+    srv.close();
+  }
+
+  // The page's process ends: the tab says so; Reload makes it anew.
+  const t4 = await openAddonTab(app, w, 'Test: Probe');
+  const f4 = await connect(app.port, (t) => t.url === `mdviewer-addon://test/probe.html?tab=${t4.id}`, { type: 'iframe', quiet: true });
+  f4.send('Page.crash').catch(() => {});
+  const trouble = await waitFor(() => w.evaluate(`const b = document.querySelector('.frame-trouble.active'); return b ? b.textContent : null`), { timeout: 8000 }).catch(() => null);
+  check('add-on tab process ended: "this tab stopped"', !!trouble && trouble.includes('멈췄습니다'), String(trouble));
+  const seen = new Set((await targets(app.port)).map((t) => t.id));
+  await w.evaluate(`document.querySelector('.frame-trouble.active button').click(); return 1`);
+  const f5 = await connect(app.port, (t) => t.url === `mdviewer-addon://test/probe.html?tab=${t4.id}` && !seen.has(t.id), { type: 'iframe', quiet: true });
+  check('  Reload: the page again, the notice gone', (await f5.evaluate(`return !!window.probeReady`)) && !(await w.evaluate(`return !!document.querySelector('.frame-trouble')`)));
+
   check('no IPC refused from app pages', !/\[ipc\] refused .* from file:/.test(app.logText()));
 } finally {
   await app.stop();

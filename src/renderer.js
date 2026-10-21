@@ -3546,6 +3546,7 @@
       if (ids.has(id)) continue;
       frame.remove();
       area.frames.delete(id);
+      removeFrameTrouble(area, id);
     }
     for (const tab of area.tabs) {
       let frame = area.frames.get(tab.id);
@@ -3558,9 +3559,45 @@
         area.frames.set(tab.id, frame);
       }
       frame.classList.toggle('active', tab.id === area.activeId);
+      const trouble = area.troubles && area.troubles.get(tab.id);
+      if (trouble) trouble.classList.toggle('active', tab.id === area.activeId);
     }
     if (focusId) focusTabFrame(area, focusId);
   }
+
+  // An add-on tab whose page's process ended: its place says so, and
+  // Reload makes the page anew.
+  function removeFrameTrouble(area, id) {
+    const box = area.troubles && area.troubles.get(id);
+    if (!box) return;
+    box.remove();
+    area.troubles.delete(id);
+  }
+
+  window.mdviewer.onTabFrameGone(({ container, id } = {}) => {
+    const area = tabAreas.get(container);
+    if (!area || !area.frames.has(id)) return;
+    removeFrameTrouble(area, id);
+    area.troubles = area.troubles || new Map();
+    const box = area.doc.createElement('div');
+    box.className = 'frame-trouble';
+    box.classList.toggle('active', id === area.activeId);
+    const title = area.doc.createElement('p');
+    title.className = 'frame-trouble-title';
+    title.textContent = t('tabs.frameGone');
+    const reload = area.doc.createElement('button');
+    reload.textContent = t('tabs.reload');
+    reload.addEventListener('click', () => {
+      removeFrameTrouble(area, id);
+      const frame = area.frames.get(id);
+      if (frame) frame.remove();
+      area.frames.delete(id);
+      syncTabFrames(area, id);
+    });
+    box.append(title, reload);
+    area.host.appendChild(box);
+    area.troubles.set(id, box);
+  });
 
   function focusTabFrame(area, id) {
     const frame = area.frames.get(id);
