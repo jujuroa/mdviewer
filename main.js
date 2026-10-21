@@ -13,12 +13,13 @@ const hljs = require('highlight.js');
 const sanitizeHtml = require('sanitize-html');
 const { CODE_LANGUAGE_BY_EXT, CODE_HIGHLIGHT_MAX_LENGTH, codeLanguageOf } = require('./src/code-languages.js');
 const { DEFAULT_LANGUAGE, SUPPORTED_LANGUAGES, STRINGS, translate } = require('./assets/i18n.js');
-const { samePath, isPathInside, openArgFromArgv } = require('./lib/paths.js');
+const { samePath, isPathInside, openArgFromArgv, switchValues } = require('./lib/paths.js');
 const { neighbourIndex, reorderIndex, insertIndex } = require('./lib/tab-strip.js');
 const { contentVersion, writeIfUnchanged } = require('./lib/doc-version.js');
 const { isAppPageUrl, docTabIdOf, originIn, subframeNavigationAllowed } = require('./lib/app-frames.js');
 const { registerAddonScheme, serveAddonPages, limitPermissionsToAppPages, refuseAddonDownloads } = require('./addons/protocol.js');
 const { SCHEME: ADDON_SCHEME } = require('./addons/pages.js');
+const { Registry: AddonRegistry } = require('./addons/registry.js');
 
 // A preview build (`npm run dist:preview`) carries a prerelease version such
 // as 1.3.0-preview.3 and installs over the released app, so once it is running
@@ -772,7 +773,10 @@ function reloadProgram() {
   // open, and reopening it would steal the active one.
   const args = [
     process.argv[1],
-    ...process.argv.slice(2).filter((a) => a.startsWith('-') && !a.startsWith(RESTORE_PROJECTS_ARG)),
+    ...process.argv
+      .slice(2)
+      .filter((a) => a.startsWith('-') && a !== '--addon-dev' && !a.startsWith('--addon-dev=') && !a.startsWith(RESTORE_PROJECTS_ARG)),
+    ...addonDevDirs().map((dir) => `--addon-dev=${dir}`),
   ];
   // One entry per window, null for a window with no project open, so the
   // relaunch comes back with as many windows as there were.
@@ -817,6 +821,8 @@ function setLanguage(lang) {
   if (!SUPPORTED_LANGUAGES.includes(lang) || lang === currentLanguage) return;
   currentLanguage = lang;
   saveSettings({ ...loadSettings(), language: lang });
+  // Add-on names and titles come in the app's language.
+  if (addonRegistry) addonRegistry.rescan({ language: lang });
   buildAppMenu();
   // The renderer applies its string table once at startup, so a reload is
   // still the way to re-translate everything already on screen.
@@ -3354,23 +3360,46 @@ function spawnTerminalFor(event, key, cwd, cols, rows) {
 // on a .md file should hand its path to the window the user was last in
 // instead of spawning a competing process. Starting the program again with
 // nothing to open asks for another window, which this process opens.
-// Add-on pages (see addons/protocol.js). Until add-ons are found and
-// registered (F1), the only ones served are the test add-ons in
-// test/addons/<id>/, and only while run from source; manifest.json there
-// gives network.hosts.
+// ---- Add-ons: finding them ----
+// The add-ons the app knows (addons/registry.js), looked for in protocol
+// 4.2's order: --addon-dev folders (run from source only), the folders in
+// the addons.extraDirs setting, then the install folder. Only an add-on
+// that can run has its pages served (addons/protocol.js).
 registerAddonScheme();
 
-function resolveAddonPages(id) {
-  if (app.isPackaged || !/^[a-z0-9][a-z0-9-]*$/.test(id)) return null;
-  const dir = path.join(__dirname, 'test', 'addons', id);
-  let manifest;
-  try {
-    manifest = JSON.parse(fs.readFileSync(path.join(dir, 'manifest.json'), 'utf-8'));
-  } catch (err) {
-    return null;
+let addonRegistry = null;
+
+function addonDevDirs() {
+  return app.isPackaged ? [] : switchValues(process.argv, '--addon-dev').map((dir) => path.resolve(dir));
+}
+
+// %LOCALAPPDATA%\mdviewer\addons, out of the roaming profile (an add-on
+// can be big). Run from source, MDVIEWER_ADDONS_DIR can point elsewhere
+// (the app checks use an empty one).
+function addonInstallDir() {
+  if (!app.isPackaged && process.env.MDVIEWER_ADDONS_DIR) return process.env.MDVIEWER_ADDONS_DIR;
+  return path.join(process.env.LOCALAPPDATA || app.getPath('appData'), 'mdviewer', 'addons');
+}
+
+function startAddonRegistry() {
+  const extraDirs = loadSettings()['addons.extraDirs'];
+  addonRegistry = new AddonRegistry({
+    language: currentLanguage,
+    devDirs: addonDevDirs(),
+    extraDirs: Array.isArray(extraDirs) ? extraDirs.filter((d) => typeof d === 'string') : [],
+    installDir: addonInstallDir(),
+  });
+  for (const entry of addonRegistry.rescan()) {
+    const why = entry.problems.map((p) => `${p.path || '-'} ${p.code}${p.detail ? ` (${p.detail})` : ''}`).join('; ');
+    console.log(`[addons] ${entry.id} (${entry.source}) ${entry.status}${why ? `: ${why}` : ''}`);
   }
-  const hosts = manifest && manifest.network && Array.isArray(manifest.network.hosts) ? manifest.network.hosts : [];
-  return { dir, hosts };
+}
+
+function resolveAddonPages(id) {
+  const entry = addonRegistry && addonRegistry.get(id);
+  if (!entry || entry.status !== 'ok') return null;
+  const network = entry.manifest.network;
+  return { dir: entry.dir, hosts: network && Array.isArray(network.hosts) ? network.hosts : [] };
 }
 
 const gotSingleInstanceLock = app.requestSingleInstanceLock();
@@ -3391,6 +3420,7 @@ if (!gotSingleInstanceLock) {
   });
 
   app.whenReady().then(() => {
+    startAddonRegistry();
     serveAddonPages(resolveAddonPages);
     limitPermissionsToAppPages();
     refuseAddonDownloads();

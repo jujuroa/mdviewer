@@ -1,7 +1,7 @@
 # 시험용 add-on
 
-소스에서 실행할 때(`npm start`)만 `mdviewer-addon://<id>/…`로 제공되는 시험 페이지다. 설치본에는 들어가지 않는다.
-add-on 찾기·등록(F1)이 생기기 전까지는 `manifest.json`에서 `network.hosts`만 읽는다.
+시험용 add-on이다. 설치본에는 들어가지 않고, 소스에서 `--addon-dev`로 불러온다:
+`npm start -- --addon-dev test/addons/test --addon-dev test/addons/other`. 앱 검사(`npm run test:app`)는 둘 다 불러와 띄운다.
 
 | 폴더 | 쓰임 |
 |---|---|

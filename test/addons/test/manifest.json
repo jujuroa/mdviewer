@@ -1,4 +1,30 @@
 {
+  "manifestVersion": 1,
   "id": "test",
-  "network": { "hosts": ["http://127.0.0.1:45678"] }
+  "name": "Test",
+  "description": "F0 시험용 add-on (test/addons/README.md)",
+  "version": "0.0.1",
+  "engines": {
+    "mdviewer": ">=2.0.0 <3.0.0",
+    "api": 1
+  },
+  "network": {
+    "hosts": [
+      "http://127.0.0.1:45678"
+    ]
+  },
+  "contributes": {
+    "tabs": [
+      {
+        "id": "test.probe",
+        "title": "Probe",
+        "entry": "probe.html"
+      },
+      {
+        "id": "test.pane",
+        "title": "Test Pane",
+        "entry": "pane.html"
+      }
+    ]
+  }
 }
