@@ -32,8 +32,9 @@ function freePort() {
 // open: what to open on the command line (relative to it); settings: the
 // instance's settings.json (Korean UI by default, which the checks' status
 // line texts assume); addonDev: add-on folders (from the repository root)
-// loaded with --addon-dev.
-export async function launch({ files = {}, open = 'proj', settings = { language: 'ko' }, addonDev = ['test/addons/test', 'test/addons/other'] } = {}) {
+// loaded with --addon-dev; env: more environment variables, with {tmp} in
+// a value standing for the temp folder.
+export async function launch({ files = {}, open = 'proj', settings = { language: 'ko' }, addonDev = ['test/addons/test', 'test/addons/other'], env: moreEnv = {} } = {}) {
   const tmp = mkdtempSync(path.join(tmpdir(), 'mdvtest-'));
   mkdirSync(path.join(tmp, 'userData'), { recursive: true });
   writeFileSync(path.join(tmp, 'userData', 'settings.json'), JSON.stringify(settings));
@@ -43,12 +44,15 @@ export async function launch({ files = {}, open = 'proj', settings = { language:
     writeFileSync(p, text);
   }
   const port = await freePort();
+  const inspectPort = await freePort();
   const env = { ...process.env };
   delete env.ELECTRON_RUN_AS_NODE;
-  // The test add-ons, and an empty install folder of its own.
+  // The test add-ons, and an install folder of its own.
   env.MDVIEWER_ADDONS_DIR = path.join(tmp, 'addons');
+  for (const [k, v] of Object.entries(moreEnv)) env[k] = String(v).replace('{tmp}', tmp);
   const args = [
     '.',
+    `--inspect=${inspectPort}`,
     `--user-data-dir=${path.join(tmp, 'userData')}`,
     `--remote-debugging-port=${port}`,
     ...addonDev.map((dir) => `--addon-dev=${path.join(ROOT, dir)}`),
@@ -68,6 +72,35 @@ export async function launch({ files = {}, open = 'proj', settings = { language:
   }
   const app = { tmp, child, port, log, logText: () => log.join('') };
   app.stop = () => stop(app);
+  // Code run in the main process (the body of an async function, with
+  // electron at hand), for what no page can reach — the app menu, say.
+  let mainSession = null;
+  app.main = async (expr) => {
+    if (!mainSession) {
+      const list = await (await fetch(`http://127.0.0.1:${inspectPort}/json/list`)).json();
+      mainSession = await connectWs(list[0].webSocketDebuggerUrl, { quiet: true, runtime: false });
+    }
+    const m = await mainSession.send('Runtime.evaluate', {
+      expression: `(async () => { const electron = process.mainModule.require('electron'); ${expr} })()`,
+      awaitPromise: true,
+      returnByValue: true,
+    });
+    if (m.result?.exceptionDetails) throw new Error(m.result.exceptionDetails.exception?.description || JSON.stringify(m.result.exceptionDetails));
+    return m.result?.result?.value;
+  };
+  // Clicks an app menu item by its labels, e.g. clickMenu('확장', '확장 관리...').
+  app.clickMenu = (...labels) =>
+    app.main(`
+      let items = electron.Menu.getApplicationMenu().items;
+      let item = null;
+      for (const label of ${JSON.stringify(labels)}) {
+        item = items.find((i) => i.label === label);
+        if (!item) throw new Error('no menu item ' + label);
+        items = item.submenu ? item.submenu.items : [];
+      }
+      const win = electron.BrowserWindow.getAllWindows().find((w) => w.isVisible());
+      item.click(undefined, win, {});
+      return true;`);
   return app;
 }
 

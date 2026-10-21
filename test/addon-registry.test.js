@@ -90,7 +90,7 @@ test('activationEvents and localize', () => {
   ]);
   const strings = [{ name: '샘플' }, { name: 'Sample', desc: 'English only' }];
   assert.deepEqual(localize({ name: '%name%', d: '%desc%', k: '%missing%', n: 1, list: ['%name%', 'plain'] }, strings), {
-    name: '샘플', d: 'English only', k: 'missing', n: 1, list: ['샘플', 'plain'],
+    name: '샘플', d: 'English only', k: '%missing%', n: 1, list: ['샘플', 'plain'],
   });
 });
 

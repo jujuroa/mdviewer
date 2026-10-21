@@ -246,6 +246,125 @@
   window.mdviewer.onMenuManageCustomExtensions(openExtSettings);
 
   // ---------------------------------------------------------------------
+  // Extensions (add-on management)
+  //
+  // What main found (addons/registry.js) and why each add-on can or cannot
+  // run; the user turns found add-ons on and off and has main look again.
+  // ---------------------------------------------------------------------
+
+  const addonsEl = {
+    overlay: document.getElementById('addons-overlay'),
+    list: document.getElementById('addons-list'),
+    close: document.getElementById('btn-close-addons'),
+    rescan: document.getElementById('btn-addons-rescan'),
+  };
+
+  function addonProblemItem(problem, warning) {
+    const li = document.createElement('li');
+    if (warning) li.className = 'warning';
+    if (problem.path) {
+      const code = document.createElement('code');
+      code.textContent = problem.path;
+      li.append(code, ': ');
+    }
+    li.append(t(`addons.problem.${problem.code}`) + (problem.detail ? ` (${problem.detail})` : ''));
+    return li;
+  }
+
+  function renderAddons(list) {
+    addonsEl.list.textContent = '';
+    if (!list.length) {
+      const empty = document.createElement('li');
+      empty.className = 'ext-list-empty';
+      empty.textContent = t('addons.empty');
+      addonsEl.list.appendChild(empty);
+      return;
+    }
+    for (const addon of list) {
+      const item = document.createElement('li');
+      item.className = 'addon-item';
+      item.dataset.addonId = addon.id;
+      item.dataset.source = addon.source;
+      item.classList.toggle('off', !addon.enabled || addon.status !== 'ok');
+
+      const head = document.createElement('div');
+      head.className = 'addon-head';
+      const name = document.createElement('span');
+      name.className = 'addon-name';
+      name.textContent = addon.name;
+      const version = document.createElement('span');
+      version.className = 'addon-version';
+      version.textContent = addon.version ? `${addon.id} ${addon.version}` : addon.id;
+      const status = document.createElement('span');
+      const shown = addon.status === 'ok' && !addon.enabled ? 'off' : addon.status;
+      status.className = `addon-status ${shown}`;
+      status.textContent = t(`addons.status.${shown}`);
+      head.append(name, version, status);
+      if (addon.status !== 'shadowed') {
+        const toggle = document.createElement('label');
+        toggle.className = 'addon-toggle';
+        const box = document.createElement('input');
+        box.type = 'checkbox';
+        box.checked = addon.enabled;
+        box.addEventListener('change', async () => {
+          renderAddons(await window.mdviewer.setAddonEnabled(addon.id, box.checked));
+        });
+        toggle.append(box, t('addons.enabled'));
+        head.appendChild(toggle);
+      }
+      item.appendChild(head);
+
+      if (addon.description) {
+        const desc = document.createElement('div');
+        desc.className = 'addon-meta';
+        desc.textContent = addon.description;
+        item.appendChild(desc);
+      }
+      const from = document.createElement('div');
+      from.className = 'addon-meta';
+      from.textContent = t('addons.from', { source: t(`addons.source.${addon.source}`), dir: addon.dir });
+      item.appendChild(from);
+      if (addon.status === 'ok' && addon.activation.length) {
+        const act = document.createElement('div');
+        act.className = 'addon-meta';
+        act.textContent = t('addons.activation', { events: addon.activation.join(', ') });
+        item.appendChild(act);
+      }
+      if (addon.problems.length || addon.warnings.length) {
+        const problems = document.createElement('ul');
+        problems.className = 'addon-problems';
+        for (const p of addon.problems) problems.appendChild(addonProblemItem(p, false));
+        for (const p of addon.warnings) problems.appendChild(addonProblemItem(p, true));
+        item.appendChild(problems);
+      }
+      addonsEl.list.appendChild(item);
+    }
+  }
+
+  async function openAddons() {
+    renderAddons(await window.mdviewer.listAddons());
+    addonsEl.overlay.classList.remove('hidden');
+    addonsEl.close.focus();
+  }
+
+  function closeAddons() {
+    addonsEl.overlay.classList.add('hidden');
+  }
+
+  addonsEl.close.addEventListener('click', closeAddons);
+  addonsEl.overlay.addEventListener('click', (e) => {
+    if (e.target === addonsEl.overlay) closeAddons();
+  });
+  addonsEl.overlay.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') closeAddons();
+  });
+  addonsEl.rescan.addEventListener('click', async () => renderAddons(await window.mdviewer.rescanAddons()));
+  window.mdviewer.onMenuManageAddons(openAddons);
+  window.mdviewer.onAddonsChanged((list) => {
+    if (!addonsEl.overlay.classList.contains('hidden')) renderAddons(list);
+  });
+
+  // ---------------------------------------------------------------------
   // Hidden items settings
   // ---------------------------------------------------------------------
 
