@@ -2515,13 +2515,19 @@ function guardFrameNavigation(win) {
 // (unsaved text saved or let go)? kind 'snapshot': what it holds, for the
 // page that takes over from it.
 
-const tabAsks = new Map(); // ask id -> { tab, owner, settle }
+const tabAsks = new Map(); // ask id -> { frame, owner, settle }
 let nextTabAskId = 1;
 
 // Resolves to the page's answer, or null when it has none to give (not
 // loaded, gone, or out of time).
-function askTab(tab, kind, { timeout = 0 } = {}) {
-  if (!tab.frame) return Promise.resolve(null);
+function askTab(tab, kind, options) {
+  return askFrame(tab.frame, tab.host.owner, kind, options);
+}
+
+// The same question to any page the tab host knows (a tab's, or the pane
+// in a document tab).
+function askFrame(frame, owner, kind, { timeout = 0 } = {}) {
+  if (!frame) return Promise.resolve(null);
   return new Promise((resolve) => {
     const id = nextTabAskId++;
     let timer = null;
@@ -2530,10 +2536,18 @@ function askTab(tab, kind, { timeout = 0 } = {}) {
       tabAsks.delete(id);
       resolve(value);
     };
-    tabAsks.set(id, { tab, owner: tab.host.owner, settle });
+    tabAsks.set(id, { frame, owner, settle });
     if (timeout) timer = setTimeout(() => settle(null), timeout);
-    sendToTab(tab, 'tab:ask', { id, kind });
+    sendToFrame(frame, 'tab:ask', { id, kind });
   });
+}
+
+// A document tab's pane hands over its state too (before the tab's page
+// goes); the new pane gets it back in addon:hello.
+async function snapshotPaneOf(tab, reason) {
+  if (!tab.pane || !tab.pane.frame) return;
+  const answer = await askFrame(tab.pane.frame, tab.host.owner, 'snapshot', { timeout: TAB_SNAPSHOT_TIMEOUT_MS });
+  tab.paneRestore = { reason, state: addonStateIn(answer) };
 }
 
 // The window page went away (reload, crash) and its tabs' pages with it:
@@ -2548,7 +2562,7 @@ function settleTabAsksOf(owner) {
 // app's (so not through appIpc).
 ipcMain.on('tab:answer', (event, id, value) => {
   const ask = tabAsks.get(id);
-  if (ask && senderTab(event) === ask.tab) ask.settle(value);
+  if (ask && sameFrame(event.senderFrame, ask.frame)) ask.settle(value);
 });
 
 // Closes a tab the way closing a window always has: its page saves
@@ -2612,7 +2626,10 @@ async function moveTab(tab, toHost, index) {
   }
   if (tab.moving) return;
   tab.moving = true;
-  const snapshot = await askTab(tab, 'snapshot', { timeout: TAB_SNAPSHOT_TIMEOUT_MS });
+  const [snapshot] = await Promise.all([
+    askTab(tab, 'snapshot', { timeout: TAB_SNAPSHOT_TIMEOUT_MS }),
+    snapshotPaneOf(tab, 'moved'),
+  ]);
   tab.moving = false;
   // Closed, or the window it was going to closed, while it packed up.
   if (!tabsById.has(tab.id) || tab.host !== fromHost || toHost.win.isDestroyed()) return;
@@ -2841,9 +2858,10 @@ function resetTabsAfterPageLoad(owner) {
 // comes back as it was (unsaved text included).
 async function snapshotTabsOf(owner) {
   const tabs = tabsOwnedBy(owner);
-  const snapshots = await Promise.all(
-    tabs.map((tab) => askTab(tab, 'snapshot', { timeout: TAB_SNAPSHOT_TIMEOUT_MS }))
-  );
+  const [snapshots] = await Promise.all([
+    Promise.all(tabs.map((tab) => askTab(tab, 'snapshot', { timeout: TAB_SNAPSHOT_TIMEOUT_MS }))),
+    Promise.all(tabs.map((tab) => snapshotPaneOf(tab, 'reloaded'))),
+  ]);
   tabs.forEach((tab, i) => {
     const answer = snapshots[i] && typeof snapshots[i] === 'object' ? snapshots[i] : null;
     // A document tab that gave nothing keeps what it opens on already.
