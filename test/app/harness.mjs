@@ -31,8 +31,9 @@ function freePort() {
 // files: { 'relative/path': 'content' } written under the temp folder;
 // open: what to open on the command line (relative to it); settings: the
 // instance's settings.json (Korean UI by default, which the checks' status
-// line texts assume).
-export async function launch({ files = {}, open = 'proj', settings = { language: 'ko' } } = {}) {
+// line texts assume); addonDev: add-on folders (from the repository root)
+// loaded with --addon-dev.
+export async function launch({ files = {}, open = 'proj', settings = { language: 'ko' }, addonDev = ['test/addons/test', 'test/addons/other'] } = {}) {
   const tmp = mkdtempSync(path.join(tmpdir(), 'mdvtest-'));
   mkdirSync(path.join(tmp, 'userData'), { recursive: true });
   writeFileSync(path.join(tmp, 'userData', 'settings.json'), JSON.stringify(settings));
@@ -44,7 +45,14 @@ export async function launch({ files = {}, open = 'proj', settings = { language:
   const port = await freePort();
   const env = { ...process.env };
   delete env.ELECTRON_RUN_AS_NODE;
-  const args = ['.', `--user-data-dir=${path.join(tmp, 'userData')}`, `--remote-debugging-port=${port}`];
+  // The test add-ons, and an empty install folder of its own.
+  env.MDVIEWER_ADDONS_DIR = path.join(tmp, 'addons');
+  const args = [
+    '.',
+    `--user-data-dir=${path.join(tmp, 'userData')}`,
+    `--remote-debugging-port=${port}`,
+    ...addonDev.map((dir) => `--addon-dev=${path.join(ROOT, dir)}`),
+  ];
   if (open) args.push(path.join(tmp, open));
   const child = spawn(require('electron'), args, { cwd: ROOT, env, stdio: ['ignore', 'pipe', 'pipe'] });
   const log = [];

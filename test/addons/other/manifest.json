@@ -1,3 +1,20 @@
 {
-  "id": "other"
+  "manifestVersion": 1,
+  "id": "other",
+  "name": "Other",
+  "description": "F0 시험용 add-on (test/addons/README.md)",
+  "version": "0.0.1",
+  "engines": {
+    "mdviewer": ">=2.0.0 <3.0.0",
+    "api": 1
+  },
+  "contributes": {
+    "tabs": [
+      {
+        "id": "other.probe",
+        "title": "Probe",
+        "entry": "probe.html"
+      }
+    ]
+  }
 }
