@@ -248,6 +248,7 @@ if (PAGE === 'index.html' || TAB_ID) contextBridge.exposeInMainWorld('mdviewer',
   onMenuTogglePane: (callback) => ipcRenderer.on('menu:toggle-pane', callback),
   // The pane this document tab may show ({ url, sandbox }), or null.
   openPane: () => ipcRenderer.invoke('doc:open-pane'),
+  onPaneGone: (callback) => ipcRenderer.on('doc:pane-gone', () => callback()),
   onMenuSaveFile: (callback) => ipcRenderer.on('menu:save-file', callback),
   onMenuToggleTerminal: (callback) => ipcRenderer.on('menu:toggle-terminal', callback),
   onMenuToggleDocumentFullscreen: (callback) =>

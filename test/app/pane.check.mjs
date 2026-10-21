@@ -172,6 +172,25 @@ try {
   await waitFor(() => p4.evaluate(`return !!window.paneInfo`));
   const r3 = await p4.evaluate(`return window.mdviewerAddon.tabs.getRestoreState()`);
   check('  pane snapshot back (reason reloaded)', r3.reason === 'reloaded' && r3.state && r3.state.n === 9, JSON.stringify(r3));
+
+  // ---- the pane's process ends: the editor's place says so, Reload brings it back
+  p4.send('Page.crash').catch(() => {});
+  const trouble = await waitFor(() => d2(`const b = doc.getElementById('pane-trouble'); return b ? b.textContent : null`), { timeout: 8000 }).catch(() => null);
+  check('pane process ended: "the pane stopped" in its place', !!trouble && /stopped/.test(trouble), String(trouble));
+  check('  the document tab is unaffected', (await d2(`return doc.getElementById('preview-frame').contentDocument.body.textContent.includes('line one')`)) === true);
+  seen = new Set((await targets(app.port)).map((t) => t.id));
+  await d2(`doc.getElementById('btn-pane-reload').click(); return 1`);
+  const p5 = await connect(app.port, (t) => t.url.startsWith('mdviewer-addon://test/pane.html') && !seen.has(t.id), { type: 'iframe', quiet: true });
+  await waitFor(() => p5.evaluate(`return !!window.paneInfo`));
+  const reloadedPane = await d2(`const pf = doc.getElementById('pane-frame'); return { trouble: !!doc.getElementById('pane-trouble'), pane: !!pf && !pf.classList.contains('hidden') }`);
+  check('  Reload: a new pane page, no trouble screen', reloadedPane.pane && !reloadedPane.trouble, JSON.stringify(reloadedPane));
+  p5.send('Page.crash').catch(() => {});
+  await waitFor(() => d2(`return !!doc.getElementById('pane-trouble')`), { timeout: 8000 }).catch(() => null);
+  await d2(`doc.getElementById('btn-pane-source').click(); return 1`);
+  await sleep(1000);
+  const toSource = await d2(`return { trouble: !!doc.getElementById('pane-trouble'), editor: doc.activeElement === ta, edit: doc.getElementById('btn-toggle-edit').classList.contains('active'), text: ta.value.includes('before move') }`);
+  check('  Back to Source: the source editor with its text', !toSource.trouble && toSource.edit && toSource.text, JSON.stringify(toSource));
+
   await w2.evaluate(`window.mdviewer.setLanguage('ko'); return 1`).catch(() => {});
   await sleep(3000);
   check('no IPC refused from app pages', !/\[ipc\] refused .* from file:/.test(app.logText()));
