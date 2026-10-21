@@ -2195,6 +2195,41 @@ body.tab-window .doc-tab { -webkit-app-region: no-drag; }
 
 .hidden-reset:hover { background: var(--border); }
 
+.addons-box { width: min(560px, 92vw); }
+.addons-list {
+  list-style: none;
+  margin: 0;
+  padding: 10px 14px;
+  overflow-y: auto;
+}
+.addon-item {
+  padding: 8px 10px;
+  margin-bottom: 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-size: 12px;
+}
+.addon-item.off .addon-name { color: var(--text-dim); }
+.addon-head { display: flex; align-items: center; gap: 8px; }
+.addon-name { font-size: 13px; font-weight: 600; }
+.addon-version { color: var(--text-dim); }
+.addon-status {
+  margin-left: auto;
+  padding: 1px 6px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  white-space: nowrap;
+}
+.addon-status.ok { color: var(--accent); border-color: var(--accent); }
+.addon-status.invalid,
+.addon-status.blocked { color: #e05252; border-color: #e05252; }
+.addon-toggle { display: flex; align-items: center; gap: 4px; white-space: nowrap; }
+.addon-meta { margin-top: 4px; color: var(--text-dim); word-break: break-all; }
+.addon-problems { margin: 4px 0 0; padding-left: 18px; }
+.addon-problems li { margin: 2px 0; }
+.addon-problems code { font-family: "Consolas", "SFMono-Regular", monospace; }
+.addon-problems .warning { color: var(--text-dim); }
+
 .ext-list-empty {
   padding: 6px 10px;
   font-size: 12px;

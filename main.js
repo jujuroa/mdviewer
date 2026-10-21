@@ -1748,6 +1748,13 @@ function buildAppMenu() {
       ],
     },
     {
+      label: t('menu.addons'),
+      submenu: [
+        { label: t('menu.manageAddons'), click: (item, win) => sendToWindow(win, 'menu:manage-addons') },
+        { label: t('menu.rescanAddons'), click: () => rescanAddons() },
+      ],
+    },
+    {
       label: t('menu.settings'),
       submenu: [
         {
@@ -3421,6 +3428,47 @@ function startAddonRegistry() {
     console.log(`[addons] ${entry.id} (${entry.source}) ${entry.status}${entry.enabled ? '' : ', off'}${why ? `: ${why}` : ''}`);
   }
 }
+
+// What the management screen shows of each add-on found.
+function addonListForPage() {
+  return addonRegistry.list().map((e) => ({
+    id: e.id,
+    name: (e.manifest && e.manifest.name) || e.id,
+    version: (e.manifest && e.manifest.version) || '',
+    description: (e.manifest && e.manifest.description) || '',
+    publisher: (e.manifest && e.manifest.publisher) || '',
+    source: e.source,
+    dir: e.dir,
+    status: e.status,
+    enabled: e.enabled,
+    problems: e.problems,
+    warnings: e.warnings,
+    activation: e.activation,
+  }));
+}
+
+function notifyAddonsChanged() {
+  const list = addonListForPage();
+  for (const win of appWindows) {
+    if (!win.isDestroyed()) win.webContents.send('addons:changed', list);
+  }
+  return list;
+}
+
+// Looks again, as of the settings and policy now (Extensions > Rescan, the
+// management screen's button).
+function rescanAddons() {
+  addonRegistry.rescan(addonRegistryOptions());
+  return notifyAddonsChanged();
+}
+
+appIpc.handle('addons:list', () => addonListForPage());
+appIpc.handle('addons:rescan', () => rescanAddons());
+appIpc.handle('addons:set-enabled', (event, id, enabled) => {
+  if (typeof id !== 'string' || !addonRegistry.get(id)) return addonListForPage();
+  addonStore.setEnabled(id, !!enabled);
+  return rescanAddons();
+});
 
 function resolveAddonPages(id) {
   const entry = addonRegistry && addonRegistry.running(id);

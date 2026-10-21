@@ -261,7 +261,8 @@ function activationEvents(manifest) {
 }
 
 // `%key%` strings replaced from the add-on's strings for the language
-// (locales/<lang>.json), falling back to English, then to the key itself.
+// (locales/<lang>.json), falling back to English; one found in neither
+// stays as written, so a missing string shows.
 function localize(value, strings) {
   if (typeof value === 'string') {
     const m = /^%([^%]+)%$/.exec(value);
@@ -269,7 +270,7 @@ function localize(value, strings) {
     for (const table of strings) {
       if (table && typeof table[m[1]] === 'string') return table[m[1]];
     }
-    return m[1];
+    return value;
   }
   if (Array.isArray(value)) return value.map((v) => localize(v, strings));
   if (isObject(value)) return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, localize(v, strings)]));
