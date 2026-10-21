@@ -1,11 +1,13 @@
 // Finding add-ons (protocol 4.2) and what the app knows about each: where
-// it is, its manifest (strings in the app's language), and whether it can
-// run — 'ok', 'invalid' (a broken manifest), 'incompatible' (protocol 5.2)
-// or 'shadowed' (the same id found in a place that comes first). No
-// Electron here; main.js hands in the places to look.
+// it is, its manifest (strings in the app's language), whether it can run
+// — 'ok', 'invalid' (a broken manifest), 'incompatible' (protocol 5.2),
+// 'blocked' (by policy, protocol 10.4) or 'shadowed' (the same id found in
+// a place that comes first) — and whether the user has it on. No Electron
+// here; main.js hands in the places to look, the policy and the choices.
 const fs = require('fs');
 const path = require('path');
 const { HOST, checkManifest, compatibilityProblems, activationEvents, localize } = require('./manifest.js');
+const { DEFAULT_POLICY, policyProblems } = require('./policy.js');
 
 function readJson(file) {
   let text;
@@ -45,7 +47,7 @@ function candidateFolders({ devDirs = [], extraDirs = [], installDir = null }) {
   return list;
 }
 
-function loadAddon({ dir, source }, { language, host, experimentalIds }) {
+function loadAddon({ dir, source }, { language, host, policy }) {
   const folder = path.basename(dir);
   const entry = { id: folder, dir, source, status: 'ok', problems: [], warnings: [], manifest: null, activation: [] };
   const read = readJson(path.join(dir, 'manifest.json'));
@@ -65,20 +67,26 @@ function loadAddon({ dir, source }, { language, host, experimentalIds }) {
   const strings = [language, 'en'].map((lang) => readJson(path.join(dir, 'locales', `${lang}.json`)).value || null);
   entry.manifest = localize(raw, strings);
   entry.activation = activationEvents(raw);
-  const experimentalAllowed = source === 'dev' || experimentalIds.includes(raw.id);
+  const experimentalAllowed = source === 'dev' || policy.allowExperimentalApi.includes(raw.id);
   entry.problems = compatibilityProblems(raw, { host, experimentalAllowed });
-  if (entry.problems.length) entry.status = 'incompatible';
+  if (entry.problems.length) {
+    entry.status = 'incompatible';
+    return entry;
+  }
+  entry.problems = policyProblems(raw, policy);
+  if (entry.problems.length) entry.status = 'blocked';
   return entry;
 }
 
 // Every add-on found, in the order looked at. options: the places (see
-// candidateFolders), language, host (manifest.js HOST), experimentalIds
-// (policy addons.allowExperimentalApi).
-function discover({ language = 'en', host = HOST, experimentalIds = [], ...places } = {}) {
+// candidateFolders), language, host (manifest.js HOST), policy (policy.js
+// mergePolicy), isEnabled(id) (the user's choice).
+function discover({ language = 'en', host = HOST, policy = DEFAULT_POLICY, isEnabled = () => true, ...places } = {}) {
   const found = [];
   const first = new Map();
   for (const candidate of candidateFolders(places)) {
-    const entry = loadAddon(candidate, { language, host, experimentalIds });
+    const entry = loadAddon(candidate, { language, host, policy });
+    entry.enabled = isEnabled(entry.id);
     const winner = first.get(entry.id);
     if (winner) {
       entry.status = 'shadowed';
@@ -108,9 +116,15 @@ class Registry {
     return this.entries;
   }
 
-  // The add-on that runs under this id (not one it shadows).
+  // The add-on that answers to this id (not one it shadows).
   get(id) {
     return this.entries.find((e) => e.id === id && e.status !== 'shadowed') || null;
+  }
+
+  // The add-on under this id if it runs: found fine and on.
+  running(id) {
+    const entry = this.get(id);
+    return entry && entry.status === 'ok' && entry.enabled ? entry : null;
   }
 }
 

@@ -20,6 +20,8 @@ const { isAppPageUrl, docTabIdOf, originIn, subframeNavigationAllowed } = requir
 const { registerAddonScheme, serveAddonPages, limitPermissionsToAppPages, refuseAddonDownloads } = require('./addons/protocol.js');
 const { SCHEME: ADDON_SCHEME } = require('./addons/pages.js');
 const { Registry: AddonRegistry } = require('./addons/registry.js');
+const { AddonStore } = require('./addons/store.js');
+const { mergePolicy } = require('./addons/policy.js');
 
 // A preview build (`npm run dist:preview`) carries a prerelease version such
 // as 1.3.0-preview.3 and installs over the released app, so once it is running
@@ -3381,23 +3383,48 @@ function addonInstallDir() {
   return path.join(process.env.LOCALAPPDATA || app.getPath('appData'), 'mdviewer', 'addons');
 }
 
-function startAddonRegistry() {
-  const extraDirs = loadSettings()['addons.extraDirs'];
-  addonRegistry = new AddonRegistry({
+// policy.json next to the installed program (an administrator's, protocol
+// 10.4). Run from source, MDVIEWER_POLICY_FILE can name one.
+function addonPolicyFile() {
+  const file = app.isPackaged ? path.join(path.dirname(app.getPath('exe')), 'policy.json') : process.env.MDVIEWER_POLICY_FILE;
+  if (!file) return {};
+  try {
+    const value = JSON.parse(fs.readFileSync(file, 'utf-8'));
+    return value && typeof value === 'object' ? value : {};
+  } catch (err) {
+    return {};
+  }
+}
+
+let addonStore = null;
+
+// Where to look, the policy and the user's choices, as of now (the
+// settings may have changed since the last look).
+function addonRegistryOptions() {
+  const settings = loadSettings();
+  const extraDirs = settings['addons.extraDirs'];
+  return {
     language: currentLanguage,
     devDirs: addonDevDirs(),
     extraDirs: Array.isArray(extraDirs) ? extraDirs.filter((d) => typeof d === 'string') : [],
     installDir: addonInstallDir(),
-  });
+    policy: mergePolicy(settings, addonPolicyFile()),
+    isEnabled: (id) => addonStore.isEnabled(id),
+  };
+}
+
+function startAddonRegistry() {
+  addonStore = new AddonStore(path.join(app.getPath('userData'), 'addons-state.json'));
+  addonRegistry = new AddonRegistry(addonRegistryOptions());
   for (const entry of addonRegistry.rescan()) {
     const why = entry.problems.map((p) => `${p.path || '-'} ${p.code}${p.detail ? ` (${p.detail})` : ''}`).join('; ');
-    console.log(`[addons] ${entry.id} (${entry.source}) ${entry.status}${why ? `: ${why}` : ''}`);
+    console.log(`[addons] ${entry.id} (${entry.source}) ${entry.status}${entry.enabled ? '' : ', off'}${why ? `: ${why}` : ''}`);
   }
 }
 
 function resolveAddonPages(id) {
-  const entry = addonRegistry && addonRegistry.get(id);
-  if (!entry || entry.status !== 'ok') return null;
+  const entry = addonRegistry && addonRegistry.running(id);
+  if (!entry) return null;
   const network = entry.manifest.network;
   return { dir: entry.dir, hosts: network && Array.isArray(network.hosts) ? network.hosts : [] };
 }

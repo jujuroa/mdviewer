@@ -4,7 +4,9 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { checkManifest, compatibilityProblems, activationEvents, localize, HOST } = require('../addons/manifest.js');
-const { discover } = require('../addons/registry.js');
+const { discover, Registry } = require('../addons/registry.js');
+const { DEFAULT_POLICY, mergePolicy, policyProblems, isLoopback } = require('../addons/policy.js');
+const { AddonStore } = require('../addons/store.js');
 
 const good = (over = {}) => ({
   manifestVersion: 1,
@@ -134,9 +136,76 @@ test('discover: places in order, problems, shadowing, locales', () => {
     assert.equal(by('sample', 'installed').problems[0].code, 'shadowed');
     assert.equal(by('exp', 'extra').problems[0].code, 'experimentalNotAllowed');
     // Allowed by policy, the experimental one loads.
-    const allowed = discover({ extraDirs: [path.join(root, 'extra')], experimentalIds: ['exp'] });
+    const allowed = discover({ extraDirs: [path.join(root, 'extra')], policy: { ...DEFAULT_POLICY, allowExperimentalApi: ['exp'] } });
     assert.equal(allowed[0].status, 'ok');
+    // Policy blocks; the user's choice is kept beside the status.
+    write('net/netty/manifest.json', good({ id: 'netty', network: { hosts: ['api.example.com', '127.0.0.1'] }, contributes: { tabs: [{ id: 'netty.t', title: 't', entry: 't.html' }] } }));
+    const blocked = discover({ extraDirs: [path.join(root, 'net')], policy: { ...DEFAULT_POLICY, blockNetwork: true } });
+    assert.equal(blocked[0].status, 'blocked');
+    assert.deepEqual(blocked[0].problems, [{ path: 'network.hosts', code: 'policyNetwork', detail: 'api.example.com' }]);
+    const off = discover({ extraDirs: [path.join(root, 'net')], isEnabled: (id) => id !== 'netty' });
+    assert.equal(off[0].status, 'ok');
+    assert.equal(off[0].enabled, false);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('mergePolicy: settings, overruled by policy.json', () => {
+  assert.deepEqual(mergePolicy(), DEFAULT_POLICY);
+  const p = mergePolicy(
+    { 'addons.blockNetwork': true, 'addons.allowExperimentalApi': ['a'], 'addons.enabled': 'yes' },
+    { 'addons.blockNetwork': false, 'addons.allowedHosts': ['*.corp.example'] }
+  );
+  assert.equal(p.blockNetwork, false);
+  assert.equal(p.enabled, true);
+  assert.deepEqual(p.allowExperimentalApi, ['a']);
+  assert.deepEqual(p.allowedHosts, ['*.corp.example']);
+});
+
+test('policyProblems: off, network, executables, allowed hosts', () => {
+  const m = { network: { hosts: ['api.corp.example', 'http://127.0.0.1:9000', 'evil.example'] }, executables: [{ id: 'x', path: 'x.exe' }] };
+  assert.deepEqual(policyProblems(m, { ...DEFAULT_POLICY, enabled: false }).map((p) => p.code), ['policyAddonsOff']);
+  assert.deepEqual(policyProblems(m, DEFAULT_POLICY), []);
+  assert.deepEqual(policyProblems(m, { ...DEFAULT_POLICY, blockExecutables: true }).map((p) => p.code), ['policyExecutables']);
+  const hosts = policyProblems(m, { ...DEFAULT_POLICY, allowedHosts: ['*.corp.example'] });
+  assert.deepEqual(hosts, [{ path: 'network.hosts', code: 'policyHosts', detail: 'evil.example' }]);
+  assert.equal(isLoopback('localhost'), true);
+  assert.equal(isLoopback('http://127.0.0.1:1'), true);
+  assert.equal(isLoopback('127.example.com'), false);
+});
+
+test('AddonStore: on unless turned off, kept in its file', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mdv-store-'));
+  try {
+    const file = path.join(dir, 'sub', 'addons-state.json');
+    const store = new AddonStore(file);
+    assert.equal(store.isEnabled('a'), true);
+    store.setEnabled('a', false);
+    assert.equal(new AddonStore(file).isEnabled('a'), false);
+    store.setEnabled('a', true);
+    assert.equal(new AddonStore(file).isEnabled('a'), true);
+    fs.writeFileSync(file, 'garbage');
+    assert.equal(new AddonStore(file).isEnabled('a'), true);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('Registry: running() needs found fine and on', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mdv-run-'));
+  try {
+    fs.mkdirSync(path.join(dir, 'sample'));
+    fs.writeFileSync(path.join(dir, 'sample', 'manifest.json'), JSON.stringify(good()));
+    let on = true;
+    const reg = new Registry({ installDir: dir, isEnabled: () => on });
+    reg.rescan();
+    assert.equal(reg.running('sample').id, 'sample');
+    on = false;
+    reg.rescan();
+    assert.equal(reg.running('sample'), null);
+    assert.equal(reg.get('sample').enabled, false);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
   }
 });
