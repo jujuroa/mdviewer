@@ -1833,6 +1833,11 @@ function buildAppMenu() {
                 label: t('menu.openTestTab'),
                 click: (item, win) => openTestTabFromDialog(win),
               },
+              {
+                label: t('menu.toggleTestPane'),
+                accelerator: 'Ctrl+Alt+E',
+                click: (item, win) => sendToActiveDoc(win, 'menu:toggle-pane', undefined, { focus: true }),
+              },
               { type: 'separator' },
             ]),
         {
@@ -2906,48 +2911,91 @@ function addonIdOf(url) {
   return origin ? origin.slice(ADDON_SCHEME.length + 3) : '';
 }
 
-function addonTabFor(event, hint) {
+// The add-on page that sent `event`, as { tab, kind }: kind 'tab' for a
+// test tab's page (right under a window page), 'pane' for a document tab's
+// pane (right under that tab's page) — in the origin of the add-on the tab
+// or pane is for. hint: the tab id from the page's address; the frame's
+// place decides.
+function addonFrameFor(event, hint) {
   const frame = event.senderFrame;
   const win = windowFor(event.sender);
-  if (!frame || !win || !frame.parent || frame.parent.parent) return null;
+  if (!frame || !win || !frame.parent) return null;
   const owner = ownerOf(win);
   const tab = tabsById.get(Number(hint));
-  if (!appWindows.has(owner) || !tab || tab.kind !== 'test' || tab.host.owner !== owner) return null;
+  if (!appWindows.has(owner) || !tab || tab.host.owner !== owner) return null;
   const id = addonIdOf(frame.url);
-  return id && addonIdOf(tab.test.url) === id ? tab : null;
+  if (!id) return null;
+  if (!frame.parent.parent) {
+    return tab.kind === 'test' && addonIdOf(tab.test.url) === id ? { tab, kind: 'tab' } : null;
+  }
+  if (frame.parent.parent.parent) return null;
+  const isPane = tab.kind === 'doc' && tab.pane && sameFrame(tab.frame, frame.parent) && addonIdOf(tab.pane.url) === id;
+  return isPane ? { tab, kind: 'pane' } : null;
 }
+
+// Who an add-on call comes from: a frame that said hello, never what it
+// claims.
+function addonCallerOf(event) {
+  const frame = event.senderFrame;
+  if (!frame) return null;
+  for (const tab of tabsById.values()) {
+    if (tab.kind === 'test' && sameFrame(tab.frame, frame)) return { tab, kind: 'tab', url: tab.test.url };
+    if (tab.pane && sameFrame(tab.pane.frame, frame)) return { tab, kind: 'pane', url: tab.pane.url };
+  }
+  return null;
+}
+
+// While run from source, a document tab's pane is the test add-on's.
+const TEST_PANE_URL = `${ADDON_SCHEME}://test/pane.html`;
+
+appIpc.handle('doc:open-pane', (event) => {
+  const tab = senderTab(event);
+  if (app.isPackaged || !tab || tab.kind !== 'doc') return null;
+  if (!tab.pane) tab.pane = { url: TEST_PANE_URL, frame: null };
+  return { url: `${withTabHint(tab.pane.url, tab.id)}&pane=1`, sandbox: FOREIGN_TAB_SANDBOX };
+});
 
 // Synchronous: the page's scripts must find the bridge in place. restore:
 // what the page handed over before it moved or its window reloaded
 // ({ reason: 'moved' | 'reloaded', state }), else { reason: 'new' }.
 ipcMain.on('addon:hello', (event, hint) => {
-  const tab = addonTabFor(event, hint);
-  if (!tab) {
+  const found = addonFrameFor(event, hint);
+  if (!found) {
     refuseIpc(event, 'addon:hello');
-    // A tab's page that reloaded into something refused is no longer the
-    // tab's page: nothing there will answer for it.
+    // A page that reloaded into something refused is no longer the tab's
+    // (or pane's) page: nothing there will answer for it.
     for (const other of tabsById.values()) {
       if (sameFrame(other.frame, event.senderFrame)) other.frame = null;
+      if (other.pane && sameFrame(other.pane.frame, event.senderFrame)) other.pane.frame = null;
     }
     event.returnValue = { ok: false };
     return;
   }
-  tab.frame = event.senderFrame;
-  const restore = (tab.init && tab.init.restore) || { reason: 'new', state: null };
-  tab.init = TAB_KINDS[tab.kind].reopen(tab);
-  event.returnValue = { ok: true, app: { version: app.getVersion(), language: currentLanguage }, restore };
+  const { tab, kind } = found;
+  let restore;
+  if (kind === 'pane') {
+    tab.pane.frame = event.senderFrame;
+    restore = tab.paneRestore || { reason: 'new', state: null };
+    tab.paneRestore = null;
+  } else {
+    tab.frame = event.senderFrame;
+    restore = (tab.init && tab.init.restore) || { reason: 'new', state: null };
+    tab.init = TAB_KINDS[tab.kind].reopen(tab);
+  }
+  event.returnValue = { ok: true, kind, app: { version: app.getVersion(), language: currentLanguage }, restore };
 });
 
 // Every add-on API call. The caller is the frame itself (a tab page that
 // said hello), never what it claims.
 ipcMain.handle('addon:call', (event, method) => {
-  const tab = senderTab(event);
-  if (!tab || tab.kind !== 'test') {
+  const caller = addonCallerOf(event);
+  if (!caller) {
     refuseIpc(event, 'addon:call');
-    throw new Error('NotRegistered: this frame is not an add-on tab page');
+    throw new Error('NotRegistered: this frame is not an add-on page');
   }
   if (method === 'app/info') {
-    return { version: app.getVersion(), language: currentLanguage, addon: addonIdOf(tab.test.url), tab: tab.id };
+    const { tab, kind, url } = caller;
+    return { version: app.getVersion(), language: currentLanguage, addon: addonIdOf(url), kind, tab: tab.id, window: tab.host.key };
   }
   throw new Error(`MethodNotFound: ${method}`);
 });
@@ -3085,6 +3133,8 @@ appIpc.on('tab:hello', (event, id) => {
   if (!tab || !event.senderFrame) return;
   if (ownerOf(windowFor(event.sender)) !== tab.host.owner) return;
   tab.frame = event.senderFrame;
+  // A pane went with the page it was in; the page asks again.
+  tab.pane = null;
   TAB_KINDS[tab.kind].hello(tab);
 });
 
