@@ -360,7 +360,17 @@
   });
   addonsEl.rescan.addEventListener('click', async () => renderAddons(await window.mdviewer.rescanAddons()));
   window.mdviewer.onMenuManageAddons(openAddons);
+  // Whether any add-on has a tab to open (the strips' "+").
+  let addonTabsAvailable = false;
+  function noteAddonTabs(list) {
+    const available = list.some((addon) => addon.tabs && addon.tabs.length);
+    if (available === addonTabsAvailable) return;
+    addonTabsAvailable = available;
+    for (const area of tabAreas.values()) renderTabStrip(area);
+  }
+  window.mdviewer.listAddons().then(noteAddonTabs);
   window.mdviewer.onAddonsChanged((list) => {
+    noteAddonTabs(list);
     if (!addonsEl.overlay.classList.contains('hidden')) renderAddons(list);
   });
 
@@ -3473,8 +3483,15 @@
 
       const icon = doc.createElement('span');
       icon.className = 'doc-tab-icon';
-      const { badge, path: iconPath } = tab.view.icon || {};
-      icon.innerHTML = fileBadgeSvg(badge || 'md', iconPath || '');
+      const { badge, path: iconPath, url: iconUrl } = tab.view.icon || {};
+      if (iconUrl) {
+        const img = doc.createElement('img');
+        img.src = iconUrl;
+        img.alt = '';
+        icon.appendChild(img);
+      } else {
+        icon.innerHTML = fileBadgeSvg(badge || 'md', iconPath || '');
+      }
       node.appendChild(icon);
 
       const label = doc.createElement('span');
@@ -3498,6 +3515,17 @@
 
       strip.appendChild(node);
     });
+    // "+": a new document or an add-on's tab — only once some add-on has a
+    // tab to open (without add-ons the strip stays as it was).
+    if (addonTabsAvailable) {
+      const add = doc.createElement('button');
+      add.className = 'doc-tab-new';
+      add.tabIndex = -1;
+      add.textContent = '+';
+      add.title = t('tabs.newTitle');
+      add.addEventListener('click', () => window.mdviewer.showNewTabMenu(area.key));
+      strip.appendChild(add);
+    }
     const activeNode = strip.querySelector('.doc-tab.active');
     if (activeNode) activeNode.scrollIntoView({ block: 'nearest', inline: 'nearest' });
     // A tab window is named after the document on screen in it.

@@ -18,12 +18,8 @@
       {
         "id": "test.probe",
         "title": "Probe",
-        "entry": "probe.html"
-      },
-      {
-        "id": "test.pane",
-        "title": "Test Pane",
-        "entry": "pane.html"
+        "entry": "probe.html",
+        "instances": "multiple"
       }
     ]
   }

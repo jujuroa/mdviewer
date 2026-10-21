@@ -232,3 +232,12 @@ export async function enterEditMode(d) {
     { timeout: 15000 }
   );
 }
+
+// Opens an add-on's tab from Extensions in the menu bar ("Add-on: Tab") and
+// resolves to { ok, id } — the tab that became active.
+export async function openAddonTab(app, w, label) {
+  await app.clickMenu('확장', label);
+  await sleep(1500);
+  const id = await w.evaluate(`const n = document.querySelector('#doc-host ~ * .doc-tab.active, .doc-tab.active'); return n ? +n.dataset.tabId : null`);
+  return { ok: id != null, id };
+}

@@ -4,7 +4,7 @@
 // Uses local servers on 45678 (in test/addons/test's network.hosts) and
 // 45679 (not).
 import http from 'node:http';
-import { launch, checker, connect, connectBrowser, waitFor, sleep, targets, DOC_PAGE_URL } from './harness.mjs';
+import { launch, checker, connect, connectBrowser, waitFor, sleep, targets, DOC_PAGE_URL, openAddonTab } from './harness.mjs';
 
 const { check, done } = checker();
 const hits = { allowed: 0, blocked: 0 };
@@ -34,7 +34,7 @@ try {
   const r0 = await renderers();
 
   // ---- open the test add-on tab
-  const opened = await w.evaluate(`return await window.mdviewer.openTestTab('mdviewer-addon://test/probe.html', 'main')`);
+  const opened = await openAddonTab(app, w, 'Test: Probe');
   check('open mdviewer-addon://test/probe.html as a tab', opened && opened.ok, JSON.stringify(opened));
   await sleep(2000);
   const ts = await targets(port);
@@ -98,7 +98,7 @@ try {
   // navigation that was blocked (no live page from elsewhere).
   const freshProbe = async () => {
     const before = new Set((await targets(port)).map((t) => t.id));
-    const r = await w.evaluate(`return await window.mdviewer.openTestTab('mdviewer-addon://test/probe.html', 'main')`);
+    const r = await openAddonTab(app, w, 'Test: Probe');
     await sleep(1500);
     const t = (await targets(port)).find((x) => x.type === 'iframe' && x.url.startsWith('mdviewer-addon://test/probe.html') && !before.has(x.id));
     const c = await connect(port, (x) => x.id === t.id, { type: 'iframe', quiet: true });
@@ -155,7 +155,7 @@ try {
 
   // ---- storage per add-on
   await a.evaluate(`localStorage.setItem('k', 'from-test'); return 1`);
-  await w.evaluate(`return await window.mdviewer.openTestTab('mdviewer-addon://other/probe.html', 'main')`);
+  await openAddonTab(app, w, 'Other: Probe');
   await sleep(2000);
   const o = await connect(port, (t) => t.url.startsWith('mdviewer-addon://other/probe.html'), { type: 'iframe' });
   const otherSees = await o.evaluate(`const before = localStorage.getItem('k'); localStorage.setItem('k', 'from-other'); return before`);
@@ -165,8 +165,8 @@ try {
   check('process: a second add-on gets its own process', r2.length === r1.length + 1, `${r1.length} -> ${r2.length}`);
 
   // ---- three tabs of the same add-on (one detached): still one process for it
-  await w.evaluate(`return await window.mdviewer.openTestTab('mdviewer-addon://test/probe.html', 'main')`);
-  await w.evaluate(`return await window.mdviewer.openTestTab('mdviewer-addon://test/probe.html', 'main')`);
+  await openAddonTab(app, w, 'Test: Probe');
+  await openAddonTab(app, w, 'Test: Probe');
   await sleep(2000);
   const ids = await w.evaluate(`return [...document.querySelectorAll('.doc-tab')].map(n => +n.dataset.tabId)`);
   await w.evaluate(`await window.mdviewer.detachTab(${ids[ids.length - 1]}); return 1`);

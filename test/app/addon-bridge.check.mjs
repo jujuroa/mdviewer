@@ -1,7 +1,7 @@
 // The add-on bridge (F0-b): mdviewerAddon in add-on frames only, callers
 // told by main, impersonation refused, the snapshot handed over when a tab
 // moves or its window reloads, the window page's modals over the frame.
-import { launch, checker, connect, waitFor, sleep, targets } from './harness.mjs';
+import { launch, checker, connect, waitFor, sleep, targets, openAddonTab } from './harness.mjs';
 
 const { check, done } = checker();
 const app = await launch({ files: { 'proj/a.md': '# A\n' } });
@@ -12,7 +12,7 @@ try {
   const w = await connect(port, (t) => t.url.endsWith('index.html'));
   await waitFor(() => w.evaluate(`const r = [...document.querySelectorAll('[data-path]')].find(n => n.dataset.path.endsWith('a.md')); if (r) r.click(); return !!r`));
   await sleep(2500);
-  const opened = await w.evaluate(`return await window.mdviewer.openTestTab('mdviewer-addon://test/probe.html', 'main')`);
+  const opened = await openAddonTab(app, w, 'Test: Probe');
   await sleep(2000);
   let a = await frameOf('mdviewer-addon://test/probe.html');
   check('page address carries the tab id hint', a.target.url === `mdviewer-addon://test/probe.html?tab=${opened.id}`, a.target.url);
@@ -34,7 +34,7 @@ try {
   check('new tab: getRestoreState reason new', restoreNew && restoreNew.reason === 'new' && restoreNew.state === null, JSON.stringify(restoreNew));
 
   // ---- impersonation: the 'other' add-on reloads itself with the test tab's id as its hint
-  const o1 = await w.evaluate(`return await window.mdviewer.openTestTab('mdviewer-addon://other/probe.html', 'main')`);
+  const o1 = await openAddonTab(app, w, 'Other: Probe');
   await sleep(1500);
   let o = await frameOf('mdviewer-addon://other/probe.html');
   await o.evaluate(`location.href = 'mdviewer-addon://other/probe.html?tab=${opened.id}'; return 1`).catch(() => {});
@@ -97,13 +97,13 @@ try {
   check('  app.language follows', lang === 'en', lang);
 
   // ---- modal of the window page over the add-on tab
-  await w2.evaluate(`const tab = [...document.querySelectorAll('.doc-tab')].find(n => /probe/.test(n.textContent)); tab && tab.click(); return 1`);
+  await w2.evaluate(`const tab = [...document.querySelectorAll('.doc-tab')].find(n => /probe/i.test(n.textContent)); tab && tab.click(); return 1`);
   await sleep(800);
   const modal = await w2.evaluate(`const f = document.querySelector('iframe.doc-frame.active'); const r = f.getBoundingClientRect(); document.getElementById('ext-settings-overlay').classList.remove('hidden'); const el = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2); const inOverlay = !!el.closest('#ext-settings-overlay'); document.getElementById('ext-settings-overlay').classList.add('hidden'); return { src: f.src.slice(0, 40), inOverlay, el: el.tagName + '.' + el.className }`);
   check('window page modal is drawn over the add-on tab', modal.src.startsWith('mdviewer-addon://') && modal.inOverlay, JSON.stringify(modal));
 
   // ---- close: the add-on frame answers tab:ask close
-  const closed = await w2.evaluate(`const id = +[...document.querySelectorAll('.doc-tab')].find(n => /probe/.test(n.textContent)).dataset.tabId; return await window.mdviewer.closeTab(id)`);
+  const closed = await w2.evaluate(`const id = +[...document.querySelectorAll('.doc-tab')].find(n => /probe/i.test(n.textContent)).dataset.tabId; return await window.mdviewer.closeTab(id)`);
   check('closing the add-on tab', closed && closed.closed, JSON.stringify(closed));
   check('no IPC refused from app pages', !/\[ipc\] refused .* from file:/.test(logText()), logText().split(/\r?\n/).filter((l) => /refused/.test(l)).join(' | '));
   await w2.evaluate(`window.mdviewer.setLanguage('ko'); return 1`).catch(() => {});
