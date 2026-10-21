@@ -2732,6 +2732,7 @@
   // From the pane to the source editor.
   async function showSource() {
     if (!state.paneOpen) return;
+    hidePaneTrouble();
     state.paneSize = editorPlaceSize();
     state.paneOpen = false;
     if (!state.editMode) {
@@ -2749,6 +2750,7 @@
   // saved or asked about, as leaving edit mode always does).
   async function closePane() {
     if (!state.paneOpen) return;
+    hidePaneTrouble();
     state.paneSize = editorPlaceSize();
     state.paneOpen = false;
     if (state.editMode) {
@@ -2762,6 +2764,57 @@
   function togglePane() {
     return state.paneOpen ? showSource() : openPane();
   }
+
+  // The pane's page is gone (its process ended). On screen, the editor's
+  // place says so and offers to load it again or go to the source; hidden,
+  // the next opening loads it anew.
+  function removePaneFrame() {
+    if (state.paneFrame) state.paneFrame.remove();
+    state.paneFrame = null;
+  }
+
+  function hidePaneTrouble() {
+    const box = document.getElementById('pane-trouble');
+    if (box) box.remove();
+  }
+
+  function showPaneTrouble() {
+    hidePaneTrouble();
+    const box = document.createElement('div');
+    box.id = 'pane-trouble';
+    const title = document.createElement('p');
+    title.className = 'pane-trouble-title';
+    title.textContent = t('pane.crashed');
+    const name = document.createElement('p');
+    name.textContent = t('pane.testName');
+    const buttons = document.createElement('div');
+    const reload = document.createElement('button');
+    reload.id = 'btn-pane-reload';
+    reload.textContent = t('pane.reload');
+    reload.addEventListener('click', () => {
+      hidePaneTrouble();
+      // Opening again puts the sizes back the way they were.
+      state.paneSize = editorPlaceSize();
+      state.paneOpen = false;
+      setEditorPlaceSize(state.sourceSize);
+      openPane();
+    });
+    const source = document.createElement('button');
+    source.id = 'btn-pane-source';
+    source.textContent = t('pane.toSource');
+    source.addEventListener('click', () => {
+      hidePaneTrouble();
+      showSource();
+    });
+    buttons.append(reload, source);
+    box.append(title, name, buttons);
+    el.editorPane.appendChild(box);
+  }
+
+  window.mdviewer.onPaneGone(() => {
+    removePaneFrame();
+    if (state.paneOpen) showPaneTrouble();
+  });
 
   async function onEditButton() {
     if (state.paneOpen) return showSource();

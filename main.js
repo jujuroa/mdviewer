@@ -3004,6 +3004,40 @@ function addonCallerOf(event) {
   return null;
 }
 
+// A pane's process can end on its own (a crash, killed from outside), and
+// no event says so for a frame in another process: its WebFrameMain just
+// stops being usable. So while panes exist they are checked now and then,
+// and a document tab whose pane is gone is told (doc:pane-gone).
+const PANE_CHECK_MS = 1500;
+let paneCheckTimer = null;
+
+function frameGone(frame) {
+  try {
+    return !!frame.detached;
+  } catch (err) {
+    return true;
+  }
+}
+
+function watchPanes() {
+  if (paneCheckTimer) return;
+  paneCheckTimer = setInterval(() => {
+    let any = false;
+    for (const tab of tabsById.values()) {
+      if (!tab.pane || !tab.pane.frame) continue;
+      any = true;
+      if (!frameGone(tab.pane.frame)) continue;
+      tab.pane.frame = null;
+      // Its page went too (moved, reloaded): nobody to tell.
+      if (tab.frame && !frameGone(tab.frame)) sendToTab(tab, 'doc:pane-gone');
+    }
+    if (!any) {
+      clearInterval(paneCheckTimer);
+      paneCheckTimer = null;
+    }
+  }, PANE_CHECK_MS);
+}
+
 // While run from source, a document tab's pane is the test add-on's.
 const TEST_PANE_URL = `${ADDON_SCHEME}://test/pane.html`;
 
@@ -3034,6 +3068,7 @@ ipcMain.on('addon:hello', (event, hint) => {
   let restore;
   if (kind === 'pane') {
     tab.pane.frame = event.senderFrame;
+    watchPanes();
     restore = tab.paneRestore || { reason: 'new', state: null };
     tab.paneRestore = null;
   } else {
