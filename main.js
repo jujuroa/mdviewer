@@ -30,6 +30,9 @@ const { evaluateWhen } = require('./addons/when.js');
 const { AddonSettings, AddonSecrets } = require('./addons/settings.js');
 const { registerSettingsApi } = require('./addons/api/settings.js');
 const { registerDocumentsApi } = require('./addons/api/documents.js');
+const { planEdit, needsConfirmation } = require('./addons/edits.js');
+const { diffForView } = require('./addons/diffview.js');
+const { ApiError } = require('./addons/api-router.js');
 const { ApiRouter } = require('./addons/api-router.js');
 const { registerAppApi } = require('./addons/api/app.js');
 const { HOST: ADDON_HOST } = require('./addons/manifest.js');
@@ -1911,6 +1914,12 @@ function buildAppMenu() {
         { label: t('menu.manageAddons'), click: (item, win) => sendToWindow(win, 'menu:manage-addons') },
         { label: t('menu.rescanAddons'), click: () => rescanAddons() },
         { label: t('menu.addonLog'), click: (item, win) => sendToWindow(win, 'menu:addons-log') },
+        {
+          label: t('menu.addonsConfirmEdits'),
+          type: 'checkbox',
+          checked: alwaysConfirmAddonEdits(),
+          click: (item) => saveSettings({ ...loadSettings(), 'addons.alwaysConfirmEdits': item.checked }),
+        },
         ...addonTabMenuItems((choice, win) => openAddonTabAsked(docHostFor(win), choice.addonId, choice.tabId)),
       ],
     },
@@ -2192,6 +2201,7 @@ function createWindow({ bounds: requestedBounds = null } = {}) {
     windowProjects.delete(webContentsId);
     settleTabAsksOf(win);
     settleConsentRequestsOf(win);
+    settlePageRequestsOf(win);
     // Its tab windows' contents belong to its page, which is gone.
     for (const tabHost of hostsOwnedBy(win)) {
       if (tabHost === host) continue;
@@ -3016,6 +3026,7 @@ function wireDocWindowEvents(win, host) {
 function resetTabsAfterPageLoad(owner) {
   settleTabAsksOf(owner);
   settleConsentRequestsOf(owner);
+  settlePageRequestsOf(owner);
   const mainHost = hostOf(owner);
   if (!mainHost) return;
   for (const host of hostsOwnedBy(owner)) {
@@ -3449,6 +3460,169 @@ addonApi.register('app/info', {
     tab: tab ? tab.id : null,
     window: tab ? tab.host.key : null,
   }),
+});
+
+// ---- Add-ons: edit/apply (protocol 13.4, structure 14) ----
+// Everything is checked first (addons/edits.js), the user confirms on the
+// comparison screen in the caller's window (Extensions > "always confirm",
+// on by default; rename and delete always ask), then all of it is applied
+// or, should a step fail, what was done is undone. A document being edited
+// takes the change in its editor, so Ctrl+Z takes it back and auto save
+// saves it; other files are written to disk (still checked against the
+// version read). Deleted files go to the recycle bin.
+
+function alwaysConfirmAddonEdits() {
+  return loadSettings()['addons.alwaysConfirmEdits'] !== false;
+}
+
+function docTabShowing(filePath) {
+  return [...tabsById.values()].find((tab) => tab.kind === 'doc' && samePath(tab.doc.path, filePath)) || null;
+}
+
+// { text, tab, editing }: its editor's text while edited, else the file.
+async function currentDocument(filePath) {
+  const tab = docTabShowing(filePath);
+  if (tab) {
+    const answer = await askTab(tab, 'text', { timeout: TAB_SNAPSHOT_TIMEOUT_MS });
+    if (answer && typeof answer.text === 'string') return { text: answer.text, tab, editing: true };
+  }
+  return { text: fs.readFileSync(filePath, 'utf-8'), tab, editing: false };
+}
+
+function pathKind(p) {
+  try {
+    const st = fs.statSync(p);
+    return st.isDirectory() ? 'dir' : st.isFile() ? 'file' : null;
+  } catch (err) {
+    return null;
+  }
+}
+
+// Questions to a window page that wait for its answer (null if the page
+// goes away first). host: the tab area to show it in — a tab window's is
+// drawn by its program window's page, which moves the question there.
+const pageRequests = new Map(); // id -> { resolve, win }
+let nextPageRequestId = 1;
+
+function askWindowPage(host, channel, payload) {
+  return new Promise((resolve) => {
+    if (!host || host.owner.isDestroyed()) return resolve(null);
+    const id = nextPageRequestId++;
+    pageRequests.set(id, { resolve, win: host.owner });
+    host.owner.webContents.send(channel, { ...payload, id, container: host.key });
+    if (!host.win.isDestroyed() && !host.win.isFocused()) host.win.focus();
+  });
+}
+
+// The tab area a caller's questions go to: its tab's (in a tab window, that
+// window's), else the program window the user was last in.
+function callerHost(caller) {
+  if (caller.tab && caller.tab.host && !caller.tab.host.win.isDestroyed()) return caller.tab.host;
+  return hostOf(targetWindow());
+}
+
+appIpc.on('addons:page-answer', (event, id, value) => {
+  const request = pageRequests.get(id);
+  if (!request || request.win.webContents !== event.sender) return;
+  pageRequests.delete(id);
+  request.resolve(value);
+});
+
+function settlePageRequestsOf(win) {
+  for (const [id, request] of [...pageRequests]) {
+    if (request.win !== win) continue;
+    pageRequests.delete(id);
+    request.resolve(null);
+  }
+}
+
+async function confirmAddonEdit(caller, plan) {
+  const operations = plan.operations.map((op) => {
+    const shown = { kind: op.kind, path: op.path, from: op.from, to: op.to };
+    if (op.kind === 'change' || op.kind === 'create') shown.diff = diffForView(op.before, op.after);
+    return shown;
+  });
+  const answer = await askWindowPage(callerHost(caller), 'addons:edit-request', {
+    name: caller.entry.manifest.name,
+    label: plan.label,
+    operations,
+  });
+  return answer === true;
+}
+
+// Applies a confirmed plan, all or nothing.
+async function applyAddonEdit(plan) {
+  // Text typed while the question was open counts: changes go only onto
+  // the version they were made for.
+  for (const op of plan.operations) {
+    if (op.kind !== 'change') continue;
+    const now = await currentDocument(op.path);
+    const currentVersion = contentVersion(now.text);
+    if (currentVersion !== op.baseVersion) throw new ApiError('Conflict', `${op.path} changed while you were asked`, { path: op.path, currentVersion });
+  }
+  const undo = [];
+  const ordered = [...plan.operations.filter((op) => op.kind !== 'delete'), ...plan.operations.filter((op) => op.kind === 'delete')];
+  try {
+    for (const op of ordered) {
+      if (op.kind === 'change') {
+        const now = await currentDocument(op.path);
+        if (now.editing) {
+          // On screen, so the editor can take it as an edit of its own (and
+          // the user sees what was applied).
+          activateTab(now.tab.host, now.tab.id);
+          const answer = await askTab(now.tab, 'apply-edit', { timeout: TAB_SNAPSHOT_TIMEOUT_MS, args: { text: op.after } });
+          if (!answer || answer.status !== 'applied') throw new ApiError('InternalError', `Could not change ${op.path} in its editor`);
+          undo.push(() => askTab(now.tab, 'apply-edit', { timeout: TAB_SNAPSHOT_TIMEOUT_MS, args: { text: op.before } }));
+        } else {
+          const result = writeIfUnchanged(fs, op.path, op.after, op.baseVersion);
+          if (!result.ok) throw new ApiError('Conflict', `${op.path} changed on disk`, { path: op.path, currentVersion: result.version });
+          undo.push(() => fs.writeFileSync(op.path, op.before, 'utf-8'));
+        }
+      } else if (op.kind === 'create') {
+        fs.writeFileSync(op.path, op.after, { encoding: 'utf-8', flag: 'wx' });
+        undo.push(() => fs.unlinkSync(op.path));
+      } else if (op.kind === 'rename') {
+        // Watchers hold handles that block renaming on Windows (see
+        // fs:move-entry); every tab learns where its document went.
+        for (const id of [...fileWatchers.keys()]) stopWatching(id);
+        fs.renameSync(op.from, op.to);
+        sendToAllTabs('doc:path-moved', { from: op.from, to: op.to });
+        undo.push(() => {
+          fs.renameSync(op.to, op.from);
+          sendToAllTabs('doc:path-moved', { from: op.to, to: op.from });
+        });
+      } else if (op.kind === 'delete') {
+        await shell.trashItem(op.path);
+      }
+    }
+  } catch (err) {
+    for (const step of undo.reverse()) {
+      try {
+        await step();
+      } catch (e) {
+        /* undo what can be undone */
+      }
+    }
+    throw err instanceof ApiError ? err : new ApiError('InternalError', err.message);
+  }
+}
+
+addonApi.register('edit/apply', {
+  permission: 'documents.write',
+  handler: async (caller, params) => {
+    const plan = await planEdit(params, {
+      inProject: (p) => openProjectRoots().some((root) => isPathInside(p, root)),
+      current: currentDocument,
+      exists: pathKind,
+      version: contentVersion,
+    });
+    if (needsConfirmation(plan, alwaysConfirmAddonEdits()) && !(await confirmAddonEdit(caller, plan))) {
+      return { applied: false, reason: 'rejected' };
+    }
+    await applyAddonEdit(plan);
+    logAddon(caller.addonId, 'info', `edit applied: ${plan.label || '(no label)'} — ${plan.operations.length} operation(s)`, { quiet: true });
+    return { applied: true };
+  },
 });
 
 // The program window a caller's calls are about: its tab's (a tab window's
