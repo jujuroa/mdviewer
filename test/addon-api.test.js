@@ -64,3 +64,53 @@ test('app area: openExternal only https/mailto, asks first; copyToClipboard', as
   assert.equal((await r.call(caller(), 'app/copyToClipboard', { text: 'x'.repeat(1024 * 1024 + 1) })).error.name, 'TooLarge');
   assert.deepEqual(copied, ['한글']);
 });
+
+test('settings, secrets and context areas', async () => {
+  const fs = require('fs');
+  const os = require('os');
+  const path = require('path');
+  const { AddonSettings, AddonSecrets } = require('../addons/settings.js');
+  const { registerSettingsApi } = require('../addons/api/settings.js');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mdv-set-'));
+  try {
+    const entry = { id: 'a', manifest: { contributes: { settings: [
+      { key: 'greeting', type: 'string', default: 'hi' },
+      { key: 'count', type: 'number', default: 1 },
+      { key: 'on', type: 'boolean' },
+      { key: 'mode', type: 'enum', enum: ['x', 'y'], default: 'x' },
+    ] } } };
+    let available = true;
+    const crypto = { available: () => available, encrypt: (t) => Buffer.from(`enc:${t}`), decrypt: (b) => b.toString().slice(4) };
+    const settings = new AddonSettings(path.join(dir, 'addon-settings.json'));
+    const secrets = new AddonSecrets(path.join(dir, 'addon-secrets.json'), crypto);
+    const context = [];
+    const r = new ApiRouter();
+    registerSettingsApi(r, { settings, secrets, setContext: (...a) => context.push(a) });
+    const me = { addonId: 'a', entry };
+    assert.deepEqual((await r.call(me, 'settings/get', {})).result, { greeting: 'hi', count: 1, on: null, mode: 'x' });
+    assert.equal((await r.call(me, 'settings/update', { key: 'count', value: 5 })).ok, true);
+    assert.equal((await r.call(me, 'settings/get', { key: 'count' })).result, 5);
+    assert.equal((await r.call(me, 'settings/update', { key: 'count', value: 'five' })).error.name, 'InvalidParams');
+    assert.equal((await r.call(me, 'settings/update', { key: 'mode', value: 'z' })).error.name, 'InvalidParams');
+    assert.equal((await r.call(me, 'settings/update', { key: 'nope', value: 1 })).error.name, 'NotFound');
+    assert.equal((await r.call(me, 'settings/get', { key: 'nope' })).error.name, 'NotFound');
+    assert.equal(new AddonSettings(path.join(dir, 'addon-settings.json')).get(entry, 'count'), 5);
+
+    assert.equal((await r.call(me, 'secrets/get', { key: 'token' })).result, null);
+    assert.equal((await r.call(me, 'secrets/set', { key: 'token', value: 's3cret' })).ok, true);
+    assert.equal((await r.call(me, 'secrets/get', { key: 'token' })).result, 's3cret');
+    assert.doesNotMatch(fs.readFileSync(path.join(dir, 'addon-secrets.json'), 'utf8'), /s3cret/);
+    assert.equal((await r.call({ addonId: 'b', entry }, 'secrets/get', { key: 'token' })).result, null);
+    assert.equal((await r.call(me, 'secrets/delete', { key: 'token' })).ok, true);
+    assert.equal((await r.call(me, 'secrets/get', { key: 'token' })).result, null);
+    available = false;
+    assert.equal((await r.call(me, 'secrets/set', { key: 'token', value: 'x' })).error.name, 'NotSupported');
+    assert.equal((await r.call(me, 'secrets/set', { key: '../x', value: 'x' })).error.name, 'InvalidParams');
+
+    assert.equal((await r.call(me, 'context/set', { key: 'dirty', value: true })).ok, true);
+    assert.deepEqual(context, [['a', 'dirty', true]]);
+    assert.equal((await r.call(me, 'context/set', { key: 'x', value: { a: 1 } })).error.name, 'InvalidParams');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
