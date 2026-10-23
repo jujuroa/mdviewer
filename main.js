@@ -31,6 +31,7 @@ const { AddonSettings, AddonSecrets } = require('./addons/settings.js');
 const { registerSettingsApi } = require('./addons/api/settings.js');
 const { registerDocumentsApi } = require('./addons/api/documents.js');
 const { registerUiApi } = require('./addons/api/ui.js');
+const { registerTabsApi, smallJson } = require('./addons/api/tabs.js');
 const { planEdit, needsConfirmation } = require('./addons/edits.js');
 const { diffForView } = require('./addons/diffview.js');
 const { ApiError } = require('./addons/api-router.js');
@@ -2382,11 +2383,21 @@ const TAB_KINDS = {
       tab.init = initFromDoc(tab);
     },
   },
-  // init: { addonId, tabId } and, when its page loads again, restore (see
-  // addon:hello). The page is the contribution's entry in the add-on's
-  // origin (mdviewer-addon://<id>/<entry>).
+  // init: { addonId, tabId, args?, state? } and, when its page loads
+  // again, restore (see addon:hello). The page is the contribution's entry
+  // in the add-on's origin (mdviewer-addon://<id>/<entry>). What the page
+  // sets through tabs/* (addons/api/tabs.js) lives on tab.addon.
   addon: {
-    state: (init) => ({ id: String(init.addonId), tabId: String(init.tabId) }),
+    state: (init) => ({
+      id: String(init.addonId),
+      tabId: String(init.tabId),
+      args: init.args === undefined ? null : init.args,
+      state: init.state === undefined ? null : init.state,
+      title: null,
+      icon: null,
+      dirty: false,
+      restore: null,
+    }),
     reopen: () => ({}),
     // The add-on page gets back what it handed over.
     handOver: (tab, answer, reason) => ({ restore: { reason, state: addonStateIn(answer) } }),
@@ -2402,11 +2413,18 @@ const TAB_KINDS = {
     },
     view: (tab) => {
       const found = addonTabContribution(tab.addon.id, tab.addon.tabId);
-      const title = found ? found.contribution.title : tab.addon.tabId;
-      const icon = found && found.contribution.icon ? { url: `${ADDON_SCHEME}://${tab.addon.id}/${found.contribution.icon}` } : { badge: 'ext' };
-      return { title, tooltip: found ? `${found.entry.manifest.name}: ${title}` : title, icon, dirty: false };
+      const title = tab.addon.title || (found ? found.contribution.title : tab.addon.tabId);
+      const iconPath = tab.addon.icon || (found && found.contribution.icon);
+      const icon = iconPath ? { url: `${ADDON_SCHEME}://${tab.addon.id}/${iconPath}` } : { badge: 'ext' };
+      return { title, tooltip: found ? `${found.entry.manifest.name}: ${title}` : title, icon, dirty: !!tab.addon.dirty };
     },
-    restoreEntry: (tab) => ({ addon: tab.addon.id, tab: tab.addon.tabId }),
+    // With what it was opened on and the state it keeps (tabs/setState).
+    restoreEntry: (tab) => ({
+      addon: tab.addon.id,
+      tab: tab.addon.tabId,
+      ...(tab.addon.args !== null ? { args: tab.addon.args } : {}),
+      ...(tab.addon.state !== null ? { state: tab.addon.state } : {}),
+    }),
     // Not the app's page: it never says tab:hello (addon:hello instead).
     hello: () => {},
   },
@@ -2538,7 +2556,7 @@ function sendToAllTabs(channel, ...args) {
 }
 
 function isTabDirty(tab) {
-  return !!(tab.doc && tab.doc.dirty);
+  return !!((tab.doc && tab.doc.dirty) || (tab.addon && tab.addon.dirty));
 }
 
 function fileKindOf(filePath) {
@@ -2795,7 +2813,11 @@ function closeTab(tab, { force = false } = {}) {
   if (!tab || !tabsById.has(tab.id)) return Promise.resolve(true);
   if (tab.closing) return tab.closing;
   tab.closing = (async () => {
-    const answer = force ? true : await askTab(tab, 'close', { timeout: TAB_KINDS[tab.kind].closeTimeout });
+    let answer = force ? true : await askTab(tab, 'close', { timeout: TAB_KINDS[tab.kind].closeTimeout });
+    // An add-on tab marked unsaved (tabs/update { dirty }): the user says.
+    if (answer !== false && !force && tab.kind === 'addon' && tab.addon.dirty && tabsById.has(tab.id)) {
+      answer = await confirmCloseAddonTab(tab);
+    }
     tab.closing = null;
     if (answer === false) {
       // Kept: so is its window, and a pending Reload Program is off.
@@ -2806,6 +2828,19 @@ function closeTab(tab, { force = false } = {}) {
     return true;
   })();
   return tab.closing;
+}
+
+function confirmCloseAddonTab(tab) {
+  const { title } = TAB_KINDS.addon.view(tab);
+  const found = addonTabContribution(tab.addon.id, tab.addon.tabId);
+  activateTab(tab.host, tab.id);
+  return askWindowPage(tab.host, 'addons:ui-request', {
+    kind: 'confirm',
+    name: found ? found.entry.manifest.name : tab.addon.id,
+    title: t('close.discardTitle'),
+    message: t('addons.tab.closeDirty', { name: title }),
+    okLabel: t('close.discardButton'),
+  }).then((answer) => !!(answer && answer.value === true));
 }
 
 // One after another, so the questions come one at a time. Stops at the
@@ -3435,6 +3470,7 @@ ipcMain.on('addon:hello', (event, hint) => {
     tab.frame = event.senderFrame;
     expectReady(tab.addon, tab.addon.id, `tab ${tab.id}`);
     restore = (tab.init && tab.init.restore) || { reason: 'new', state: null };
+    tab.addon.restore = restore;
     tab.init = TAB_KINDS[tab.kind].reopen(tab);
   }
   watchAddonFrames();
@@ -3448,7 +3484,8 @@ ipcMain.on('addon:hello', (event, hint) => {
   const frameInfo =
     kind === 'background' ? { kind } : kind === 'pane' ? { kind, tabId: null, instanceId: null } : { kind, tabId: tab.addon.tabId, instanceId: tab.id };
   const activation = kind === 'background' ? found.rec.why : kind === 'tab' ? `onTab:${tab.addon.tabId}` : null;
-  event.returnValue = { ok: true, kind, app: addonAppInfo(entry, frameInfo, activation), methods: addonApi.methodsFor(caller), restore };
+  const args = kind === 'tab' ? tab.addon.args : null;
+  event.returnValue = { ok: true, kind, app: addonAppInfo(entry, frameInfo, activation), methods: addonApi.methodsFor(caller), restore, args };
 });
 
 ipcMain.on('addon:ready', (event) => {
@@ -3711,6 +3748,16 @@ const addonUi = registerUiApi(addonApi, {
   progress: showAddonProgress,
 });
 
+registerTabsApi(addonApi, {
+  contributes: (addonId, tabId) => !!addonTabContribution(addonId, tabId),
+  open: (caller, tabId, { args, reveal }) => openAddonTab(callerHost(caller), caller.addonId, tabId, { init: { args }, activate: reveal }),
+  instances: (addonId, tabId, instanceId) =>
+    [...tabsById.values()].filter((tab) => tab.kind === 'addon' && tab.addon.id === addonId && tab.addon.tabId === tabId && (instanceId === undefined || tab.id === instanceId)),
+  close: (tab) => closeTab(tab),
+  reveal: (tab) => activateTab(tab.host, tab.id),
+  changed: (tab) => notifyTabsChanged(tab.host),
+});
+
 appIpc.on('addons:ui-progress-cancel', (event, token) => {
   const shown = progressShown.get(token);
   if (shown && shown.host.owner.webContents === event.sender) addonUi.cancelProgress(token);
@@ -3897,7 +3944,17 @@ appIpc.handle('tabs:restore', (event, tabs, activeIndex) => {
       // An add-on that no longer runs, or was never agreed to, leaves its
       // tab behind.
       const running = addonRegistry.running(entry.addon);
-      if (running && hasConsent(running)) tab = openAddonTab(host, entry.addon, entry.tab, { init: { restore: { reason: 'restored', state: null } }, activate: false });
+      if (running && hasConsent(running)) {
+        const kept = (value) => {
+          try {
+            return value === undefined || value === null ? null : smallJson(value, 'state');
+          } catch (err) {
+            return null;
+          }
+        };
+        const state = kept(entry.state);
+        tab = openAddonTab(host, entry.addon, entry.tab, { init: { restore: { reason: 'restored', state }, args: kept(entry.args), state }, activate: false });
+      }
     } else if (typeof entry.path === 'string' && !findTabForPath(host.owner, entry.path)) {
       tab = createTab(host, { filePath: entry.path }, { activate: false });
     }

@@ -117,6 +117,7 @@ if (location.protocol === 'mdviewer-addon:') {
       tabs: {
         ...(areas.tabs || {}),
         getRestoreState: () => hello.restore,
+        getArgs: () => (hello.args === undefined ? null : hello.args),
       },
     });
   }
