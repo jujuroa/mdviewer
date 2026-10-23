@@ -1,0 +1,39 @@
+{
+  "manifestVersion": 1,
+  "id": "hello",
+  "name": "%name%",
+  "description": "%description%",
+  "version": "1.0.0",
+  "publisher": "MD Viewer",
+  "engines": {
+    "mdviewer": ">=2.0.0 <3.0.0",
+    "api": 1
+  },
+  "background": {
+    "entry": "background.html",
+    "idleTimeoutSec": 30
+  },
+  "contributes": {
+    "commands": [
+      {
+        "id": "hello.sayHello",
+        "title": "%command.sayHello%"
+      }
+    ],
+    "menus": {
+      "menubar/addons": [
+        {
+          "command": "hello.sayHello"
+        }
+      ]
+    },
+    "settings": [
+      {
+        "key": "greeting",
+        "type": "string",
+        "default": "Hello",
+        "title": "%setting.greeting%"
+      }
+    ]
+  }
+}

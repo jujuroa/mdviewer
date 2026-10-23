@@ -1,0 +1,22 @@
+{
+  "manifestVersion": 1,
+  "id": "hello-tab",
+  "name": "Hello Tab",
+  "description": "A tab of its own: a counter that survives moving to another window and a relaunch.",
+  "version": "1.0.0",
+  "publisher": "MD Viewer",
+  "engines": {
+    "mdviewer": ">=2.0.0 <3.0.0",
+    "api": 1
+  },
+  "contributes": {
+    "tabs": [
+      {
+        "id": "hello-tab.counter",
+        "title": "Counter",
+        "entry": "tab.html",
+        "instances": "multiple"
+      }
+    ]
+  }
+}
