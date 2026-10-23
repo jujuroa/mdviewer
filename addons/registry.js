@@ -6,7 +6,7 @@
 // here; main.js hands in the places to look, the policy and the choices.
 const fs = require('fs');
 const path = require('path');
-const { HOST, checkManifest, compatibilityProblems, activationEvents, localize } = require('./manifest.js');
+const { HOST, checkManifest, compatibilityProblems, experimentalWarnings, activationEvents, localize } = require('./manifest.js');
 const { DEFAULT_POLICY, policyProblems } = require('./policy.js');
 
 function readJson(file) {
@@ -68,6 +68,7 @@ function loadAddon({ dir, source }, { language, host, policy }) {
   entry.manifest = localize(raw, strings);
   entry.activation = activationEvents(raw);
   const experimentalAllowed = source === 'dev' || policy.allowExperimentalApi.includes(raw.id);
+  entry.warnings = [...entry.warnings, ...experimentalWarnings(raw, { host })];
   entry.problems = compatibilityProblems(raw, { host, experimentalAllowed });
   if (entry.problems.length) {
     entry.status = 'incompatible';
