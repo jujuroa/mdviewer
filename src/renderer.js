@@ -324,6 +324,12 @@
       from.className = 'addon-meta';
       from.textContent = t('addons.from', { source: t(`addons.source.${addon.source}`), dir: addon.dir });
       item.appendChild(from);
+      if (addon.status === 'ok' && addon.enabled && addon.background !== undefined) {
+        const bg = document.createElement('div');
+        bg.className = 'addon-meta addon-background';
+        bg.textContent = t('addons.background', { state: t(`addons.bg.${addon.background || 'none'}`) });
+        item.appendChild(bg);
+      }
       if (addon.status === 'ok' && addon.activation.length) {
         const act = document.createElement('div');
         act.className = 'addon-meta';

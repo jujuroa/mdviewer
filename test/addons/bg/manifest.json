@@ -1,0 +1,27 @@
+{
+  "manifestVersion": 1,
+  "id": "bg",
+  "name": "Background",
+  "description": "백그라운드 프레임 시험용 add-on (test/addons/README.md)",
+  "version": "0.0.1",
+  "engines": {
+    "mdviewer": ">=2.0.0 <3.0.0",
+    "api": 1
+  },
+  "background": {
+    "entry": "background.html",
+    "idleTimeoutSec": 3
+  },
+  "activation": [
+    "onProjectContains:.bg-trigger"
+  ],
+  "contributes": {
+    "tabs": [
+      {
+        "id": "bg.view",
+        "title": "View",
+        "entry": "view.html"
+      }
+    ]
+  }
+}
