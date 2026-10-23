@@ -26,6 +26,7 @@ const { mergePolicy } = require('./addons/policy.js');
 const { createBackgroundFrames } = require('./addons/background.js');
 const { consentScope, needsConsent } = require('./addons/consent.js');
 const { AddonLog } = require('./addons/log.js');
+const { evaluateWhen } = require('./addons/when.js');
 const { ApiRouter } = require('./addons/api-router.js');
 const { registerAppApi } = require('./addons/api/app.js');
 const { HOST: ADDON_HOST } = require('./addons/manifest.js');
@@ -1639,6 +1640,151 @@ function saveProjectState(rootPath, patch) {
 
 const MAX_RECENT_MENU_ITEMS = 5;
 
+// ---- Add-ons: menus, when and keybindings (protocol 12.2–12.4) ----
+// Add-ons add items to the Extensions menu (menubar/addons) and to the
+// app's context menus, each shown while its `when` holds, and keys for
+// their commands — hidden items of the Extensions menu, so they work with
+// the keyboard anywhere in the window, add-on frames included. A key the
+// app already uses stays the app's (shown on the Extensions screen).
+
+// '<add-on id>.<key>' -> value, from context/set.
+const addonContextValues = new Map();
+// add-on id -> keys of its that lost to the app or an earlier add-on.
+const keybindingConflicts = new Map();
+
+// The program window's active tab and project, for when.
+function whenScene() {
+  const win = targetWindow();
+  const host = win ? hostOf(win) : null;
+  const tab = activeTabOf(host);
+  const projects = win ? windowProjects.get(win.webContents.id) : null;
+  return { tab, root: (projects && projects.active) || null };
+}
+
+// A when key's value: from `values` (what a context menu is about), else
+// the app's state, else what add-ons set.
+function whenLookup(values = {}) {
+  let scene = null;
+  const get = () => scene || (scene = whenScene());
+  return (key) => {
+    if (Object.prototype.hasOwnProperty.call(values, key)) return values[key];
+    switch (key) {
+      case 'editMode':
+        return !!(get().tab && get().tab.kind === 'doc' && get().tab.doc.editMode);
+      case 'activeDocument':
+        return !!(get().tab && get().tab.kind === 'doc' && get().tab.doc.path);
+      case 'activeProject':
+        return !!get().root;
+      case 'activeTabKind':
+        return get().tab ? (get().tab.kind === 'doc' ? 'document' : 'addon') : '';
+      case 'activeTabId':
+        return get().tab && get().tab.kind === 'addon' ? get().tab.addon.tabId : '';
+      case 'hasSelection':
+        return !!values.hasSelection;
+      default:
+        if (key.startsWith('projectHas.')) {
+          const root = get().root;
+          return !!root && fs.existsSync(path.join(root, key.slice('projectHas.'.length)));
+        }
+        return addonContextValues.get(key);
+    }
+  };
+}
+
+function addonCommandTitle(entry, commandId) {
+  const command = ((entry.manifest.contributes && entry.manifest.contributes.commands) || []).find((c) => c.id === commandId);
+  return command ? command.title : commandId;
+}
+
+// The items running add-ons put in menu `menuId`, as menu template items
+// (grouped by `group`, a separator before each group). values: what the
+// menu is about (12.2), also given to the command.
+function addonMenuItems(menuId, values = {}, { withName = false } = {}) {
+  if (!addonRegistry) return [];
+  const lookup = whenLookup(values);
+  const groups = new Map();
+  for (const entry of addonRegistry.list()) {
+    if (!addonRegistry.running(entry.id)) continue;
+    const items = (entry.manifest.contributes && entry.manifest.contributes.menus && entry.manifest.contributes.menus[menuId]) || [];
+    for (const item of items) {
+      if (!evaluateWhen(item.when, lookup)) continue;
+      const title = addonCommandTitle(entry, item.command);
+      const group = item.group || '';
+      if (!groups.has(group)) groups.set(group, []);
+      groups.get(group).push({
+        label: withName ? `${entry.manifest.name}: ${title}` : title,
+        click: (menuItem, win) => executeAddonCommand(item.command, { ...values, source: 'menu' }, win),
+      });
+    }
+  }
+  const out = [];
+  for (const group of [...groups.keys()].sort()) out.push({ type: 'separator' }, ...groups.get(group));
+  return out;
+}
+
+// "CmdOrCtrl+shift+k" -> "Ctrl+Shift+K", to compare keys.
+function normalizeAccelerator(accelerator) {
+  const parts = String(accelerator || '').split('+').map((p) => p.trim()).filter(Boolean);
+  const mods = new Set();
+  let key = '';
+  for (const p of parts) {
+    const l = p.toLowerCase();
+    if (['cmdorctrl', 'commandorcontrol', 'ctrl', 'control', 'cmd', 'command'].includes(l)) mods.add('Ctrl');
+    else if (['alt', 'option', 'altgr'].includes(l)) mods.add('Alt');
+    else if (l === 'shift') mods.add('Shift');
+    else if (['super', 'meta'].includes(l)) mods.add('Super');
+    else key = p.length === 1 ? p.toUpperCase() : p[0].toUpperCase() + p.slice(1).toLowerCase();
+  }
+  return [...['Ctrl', 'Alt', 'Shift', 'Super'].filter((m) => mods.has(m)), key].join('+');
+}
+
+function collectAccelerators(items, into = new Set()) {
+  for (const item of items || []) {
+    if (item.accelerator) into.add(normalizeAccelerator(item.accelerator));
+    if (Array.isArray(item.submenu)) collectAccelerators(item.submenu, into);
+  }
+  return into;
+}
+
+// Adds the add-ons' menubar items and keybindings to the Extensions menu
+// of `template` (before it is built).
+function addAddonMenus(template) {
+  const extensions = template.find((m) => m.label === t('menu.addons'));
+  if (!extensions || !addonRegistry) return;
+  extensions.submenu.push(...addonMenuItems('menubar/addons', {}, { withName: true }));
+  const taken = collectAccelerators(template);
+  keybindingConflicts.clear();
+  const lookup = whenLookup();
+  for (const entry of addonRegistry.list()) {
+    if (!addonRegistry.running(entry.id)) continue;
+    for (const kb of (entry.manifest.contributes && entry.manifest.contributes.keybindings) || []) {
+      const key = normalizeAccelerator(kb.key);
+      if (taken.has(key)) {
+        if (!keybindingConflicts.has(entry.id)) keybindingConflicts.set(entry.id, []);
+        keybindingConflicts.get(entry.id).push(kb.key);
+        continue;
+      }
+      taken.add(key);
+      extensions.submenu.push({
+        label: addonCommandTitle(entry, kb.command),
+        accelerator: kb.key,
+        visible: false,
+        enabled: evaluateWhen(kb.when, lookup),
+        click: (menuItem, win) => executeAddonCommand(kb.command, { source: 'keybinding' }, win),
+      });
+    }
+  }
+}
+
+// when can change with the active tab, its document and what add-ons set:
+// the menu is rebuilt shortly after.
+let menuRebuildTimer = null;
+function scheduleMenuRebuild() {
+  if (!addonRegistry) return;
+  clearTimeout(menuRebuildTimer);
+  menuRebuildTimer = setTimeout(buildAppMenu, 150);
+}
+
 function buildAppMenu() {
   const recentItems = loadRecentProjects().slice(0, MAX_RECENT_MENU_ITEMS);
   const recentSubmenu =
@@ -1649,7 +1795,7 @@ function buildAppMenu() {
         }))
       : [{ label: t('menu.noRecentProjects'), enabled: false }];
 
-  const menu = Menu.buildFromTemplate([
+  const template = [
     {
       label: t('menu.file'),
       submenu: [
@@ -1897,7 +2043,9 @@ function buildAppMenu() {
         },
       ],
     },
-  ]);
+  ];
+  addAddonMenus(template);
+  const menu = Menu.buildFromTemplate(template);
   Menu.setApplicationMenu(menu);
 }
 
@@ -2418,6 +2566,7 @@ function tabForPage(tab) {
 // focusId: the tab whose iframe should take the keyboard.
 function notifyTabsChanged(host, { focusId = null } = {}) {
   if (!host || host.owner.isDestroyed()) return;
+  scheduleMenuRebuild();
   host.owner.webContents.send('tabs:changed', {
     container: host.key,
     tabs: host.tabs.map(tabForPage),
@@ -3462,6 +3611,7 @@ appIpc.handle('tabs:show-context-menu', (event, id) => {
       { label: t('tabs.showInFolder'), click: () => shell.showItemInFolder(filePath) }
     );
   }
+  items.push(...addonMenuItems('tab/context', { tabId: tab.kind === 'addon' ? tab.addon.tabId : tab.id, path: filePath || '' }));
   Menu.buildFromTemplate(items).popup({ window: host.win });
   return { ok: true };
 });
@@ -3972,6 +4122,8 @@ function addonListForPage() {
     // Its background frame: 'starting', 'running', 'stopping', 'error',
     // 'failed' or null (not running).
     background: e.manifest && e.manifest.background ? backgroundFrames.stateOf(e.id) : undefined,
+    // Keys of its that the app (or an earlier add-on) already uses.
+    keyConflicts: keybindingConflicts.get(e.id) || [],
     // The tabs it can open now (for the tab strip's "+").
     tabs: addonRegistry.running(e.id) ? ((e.manifest.contributes && e.manifest.contributes.tabs) || []).map((tab) => tab.id) : [],
   }));
@@ -4781,6 +4933,12 @@ appIpc.handle('tree:show-context-menu', (event, itemPath, rootPath, options = {}
       click: () => win.webContents.send('tree:close-project', { rootPath: itemPath }),
     });
   }
+  const ext = path.extname(itemPath).slice(1).toLowerCase();
+  if (options && options.isProjectRoot) {
+    items.push(...addonMenuItems('explorer/project', { projectRoot: itemPath, isProjectRoot: true, isDirectory: true }));
+  } else {
+    items.push(...addonMenuItems('explorer/item', { path: itemPath, isDirectory: isDir, projectRoot: rootPath || '', resourceExt: isDir ? '' : ext, isProjectRoot: false }));
+  }
   const menu = Menu.buildFromTemplate(items);
   menu.popup({ window: win });
 });
@@ -4804,6 +4962,7 @@ appIpc.handle('tree:show-empty-context-menu', (event, { hasProjects }) => {
       enabled: !!hasProjects,
       click: () => win.webContents.send('tree:close-all-projects'),
     },
+    ...addonMenuItems('explorer/empty'),
   ]);
   menu.popup({ window: win });
 });
@@ -5421,6 +5580,12 @@ appIpc.handle('viewer:show-context-menu', (event, payload) => {
     if (items.length) items.push({ type: 'separator' });
     items.push(...viewerDocumentItems(win, page, payload));
   }
+  if (payload) {
+    const filePath = typeof payload.filePath === 'string' ? payload.filePath : '';
+    const values = { path: filePath, resourceExt: path.extname(filePath).slice(1).toLowerCase(), hasSelection: !!payload.hasSelection };
+    if (payload.hasSelection && typeof payload.selectionText === 'string') values.text = payload.selectionText;
+    items.push(...addonMenuItems(payload.hasSelection ? 'viewer/selection' : 'viewer/context', values));
+  }
   if (items.length === 0) return { ok: false };
   Menu.buildFromTemplate(items).popup({ window: win });
   return { ok: true };
@@ -5509,6 +5674,11 @@ appIpc.handle('editor:show-context-menu', (event, payload) => {
   if (hasSelection) {
     items.push({ type: 'separator' }, ...sendToTerminalItems(event.senderFrame, 'editor', payload.hasLocation));
   }
+  const tab = senderTab(event);
+  const filePath = tab && tab.kind === 'doc' ? tab.doc.path || '' : '';
+  const values = { path: filePath, resourceExt: path.extname(filePath).slice(1).toLowerCase(), hasSelection };
+  if (hasSelection && typeof payload.selectionText === 'string') values.text = payload.selectionText;
+  items.push(...addonMenuItems('editor/context', values));
   Menu.buildFromTemplate(items).popup({ window: win });
   return { ok: true };
 });

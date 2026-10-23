@@ -44,12 +44,15 @@ test('checkManifest: contributes refer to what exists, ids carry the prefix', ()
   const m = good();
   m.contributes.commands.push({ id: 'other.cmd', title: 'x', handler: 'tab:sample.nope' });
   m.contributes.menus['menubar/addons'].push({ command: 'sample.missing' });
-  m.contributes.keybindings = [{ command: 'sample.open' }];
+  m.contributes.keybindings = [{ command: 'sample.open' }, { command: 'sample.open', key: 'Ctrl+K', when: 'editMode &&' }];
+  m.contributes.menus['menubar/addons'][0].when = "resourceExt == 'md'";
   const c = codes(checkManifest(m, 'sample'));
   assert.ok(c.includes('contributes.commands[1].id:notPrefixed'));
   assert.ok(c.includes('contributes.commands[1].handler:unknownTab'));
   assert.ok(c.includes('contributes.menus.menubar/addons[1].command:unknownCommand'));
   assert.ok(c.includes('contributes.keybindings[0].key:required'));
+  assert.ok(c.includes('contributes.keybindings[1].when:badWhen'));
+  assert.ok(!c.some((x) => x.startsWith('contributes.menus.menubar/addons[0].when')));
   const bg = good({ contributes: { commands: [{ id: 'sample.run', title: 'Run', handler: 'background' }] } });
   assert.ok(codes(checkManifest(bg, 'sample')).includes('contributes.commands[0].handler:noBackground'));
   // No handler means the background frame (protocol 7.6).
