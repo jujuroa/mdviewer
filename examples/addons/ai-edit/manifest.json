@@ -1,0 +1,54 @@
+{
+  "manifestVersion": 1,
+  "id": "ai-edit",
+  "name": "%name%",
+  "description": "%description%",
+  "version": "1.0.0",
+  "publisher": "MD Viewer",
+  "engines": {
+    "mdviewer": ">=2.0.0 <3.0.0",
+    "api": 1,
+    "capabilities": {
+      "edit": 1,
+      "ui": 1
+    }
+  },
+  "permissions": [
+    "documents.read",
+    "documents.write"
+  ],
+  "background": {
+    "entry": "background.html",
+    "idleTimeoutSec": 60
+  },
+  "contributes": {
+    "commands": [
+      {
+        "id": "ai-edit.tidy",
+        "title": "%command.tidy%"
+      }
+    ],
+    "menus": {
+      "editor/context": [
+        {
+          "command": "ai-edit.tidy",
+          "when": "resourceExt == 'md'"
+        }
+      ],
+      "menubar/addons": [
+        {
+          "command": "ai-edit.tidy",
+          "when": "activeDocument"
+        }
+      ]
+    },
+    "settings": [
+      {
+        "key": "askRules",
+        "type": "boolean",
+        "default": true,
+        "title": "%setting.askRules%"
+      }
+    ]
+  }
+}

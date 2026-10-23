@@ -1,0 +1,6 @@
+{
+  "name": "Markdown Helper",
+  "description": "Edits the way an AI add-on would, by rules instead of a model: reads the selection, proposes a change, and the user confirms it on the comparison screen.",
+  "command.tidy": "Tidy Markdown",
+  "setting.askRules": "Ask which rules to use each time"
+}
