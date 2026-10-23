@@ -5,6 +5,7 @@
 // screen translates ("addons.problem.<code>" in assets/i18n.js).
 const semver = require('semver');
 const { hostSource } = require('./pages.js');
+const { parseWhen } = require('./when.js');
 
 const ID_PATTERN = /^[a-z][a-z0-9-]{1,39}$/;
 const KNOWN_FIELDS = new Set([
@@ -168,6 +169,7 @@ function checkManifest(manifest, folderName) {
         }
         eachItem(items, path, err, (item, p) => {
           if (!commandIds.has(item.command)) err(`${p}.command`, 'unknownCommand', String(item.command));
+          checkWhen(item.when, `${p}.when`, err);
         });
       }
     }
@@ -175,6 +177,7 @@ function checkManifest(manifest, folderName) {
   eachItem(c.keybindings, 'contributes.keybindings', err, (kb, path) => {
     if (!commandIds.has(kb.command)) err(`${path}.command`, 'unknownCommand', String(kb.command));
     if (!isText(kb.key)) err(`${path}.key`, 'required');
+    checkWhen(kb.when, `${path}.when`, err);
   });
   const settingKeys = new Set();
   eachItem(c.settings, 'contributes.settings', err, (s, path) => {
@@ -197,6 +200,15 @@ function checkManifest(manifest, folderName) {
   if (!isObject(background) && tabIds.size === 0) err('', 'nothingToRun');
 
   return { errors, warnings };
+}
+
+function checkWhen(value, path, err) {
+  if (value === undefined) return;
+  try {
+    parseWhen(value);
+  } catch (e) {
+    err(path, 'badWhen', String(value));
+  }
 }
 
 function checkStringList(value, path, err, each) {

@@ -341,6 +341,12 @@
         act.textContent = t('addons.activation', { events: addon.activation.join(', ') });
         item.appendChild(act);
       }
+      if (addon.keyConflicts && addon.keyConflicts.length) {
+        const conflict = document.createElement('div');
+        conflict.className = 'addon-meta';
+        conflict.textContent = t('addons.keyConflicts', { keys: addon.keyConflicts.join(', ') });
+        item.appendChild(conflict);
+      }
       if (addon.problems.length || addon.warnings.length) {
         const problems = document.createElement('ul');
         problems.className = 'addon-problems';

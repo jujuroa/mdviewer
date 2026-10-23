@@ -33,6 +33,42 @@
         "title": "Show in View",
         "handler": "tab:bg.view"
       }
+    ],
+    "menus": {
+      "menubar/addons": [
+        {
+          "command": "bg.count"
+        }
+      ],
+      "explorer/item": [
+        {
+          "command": "bg.count",
+          "when": "resourceExt == 'md'",
+          "group": "bg"
+        }
+      ],
+      "tab/context": [
+        {
+          "command": "bg.count",
+          "when": "activeTabKind == 'document'"
+        }
+      ],
+      "editor/context": [
+        {
+          "command": "bg.count",
+          "when": "hasSelection"
+        }
+      ]
+    },
+    "keybindings": [
+      {
+        "command": "bg.count",
+        "key": "Ctrl+Alt+K"
+      },
+      {
+        "command": "bg.show",
+        "key": "Ctrl+Shift+P"
+      }
     ]
   },
   "experimentalApi": [

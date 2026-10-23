@@ -22,6 +22,7 @@
 | `consent` | 첫 실행 전 동의: 시작 시 활성화·탭 열기 때 묻기, 거부·허용·기록, 다시 열 때 안 묻기, 업데이트로 늘면 다시 묻기, `--addon-dev`는 안 묻기 (F2) |
 | `addon-log` | 확장 로그: add-on 프레임 콘솔(수준 유지)·실패한 호출, 화면 실시간 갱신, add-on별 보기, `logs/<id>.log` 파일 (F2) |
 | `commands` | 명령 팔레트(`Ctrl+Shift+P`·메뉴, 걸러내기, 키보드), 백그라운드 명령(onCommand로 시작)·탭 명령(탭을 열어 전달), ctx.source, 로그 (F3) |
+| `menus` | 메뉴 기여(확장 메뉴, 탐색기·탭·편집창 우클릭)와 `when`, 단축키(숨긴 메뉴 항목), 앱 단축키와 충돌 시 앱 우선·관리 화면 표시 (F3). 우클릭 메뉴는 main에서 `Menu.prototype.popup`을 가로채 확인 |
 
 알아 둘 것:
 - 탭 iframe은 로드가 끝난 뒤에 건드린다. 로드 중에 `contentDocument`를 반복해서 읽으면 그 프레임의 preload가 붙지 않는다(`openWindowWith` 참고).

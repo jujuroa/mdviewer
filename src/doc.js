@@ -3442,6 +3442,8 @@
     window.mdviewer.showEditorContextMenu({
       hasSelection: start !== end,
       hasLocation: !!state.currentFilePath,
+      // For add-on menu items about the selection (protocol 12.2).
+      selectionText: start !== end ? el.mdSourceEditor.value.slice(start, end).slice(0, 100000) : '',
     });
   });
 
