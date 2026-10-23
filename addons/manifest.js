@@ -148,13 +148,14 @@ function checkManifest(manifest, folderName) {
       commandIds.add(cmd.id);
     }
     if (!isText(cmd.title)) err(`${path}.title`, 'required');
-    if (cmd.handler !== undefined) {
-      if (cmd.handler === 'background') {
-        if (!isObject(background)) err(`${path}.handler`, 'noBackground');
-      } else if (typeof cmd.handler === 'string' && cmd.handler.startsWith('tab:')) {
-        if (!tabIds.has(cmd.handler.slice(4))) err(`${path}.handler`, 'unknownTab', cmd.handler.slice(4));
-      } else err(`${path}.handler`, 'badValue', String(cmd.handler));
-    }
+    // Where it is handled (protocol 7.6): the background frame unless it
+    // names a tab.
+    const handler = cmd.handler === undefined ? 'background' : cmd.handler;
+    if (handler === 'background') {
+      if (!isObject(background)) err(`${path}.handler`, 'noBackground');
+    } else if (typeof handler === 'string' && handler.startsWith('tab:')) {
+      if (!tabIds.has(handler.slice(4))) err(`${path}.handler`, 'unknownTab', handler.slice(4));
+    } else err(`${path}.handler`, 'badValue', String(handler));
   });
   if (c.menus !== undefined) {
     if (!isObject(c.menus)) err('contributes.menus', 'notObject');

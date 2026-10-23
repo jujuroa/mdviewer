@@ -41,6 +41,7 @@ function createBackgroundFrames(deps) {
     if (existing && (existing.state === 'starting' || existing.state === 'running')) return existing;
     const rec = existing || { id: entry.id, restarts: [] };
     rec.idleTimeoutSec = Number.isInteger(background.idleTimeoutSec) ? background.idleTimeoutSec : DEFAULT_IDLE_TIMEOUT_SEC;
+    rec.why = why;
     rec.state = 'starting';
     rec.ready = false;
     rec.lastActivity = Date.now();

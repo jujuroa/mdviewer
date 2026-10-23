@@ -372,6 +372,85 @@
   addonsEl.rescan.addEventListener('click', async () => renderAddons(await window.mdviewer.rescanAddons()));
   window.mdviewer.onMenuManageAddons(openAddons);
 
+  // Command palette (Ctrl+Shift+P): add-ons' commands and tabs, filtered
+  // by what is typed (every word must appear).
+  const paletteEl = {
+    overlay: document.getElementById('command-palette'),
+    input: document.getElementById('palette-input'),
+    list: document.getElementById('palette-list'),
+  };
+  const palette = { items: [], shown: [], selected: 0, returnFocus: null };
+
+  function renderPalette() {
+    const words = paletteEl.input.value.toLowerCase().split(/\s+/).filter(Boolean);
+    palette.shown = palette.items.filter((item) => words.every((w) => item.label.toLowerCase().includes(w)));
+    palette.selected = Math.min(palette.selected, Math.max(0, palette.shown.length - 1));
+    paletteEl.list.textContent = '';
+    if (!palette.shown.length) {
+      const empty = document.createElement('li');
+      empty.className = 'empty';
+      empty.textContent = t('palette.empty');
+      paletteEl.list.appendChild(empty);
+      return;
+    }
+    palette.shown.forEach((item, i) => {
+      const li = document.createElement('li');
+      li.textContent = item.label;
+      li.classList.toggle('selected', i === palette.selected);
+      li.addEventListener('mousedown', (e) => {
+        e.preventDefault();
+        runPalette(i);
+      });
+      paletteEl.list.appendChild(li);
+    });
+    const selected = paletteEl.list.querySelector('.selected');
+    if (selected) selected.scrollIntoView({ block: 'nearest' });
+  }
+
+  async function openPalette() {
+    palette.returnFocus = document.activeElement;
+    palette.items = await window.mdviewer.paletteItems();
+    palette.selected = 0;
+    paletteEl.input.value = '';
+    renderPalette();
+    paletteEl.overlay.classList.remove('hidden');
+    paletteEl.input.focus();
+  }
+
+  function closePalette() {
+    paletteEl.overlay.classList.add('hidden');
+  }
+
+  function runPalette(index) {
+    const item = palette.shown[index];
+    closePalette();
+    if (item) window.mdviewer.runPaletteItem(item);
+  }
+
+  paletteEl.input.addEventListener('input', () => {
+    palette.selected = 0;
+    renderPalette();
+  });
+  paletteEl.input.addEventListener('keydown', (e) => {
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      const n = palette.shown.length;
+      if (n) palette.selected = (palette.selected + (e.key === 'ArrowDown' ? 1 : n - 1)) % n;
+      renderPalette();
+    } else if (e.key === 'Enter') {
+      e.preventDefault();
+      runPalette(palette.selected);
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      closePalette();
+    }
+  });
+  paletteEl.input.addEventListener('blur', closePalette);
+  paletteEl.overlay.addEventListener('mousedown', (e) => {
+    if (e.target === paletteEl.overlay) closePalette();
+  });
+  window.mdviewer.onMenuCommandPalette(openPalette);
+
   // The extensions log: one add-on's entries or all of them, kept up to
   // date while open.
   const logEl = {

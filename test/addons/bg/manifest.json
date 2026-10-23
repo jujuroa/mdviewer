@@ -22,6 +22,17 @@
         "title": "View",
         "entry": "view.html"
       }
+    ],
+    "commands": [
+      {
+        "id": "bg.count",
+        "title": "Count"
+      },
+      {
+        "id": "bg.show",
+        "title": "Show in View",
+        "handler": "tab:bg.view"
+      }
     ]
   },
   "experimentalApi": [
