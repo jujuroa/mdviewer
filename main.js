@@ -30,6 +30,7 @@ const { evaluateWhen } = require('./addons/when.js');
 const { AddonSettings, AddonSecrets } = require('./addons/settings.js');
 const { registerSettingsApi } = require('./addons/api/settings.js');
 const { registerDocumentsApi } = require('./addons/api/documents.js');
+const { registerUiApi } = require('./addons/api/ui.js');
 const { planEdit, needsConfirmation } = require('./addons/edits.js');
 const { diffForView } = require('./addons/diffview.js');
 const { ApiError } = require('./addons/api-router.js');
@@ -3504,13 +3505,13 @@ function pathKind(p) {
 const pageRequests = new Map(); // id -> { resolve, win }
 let nextPageRequestId = 1;
 
-function askWindowPage(host, channel, payload) {
+function askWindowPage(host, channel, payload, { focus = true } = {}) {
   return new Promise((resolve) => {
     if (!host || host.owner.isDestroyed()) return resolve(null);
     const id = nextPageRequestId++;
     pageRequests.set(id, { resolve, win: host.owner });
     host.owner.webContents.send(channel, { ...payload, id, container: host.key });
-    if (!host.win.isDestroyed() && !host.win.isFocused()) host.win.focus();
+    if (focus && !host.win.isDestroyed() && !host.win.isFocused()) host.win.focus();
   });
 }
 
@@ -3623,6 +3624,55 @@ addonApi.register('edit/apply', {
     logAddon(caller.addonId, 'info', `edit applied: ${plan.label || '(no label)'} — ${plan.operations.length} operation(s)`, { quiet: true });
     return { applied: true };
   },
+});
+
+// ui/* (protocol 13.5): drawn by the window page of the caller's tab area.
+// A progress shown for a page that has gone away is ended for it.
+const progressShown = new Map(); // token -> { host, alive }
+let progressSweepTimer = null;
+
+function callerAlive(caller) {
+  if (caller.kind === 'background') {
+    const win = caller.rec.win;
+    return () => !!win && caller.rec.win === win && !win.isDestroyed();
+  }
+  const frame = caller.kind === 'pane' ? caller.tab.pane && caller.tab.pane.frame : caller.tab.frame;
+  return () => {
+    const now = caller.kind === 'pane' ? caller.tab.pane && caller.tab.pane.frame : caller.tab.frame;
+    return tabsById.has(caller.tab.id) && !!frame && now === frame && !frameGone(frame);
+  };
+}
+
+function showAddonProgress(caller, message) {
+  if (message.op === 'start') progressShown.set(message.token, { host: callerHost(caller), alive: callerAlive(caller) });
+  const shown = progressShown.get(message.token);
+  if (!shown) return;
+  if (message.op === 'end') progressShown.delete(message.token);
+  if (!shown.host.owner.isDestroyed()) {
+    shown.host.owner.webContents.send('addons:ui-progress', { ...message, name: caller.entry.manifest.name, container: shown.host.key });
+  }
+  if (progressShown.size && !progressSweepTimer) {
+    progressSweepTimer = setInterval(() => {
+      for (const [token, p] of [...progressShown]) {
+        if (!p.alive()) addonUi.endProgress(token);
+      }
+      if (!progressShown.size) {
+        clearInterval(progressSweepTimer);
+        progressSweepTimer = null;
+      }
+    }, ADDON_FRAME_CHECK_MS);
+  }
+}
+
+const addonUi = registerUiApi(addonApi, {
+  // A notification takes no focus; questions bring their window forward.
+  ask: (caller, request) => askWindowPage(callerHost(caller), 'addons:ui-request', { ...request, name: caller.entry.manifest.name }, { focus: request.kind !== 'notify' }),
+  progress: showAddonProgress,
+});
+
+appIpc.on('addons:ui-progress-cancel', (event, token) => {
+  const shown = progressShown.get(token);
+  if (shown && shown.host.owner.webContents === event.sender) addonUi.cancelProgress(token);
 });
 
 // The program window a caller's calls are about: its tab's (a tab window's

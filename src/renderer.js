@@ -787,6 +787,281 @@
     if (editQueue.length === 1) showNextEdit();
   });
 
+  // ui/* from add-ons (protocol 13.5), drawn in the window of the tab area
+  // they came from (request.container): notifications and progress in a
+  // stack at the bottom right, questions (quickPick, input, confirm) one at
+  // a time in a dialog.
+  function uiDocOf(container) {
+    const area = container && container !== 'main' ? tabAreas.get(container) : null;
+    return area ? area.doc : document;
+  }
+
+  function make(doc, tag, className, text) {
+    const node = doc.createElement(tag);
+    if (className) node.className = className;
+    if (text !== undefined) node.textContent = text;
+    return node;
+  }
+
+  function toastStack(doc) {
+    let stack = doc.getElementById('addon-toasts');
+    if (!stack) {
+      stack = make(doc, 'div', 'addon-toasts');
+      stack.id = 'addon-toasts';
+      doc.body.appendChild(stack);
+    }
+    return stack;
+  }
+
+  // Questions still open, so a tab window that closes can answer them.
+  const uiPending = new Map(); // id -> { container, answer(value) }
+  const NOTIFY_HIDE_MS = 8000;
+
+  function answerUi(id, value) {
+    const pending = uiPending.get(id);
+    if (!pending) return;
+    uiPending.delete(id);
+    window.mdviewer.answerAddonPage(id, value);
+  }
+
+  function showNotification(request) {
+    const doc = uiDocOf(request.container);
+    const toast = make(doc, 'div', `addon-toast ${request.level}`);
+    toast.dataset.requestId = String(request.id);
+    const head = make(doc, 'div', 'head');
+    head.append(make(doc, 'span', 'who', request.name), make(doc, 'span', 'msg', request.message));
+    const close = make(doc, 'button', 'close', '✕');
+    close.title = t('addons.ui.close');
+    head.appendChild(close);
+    toast.appendChild(head);
+    const done = (value) => {
+      toast.remove();
+      answerUi(request.id, { value });
+    };
+    close.addEventListener('click', () => done(null));
+    uiPending.set(request.id, { container: request.container, close: () => toast.remove() });
+    if (request.actions.length) {
+      const row = make(doc, 'div', 'actions');
+      for (const action of request.actions) {
+        const button = make(doc, 'button', '', action);
+        button.addEventListener('click', () => done(action));
+        row.appendChild(button);
+      }
+      toast.appendChild(row);
+    } else {
+      // Nothing to choose: the add-on has its answer now.
+      answerUi(request.id, { value: null });
+      setTimeout(() => toast.remove(), NOTIFY_HIDE_MS);
+    }
+    toastStack(doc).appendChild(toast);
+  }
+
+  const dialogQueue = [];
+
+  function showNextDialog() {
+    const request = dialogQueue[0];
+    if (!request) return;
+    const doc = uiDocOf(request.container);
+    const overlay = make(doc, 'div', 'modal-overlay addon-ui-overlay');
+    overlay.id = 'addon-ui-overlay';
+    overlay.dataset.kind = request.kind;
+    const box = make(doc, 'div', 'modal-box addon-ui-box');
+    const header = make(doc, 'div', 'modal-header');
+    header.appendChild(make(doc, 'span', '', request.title ? `${request.name}: ${request.title}` : request.name));
+    box.appendChild(header);
+    const body = make(doc, 'div', 'addon-ui-body');
+    box.appendChild(body);
+    const footer = make(doc, 'div', 'hidden-settings-footer addon-consent-buttons');
+    const cancel = make(doc, 'button', 'hidden-reset', t('addons.ui.cancel'));
+    cancel.id = 'btn-ui-cancel';
+    const ok = make(doc, 'button', 'btn-primary', request.okLabel || t('addons.ui.ok'));
+    ok.id = 'btn-ui-ok';
+    footer.append(cancel, ok);
+    box.appendChild(footer);
+    overlay.appendChild(box);
+
+    let finished = false;
+    const finish = (value) => {
+      if (finished) return;
+      finished = true;
+      overlay.remove();
+      dialogQueue.shift();
+      answerUi(request.id, value);
+      showNextDialog();
+    };
+    uiPending.set(request.id, { container: request.container, close: () => finish(null) });
+    let submit = () => finish({ value: true });
+    let focusFirst = ok;
+
+    if (request.kind === 'confirm') {
+      body.appendChild(make(doc, 'p', 'message', request.message));
+      if (request.detail) body.appendChild(make(doc, 'p', 'detail', request.detail));
+    } else if (request.kind === 'input') {
+      if (request.prompt) body.appendChild(make(doc, 'p', 'message', request.prompt));
+      const input = make(doc, 'input');
+      input.type = request.password ? 'password' : 'text';
+      input.spellcheck = false;
+      input.value = request.value || '';
+      body.appendChild(input);
+      submit = () => finish({ value: input.value });
+      focusFirst = input;
+    } else if (request.kind === 'quickPick') {
+      const filter = make(doc, 'input');
+      filter.type = 'text';
+      filter.spellcheck = false;
+      filter.placeholder = request.placeholder || t('addons.ui.filter');
+      const list = make(doc, 'ul', 'palette-list');
+      body.append(filter, list);
+      const picked = new Set();
+      let shown = [];
+      let selected = 0;
+      const render = () => {
+        const q = filter.value.trim().toLowerCase();
+        shown = request.items.filter((item) => !q || item.label.toLowerCase().includes(q) || (item.detail || '').toLowerCase().includes(q));
+        selected = Math.min(selected, Math.max(0, shown.length - 1));
+        list.textContent = '';
+        if (!shown.length) list.appendChild(make(doc, 'li', 'empty', t('addons.ui.noMatch')));
+        shown.forEach((item, i) => {
+          const li = make(doc, 'li');
+          li.dataset.id = item.id;
+          li.classList.toggle('selected', i === selected);
+          if (request.multi) {
+            const box = make(doc, 'input');
+            box.type = 'checkbox';
+            box.checked = picked.has(item.id);
+            box.tabIndex = -1;
+            li.appendChild(box);
+          }
+          li.appendChild(make(doc, 'span', 'label', item.label));
+          if (item.detail) li.appendChild(make(doc, 'span', 'detail', item.detail));
+          li.addEventListener('click', () => {
+            selected = i;
+            if (request.multi) toggle(item);
+            else finish({ value: item.id });
+          });
+          list.appendChild(li);
+        });
+        const current = list.querySelector('li.selected');
+        if (current) current.scrollIntoView({ block: 'nearest' });
+      };
+      const toggle = (item) => {
+        if (picked.has(item.id)) picked.delete(item.id);
+        else picked.add(item.id);
+        render();
+      };
+      filter.addEventListener('input', () => {
+        selected = 0;
+        render();
+      });
+      filter.addEventListener('keydown', (e) => {
+        if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+          e.preventDefault();
+          selected = Math.max(0, Math.min(shown.length - 1, selected + (e.key === 'ArrowDown' ? 1 : -1)));
+          render();
+        } else if (e.key === ' ' && request.multi && shown[selected]) {
+          e.preventDefault();
+          toggle(shown[selected]);
+        }
+      });
+      // One pick: Enter takes the selected item, so no OK button.
+      if (request.multi) submit = () => finish({ value: [...picked] });
+      else {
+        ok.remove();
+        submit = () => (shown[selected] ? finish({ value: shown[selected].id }) : null);
+      }
+      focusFirst = filter;
+      render();
+    }
+
+    ok.addEventListener('click', () => submit());
+    cancel.addEventListener('click', () => finish({ cancelled: true }));
+    overlay.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') finish({ cancelled: true });
+      else if (e.key === 'Enter' && e.target.tagName !== 'BUTTON') {
+        e.preventDefault();
+        submit();
+      }
+    });
+    doc.body.appendChild(overlay);
+    if (doc.defaultView) doc.defaultView.focus();
+    focusFirst.focus();
+  }
+
+  window.mdviewer.onAddonUiRequest((request) => {
+    if (request.kind === 'notify') return showNotification(request);
+    dialogQueue.push(request);
+    if (dialogQueue.length === 1) showNextDialog();
+  });
+
+  // Progress: a row in the stack ('status') or a box in the middle of the
+  // window ('dialog'), until the add-on ends it.
+  const progressViews = new Map(); // token -> { node, bar, message }
+
+  window.mdviewer.onAddonUiProgress((message) => {
+    if (message.op === 'start') {
+      const doc = uiDocOf(message.container);
+      const node = make(doc, 'div', 'addon-toast addon-progress');
+      node.dataset.token = message.token;
+      const head = make(doc, 'div', 'head');
+      head.append(make(doc, 'span', 'who', message.name), make(doc, 'span', 'msg', message.title));
+      node.appendChild(head);
+      const text = make(doc, 'div', 'progress-message');
+      const track = make(doc, 'div', 'progress-track');
+      const bar = make(doc, 'div', 'progress-bar indeterminate');
+      track.appendChild(bar);
+      node.append(text, track);
+      if (message.cancellable) {
+        const row = make(doc, 'div', 'actions');
+        const cancel = make(doc, 'button', '', t('addons.ui.cancel'));
+        cancel.addEventListener('click', () => {
+          cancel.disabled = true;
+          window.mdviewer.cancelAddonProgress(message.token);
+        });
+        row.appendChild(cancel);
+        node.appendChild(row);
+      }
+      let shell = node;
+      if (message.location === 'dialog') {
+        shell = make(doc, 'div', 'modal-overlay addon-progress-overlay');
+        node.classList.add('in-dialog');
+        shell.appendChild(node);
+        doc.body.appendChild(shell);
+      } else {
+        toastStack(doc).appendChild(node);
+      }
+      progressViews.set(message.token, { node: shell, bar, text });
+      return;
+    }
+    const view = progressViews.get(message.token);
+    if (!view) return;
+    if (message.op === 'end') {
+      view.node.remove();
+      progressViews.delete(message.token);
+      return;
+    }
+    if (message.message !== undefined) view.text.textContent = message.message;
+    if (typeof message.percent === 'number') {
+      view.bar.classList.remove('indeterminate');
+      view.bar.style.width = `${message.percent}%`;
+    }
+  });
+
+  // A tab window that closes takes its questions with it: they are
+  // answered as dismissed.
+  function settleUiOf(container) {
+    for (let i = dialogQueue.length - 1; i > 0; i--) {
+      if (dialogQueue[i].container === container) {
+        const [request] = dialogQueue.splice(i, 1);
+        window.mdviewer.answerAddonPage(request.id, null);
+      }
+    }
+    for (const [id, pending] of [...uiPending]) {
+      if (pending.container !== container) continue;
+      pending.close();
+      answerUi(id, null);
+    }
+  }
+
   // Consent before an add-on first runs (protocol 10.3): main asks, one at
   // a time; the answer goes back.
   const consentEl = {
@@ -4154,7 +4429,10 @@
   });
 
   window.mdviewer.onTabWindowClosed(({ key } = {}) => {
-    if (key && key !== 'main') tabAreas.delete(key);
+    if (key && key !== 'main') {
+      tabAreas.delete(key);
+      settleUiOf(key);
+    }
   });
 
   // ---------------------------------------------------------------------

@@ -114,3 +114,39 @@ test('settings, secrets and context areas', async () => {
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('ui area: answers checked against what was offered; progress tokens are the caller\'s', async () => {
+  const { registerUiApi } = require('../addons/api/ui.js');
+  const asked = [];
+  let answer = null;
+  const shown = [];
+  const r = new ApiRouter();
+  const ui = registerUiApi(r, { ask: async (c, req) => (asked.push(req), answer), progress: (c, m) => shown.push(m) });
+  const me = { addonId: 'a', entry: { manifest: {} } };
+  answer = { value: 'Retry' };
+  assert.equal((await r.call(me, 'ui/notify', { message: 'hi', actions: ['Retry'] })).result, 'Retry');
+  answer = { value: 'Other' };
+  assert.equal((await r.call(me, 'ui/notify', { message: 'hi', actions: ['Retry'] })).result, null);
+  assert.equal((await r.call(me, 'ui/notify', { level: 'loud', message: 'x' })).error.name, 'InvalidParams');
+  answer = { value: 'b' };
+  assert.equal((await r.call(me, 'ui/quickPick', { items: [{ id: 'a', label: 'A' }, { id: 'b', label: 'B' }] })).result, 'b');
+  answer = { value: ['b', 'zzz'] };
+  assert.deepEqual((await r.call(me, 'ui/quickPick', { multi: true, items: [{ id: 'a', label: 'A' }, { id: 'b', label: 'B' }] })).result, ['b']);
+  answer = { cancelled: true };
+  assert.equal((await r.call(me, 'ui/quickPick', { items: [{ id: 'a', label: 'A' }] })).error.name, 'UserCanceled');
+  assert.equal((await r.call(me, 'ui/input', {})).error.name, 'UserCanceled');
+  answer = { value: 'typed' };
+  assert.equal((await r.call(me, 'ui/input', { password: true })).result, 'typed');
+  assert.equal(asked[asked.length - 1].password, true);
+  answer = { value: true };
+  assert.equal((await r.call(me, 'ui/confirm', { message: 'sure?' })).result, true);
+  answer = null;
+  assert.equal((await r.call(me, 'ui/confirm', { message: 'sure?' })).result, false);
+  const { token } = (await r.call(me, 'ui/progress/start', { title: 'Work', cancellable: true })).result;
+  assert.deepEqual((await r.call(me, 'ui/progress/report', { token, percent: 50 })).result, { cancelled: false });
+  ui.cancelProgress(token);
+  assert.deepEqual((await r.call(me, 'ui/progress/report', { token })).result, { cancelled: true });
+  assert.equal((await r.call({ addonId: 'b', entry: { manifest: {} } }, 'ui/progress/end', { token })).error.name, 'NotFound');
+  assert.equal((await r.call(me, 'ui/progress/end', { token })).ok, true);
+  assert.deepEqual(shown.map((m) => m.op), ['start', 'report', 'report', 'end']);
+});
