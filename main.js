@@ -24,6 +24,7 @@ const { Registry: AddonRegistry } = require('./addons/registry.js');
 const { AddonStore } = require('./addons/store.js');
 const { mergePolicy } = require('./addons/policy.js');
 const { createBackgroundFrames } = require('./addons/background.js');
+const { consentScope, needsConsent } = require('./addons/consent.js');
 const { ApiRouter } = require('./addons/api-router.js');
 const { registerAppApi } = require('./addons/api/app.js');
 const { HOST: ADDON_HOST } = require('./addons/manifest.js');
@@ -1757,7 +1758,7 @@ function buildAppMenu() {
       submenu: [
         { label: t('menu.manageAddons'), click: (item, win) => sendToWindow(win, 'menu:manage-addons') },
         { label: t('menu.rescanAddons'), click: () => rescanAddons() },
-        ...addonTabMenuItems((choice, win) => openAddonTab(docHostFor(win), choice.addonId, choice.tabId)),
+        ...addonTabMenuItems((choice, win) => openAddonTabAsked(docHostFor(win), choice.addonId, choice.tabId)),
       ],
     },
     {
@@ -2035,6 +2036,7 @@ function createWindow({ bounds: requestedBounds = null } = {}) {
     killTerminal(webContentsId);
     windowProjects.delete(webContentsId);
     settleTabAsksOf(win);
+    settleConsentRequestsOf(win);
     // Its tab windows' contents belong to its page, which is gone.
     for (const tabHost of hostsOwnedBy(win)) {
       if (tabHost === host) continue;
@@ -2852,6 +2854,7 @@ function wireDocWindowEvents(win, host) {
 // loaded again in a new iframe.
 function resetTabsAfterPageLoad(owner) {
   settleTabAsksOf(owner);
+  settleConsentRequestsOf(owner);
   const mainHost = hostOf(owner);
   if (!mainHost) return;
   for (const host of hostsOwnedBy(owner)) {
@@ -2922,6 +2925,14 @@ function openAddonTab(host, addonId, tabId, { init = {}, activate = true } = {})
   return createTab(host, { ...init, addonId, tabId }, { kind: 'addon', activate });
 }
 
+// Opening a tab the user chose: consent first (see ensureConsent).
+async function openAddonTabAsked(host, addonId, tabId) {
+  const entry = addonRegistry && addonRegistry.running(addonId);
+  if (!host || !entry) return null;
+  if (!(await ensureConsent(entry, host.owner))) return null;
+  return openAddonTab(host, addonId, tabId);
+}
+
 // One menu item per tab a running add-on contributes: "Add-on: Tab".
 function addonTabMenuItems(onChoose) {
   if (!addonRegistry) return [];
@@ -2941,7 +2952,7 @@ appIpc.handle('tabs:show-new-menu', (event, container) => {
   if (!host) return { ok: false };
   const items = [
     { label: t('menu.newDocument'), click: () => createTab(host, { draft: true }) },
-    ...addonTabMenuItems((choice) => openAddonTab(host, choice.addonId, choice.tabId)),
+    ...addonTabMenuItems((choice) => openAddonTabAsked(host, choice.addonId, choice.tabId)),
   ];
   Menu.buildFromTemplate(items).popup({ window: host.win });
   return { ok: true };
@@ -3299,8 +3310,10 @@ appIpc.handle('tabs:restore', (event, tabs, activeIndex) => {
     if (!entry) return;
     let tab = null;
     if (typeof entry.addon === 'string' && typeof entry.tab === 'string') {
-      // An add-on that no longer runs leaves its tab behind.
-      tab = openAddonTab(host, entry.addon, entry.tab, { init: { restore: { reason: 'restored', state: null } }, activate: false });
+      // An add-on that no longer runs, or was never agreed to, leaves its
+      // tab behind.
+      const running = addonRegistry.running(entry.addon);
+      if (running && hasConsent(running)) tab = openAddonTab(host, entry.addon, entry.tab, { init: { restore: { reason: 'restored', state: null } }, activate: false });
     } else if (typeof entry.path === 'string' && !findTabForPath(host.owner, entry.path)) {
       tab = createTab(host, { filePath: entry.path }, { activate: false });
     }
@@ -3573,7 +3586,73 @@ function activateAddons(why, matches, onlyId = null) {
   for (const entry of addonRegistry.list()) {
     if (onlyId && entry.id !== onlyId) continue;
     if (!addonRegistry.running(entry.id) || !entry.manifest.background) continue;
-    if (entry.activation.some(matches)) backgroundFrames.start(entry, why);
+    if (!entry.activation.some(matches) || backgroundFrames.stateOf(entry.id)) continue;
+    // Its first run waits for the user's consent.
+    ensureConsent(entry).then((agreed) => {
+      if (agreed && addonRegistry.running(entry.id)) backgroundFrames.start(entry, why);
+    });
+  }
+}
+
+// ---- Add-ons: consent (protocol 10.3) ----
+// The first time an add-on would run (its tab opens, its background frame
+// starts), the user sees what it may do in a program window and agrees or
+// not; the answer is kept (addons/consent.js, store.js), and an update
+// asking for more asks again. An add-on loaded with --addon-dev is the
+// developer's own and is not asked about.
+
+const consentRequests = new Map(); // request id -> { resolve, win }
+const consentAsking = new Map(); // add-on id -> Promise<boolean>
+let nextConsentId = 1;
+
+function hasConsent(entry) {
+  return entry.source === 'dev' || !needsConsent(entry.manifest, addonStore.consentOf(entry.id));
+}
+
+function ensureConsent(entry, win = null) {
+  if (hasConsent(entry)) return Promise.resolve(true);
+  if (consentAsking.has(entry.id)) return consentAsking.get(entry.id);
+  const target = win && !win.isDestroyed() && appWindows.has(win) ? win : targetWindow();
+  if (!target) return Promise.resolve(false);
+  const asking = new Promise((resolve) => {
+    const id = nextConsentId++;
+    consentRequests.set(id, { resolve, win: target });
+    const m = entry.manifest;
+    target.webContents.send('addons:consent-request', {
+      id,
+      name: m.name,
+      addonId: entry.id,
+      version: m.version,
+      publisher: m.publisher || '',
+      dir: entry.dir,
+      permissions: m.permissions || [],
+      hosts: (m.network && m.network.hosts) || [],
+      executables: (m.executables || []).map((x) => x.path),
+    });
+    if (!target.isFocused()) target.focus();
+  }).then((agreed) => {
+    consentAsking.delete(entry.id);
+    if (agreed) addonStore.recordConsent(entry.id, consentScope(entry.manifest));
+    console.log(`[addons] ${entry.id} consent ${agreed ? 'given' : 'refused'}`);
+    return agreed;
+  });
+  consentAsking.set(entry.id, asking);
+  return asking;
+}
+
+appIpc.on('addons:consent-answer', (event, id, agreed) => {
+  const request = consentRequests.get(id);
+  if (!request || request.win.webContents !== event.sender) return;
+  consentRequests.delete(id);
+  request.resolve(agreed === true);
+});
+
+// The window asked went away or reloaded: nobody will answer — no.
+function settleConsentRequestsOf(win) {
+  for (const [id, request] of [...consentRequests]) {
+    if (request.win !== win) continue;
+    consentRequests.delete(id);
+    request.resolve(false);
   }
 }
 

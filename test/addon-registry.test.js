@@ -209,3 +209,34 @@ test('Registry: running() needs found fine and on', () => {
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('consent: asked first, and again only when an update asks for more', () => {
+  const { consentScope, needsConsent } = require('../addons/consent.js');
+  const m = { version: '1.0.0', permissions: ['documents.read'], network: { hosts: ['api.example.com'] }, executables: [{ id: 'git', path: 'bin/git.exe' }] };
+  assert.equal(needsConsent(m, null), true);
+  const record = consentScope(m);
+  assert.deepEqual(record, { version: '1.0.0', permissions: ['documents.read'], hosts: ['api.example.com'], executables: ['git=bin/git.exe'] });
+  assert.equal(needsConsent(m, record), false);
+  assert.equal(needsConsent({ ...m, version: '1.1.0' }, record), false);
+  assert.equal(needsConsent({ ...m, permissions: [] }, record), false);
+  assert.equal(needsConsent({ ...m, permissions: ['documents.read', 'documents.write'] }, record), true);
+  assert.equal(needsConsent({ ...m, network: { hosts: ['api.example.com', 'other.example.com'] } }, record), true);
+  assert.equal(needsConsent({ ...m, executables: [{ id: 'git', path: 'bin/other.exe' }] }, record), true);
+});
+
+test('AddonStore: consent records', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mdv-consent-'));
+  try {
+    const file = path.join(dir, 'addons-state.json');
+    const store = new AddonStore(file);
+    assert.equal(store.consentOf('a'), null);
+    store.recordConsent('a', { version: '1.0.0', permissions: [], hosts: [], executables: [] });
+    const again = new AddonStore(file);
+    assert.equal(again.consentOf('a').version, '1.0.0');
+    assert.ok(again.consentOf('a').consentedAt);
+    again.setEnabled('b', false);
+    assert.equal(new AddonStore(file).consentOf('a').version, '1.0.0');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

@@ -366,6 +366,75 @@
   });
   addonsEl.rescan.addEventListener('click', async () => renderAddons(await window.mdviewer.rescanAddons()));
   window.mdviewer.onMenuManageAddons(openAddons);
+
+  // Consent before an add-on first runs (protocol 10.3): main asks, one at
+  // a time; the answer goes back.
+  const consentEl = {
+    overlay: document.getElementById('addon-consent-overlay'),
+    body: document.getElementById('addon-consent-body'),
+    allow: document.getElementById('btn-consent-allow'),
+    deny: document.getElementById('btn-consent-deny'),
+  };
+  const consentQueue = [];
+
+  function consentList(title, items, label = (x) => x) {
+    const h = document.createElement('h4');
+    h.textContent = title;
+    const ul = document.createElement('ul');
+    for (const item of items.length ? items : [null]) {
+      const li = document.createElement('li');
+      li.textContent = item === null ? t('addons.consent.none') : label(item);
+      ul.appendChild(li);
+    }
+    return [h, ul];
+  }
+
+  function showNextConsent() {
+    const request = consentQueue[0];
+    if (!request) {
+      consentEl.overlay.classList.add('hidden');
+      return;
+    }
+    consentEl.body.textContent = '';
+    const name = document.createElement('div');
+    name.className = 'addon-name';
+    name.textContent = `${request.name} ${request.version}`;
+    const meta = document.createElement('div');
+    meta.className = 'addon-meta';
+    meta.textContent = [request.publisher && t('addons.consent.publisher', { publisher: request.publisher }), t('addons.consent.path', { dir: request.dir })].filter(Boolean).join(' · ');
+    consentEl.body.append(
+      name,
+      meta,
+      ...consentList(t('addons.consent.permissions'), request.permissions, (p) => t(`addons.perm.${p}`)),
+      ...consentList(t('addons.consent.hosts'), request.hosts),
+      ...consentList(t('addons.consent.executables'), request.executables)
+    );
+    if (request.executables.length) {
+      const warn = document.createElement('div');
+      warn.className = 'addon-consent-warning';
+      warn.textContent = t('addons.consent.exeWarning');
+      consentEl.body.appendChild(warn);
+    }
+    consentEl.overlay.dataset.addonId = request.addonId;
+    consentEl.overlay.classList.remove('hidden');
+    consentEl.deny.focus();
+  }
+
+  function answerConsent(agreed) {
+    const request = consentQueue.shift();
+    if (request) window.mdviewer.answerAddonConsent(request.id, agreed);
+    showNextConsent();
+  }
+
+  consentEl.allow.addEventListener('click', () => answerConsent(true));
+  consentEl.deny.addEventListener('click', () => answerConsent(false));
+  consentEl.overlay.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') answerConsent(false);
+  });
+  window.mdviewer.onAddonConsentRequest((request) => {
+    consentQueue.push(request);
+    if (consentQueue.length === 1) showNextConsent();
+  });
   // Whether any add-on has a tab to open (the strips' "+").
   let addonTabsAvailable = false;
   function noteAddonTabs(list) {

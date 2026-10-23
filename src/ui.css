@@ -2225,6 +2225,13 @@ body.tab-window .doc-tab { -webkit-app-region: no-drag; }
 .hidden-reset:hover { background: var(--border); }
 
 .addons-box { width: min(560px, 92vw); }
+.addon-consent-body { padding: 10px 14px; font-size: 12px; overflow-y: auto; }
+.addon-consent-body .addon-name { font-size: 14px; }
+.addon-consent-body h4 { margin: 10px 0 4px; font-size: 12px; }
+.addon-consent-body ul { margin: 0; padding-left: 18px; }
+.addon-consent-warning { margin-top: 10px; padding: 6px 8px; border: 1px solid #e05252; border-radius: 4px; color: #e05252; }
+.addon-consent-buttons { gap: 8px; }
+.addon-consent-buttons .btn-primary { padding: 4px 14px; border-radius: 4px; cursor: pointer; }
 .addons-list {
   list-style: none;
   margin: 0;
