@@ -28,8 +28,17 @@ try {
   // ---- calls
   const info = await a.evaluate(`return await window.mdviewerAddon.call('app/info')`);
   check('addon:call app/info: caller decided by main', info && info.addon === 'test' && info.tab === opened.id, JSON.stringify(info));
-  const unknown = await a.evaluate(`try { await window.mdviewerAddon.call('documents/delete-everything'); return 'ok'; } catch (e) { return e.message; }`);
-  check('unknown method refused', /MethodNotFound/.test(unknown), unknown);
+  const unknown = await a.evaluate(`try { await window.mdviewerAddon.call('documents/delete-everything'); return 'ok'; } catch (e) { return e.code + ' ' + e.name; }`);
+  check('unknown method refused (NotSupported, protocol 8.5)', unknown === '-32006 NotSupported', unknown);
+  const surface = await a.evaluate(`const m = window.mdviewerAddon; return { api: m.app.apiVersion, caps: m.app.capabilities, exp: m.app.experimentalApi, threads: m.app.resources.threadBudget, open: typeof m.app.openExternal, copy: typeof m.app.copyToClipboard, info: typeof m.app.info }`);
+  check('bridge built from the method list: app.openExternal, app.copyToClipboard; app info', surface.api === 1 && surface.open === 'function' && surface.copy === 'function' && surface.threads >= 1, JSON.stringify(surface));
+  check('  experimental host.info open to a --addon-dev add-on that names it', surface.info === 'function' && surface.exp.includes('host.info'), JSON.stringify(surface.exp));
+  await a.evaluate(`await window.mdviewerAddon.app.copyToClipboard({ text: '클립보드 시험' }); return 1`);
+  check('app.copyToClipboard writes the clipboard', (await app.main(`return electron.clipboard.readText()`)) === '클립보드 시험');
+  const fileUrl = await a.evaluate(`try { await window.mdviewerAddon.app.openExternal({ url: 'file:///C:/Windows/win.ini' }); return 'opened'; } catch (e) { return e.name; }`);
+  check('app.openExternal refuses a file: address', fileUrl === 'PermissionDenied', fileUrl);
+  const badParams = await a.evaluate(`try { await window.mdviewerAddon.app.copyToClipboard({ text: 5 }); return 'ok'; } catch (e) { return e.name + ' ' + e.code; }`);
+  check('bad parameters: InvalidParams', badParams === 'InvalidParams -32602', badParams);
   const restoreNew = await a.evaluate(`return window.mdviewerAddon.tabs.getRestoreState()`);
   check('new tab: getRestoreState reason new', restoreNew && restoreNew.reason === 'new' && restoreNew.state === null, JSON.stringify(restoreNew));
 

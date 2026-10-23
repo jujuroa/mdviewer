@@ -23,5 +23,8 @@
         "entry": "view.html"
       }
     ]
-  }
+  },
+  "experimentalApi": [
+    "host.info"
+  ]
 }
