@@ -150,6 +150,20 @@
     </div>
   </div>
 
+  <div id="addon-consent-overlay" class="modal-overlay hidden">
+    <div class="modal-box addons-box">
+      <div class="modal-header">
+        <span data-i18n="addons.consent.title">이 확장을 실행할까요?</span>
+      </div>
+      <p class="modal-desc" data-i18n="addons.consent.desc">처음 실행하기 전에 이 확장이 할 수 있는 일을 확인하세요.</p>
+      <div id="addon-consent-body" class="addon-consent-body"></div>
+      <div class="hidden-settings-footer addon-consent-buttons">
+        <button id="btn-consent-deny" class="hidden-reset" data-i18n="addons.consent.deny">거부</button>
+        <button id="btn-consent-allow" class="btn-primary" data-i18n="addons.consent.allow">허용</button>
+      </div>
+    </div>
+  </div>
+
   <div id="addons-overlay" class="modal-overlay hidden">
     <div class="modal-box addons-box">
       <div class="modal-header">
