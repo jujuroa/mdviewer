@@ -24,6 +24,7 @@
 | `commands` | 명령 팔레트(`Ctrl+Shift+P`·메뉴, 걸러내기, 키보드), 백그라운드 명령(onCommand로 시작)·탭 명령(탭을 열어 전달), ctx.source, 로그 (F3) |
 | `menus` | 메뉴 기여(확장 메뉴, 탐색기·탭·편집창 우클릭)와 `when`, 단축키(숨긴 메뉴 항목), 앱 단축키와 충돌 시 앱 우선·관리 화면 표시 (F3). 우클릭 메뉴는 main에서 `Menu.prototype.popup`을 가로채 확인 |
 | `settings` | add-on 설정(관리 화면 설정 모달·`settings/get`·`update`·형식 검사), 비밀 값(`safeStorage`, 평문 저장 안 함), `context/set`으로 `when`이 바뀌는 메뉴 (F3) |
+| `documents` | 문서 읽기 API: 프로젝트·파일 목록, 디스크/편집 중 텍스트와 버전, 범위 밖 거부, 활성 문서, 편집창·보기창 선택, 문서 열기, 실험 save·reload(충돌·건너뜀), 권한 없는 add-on 거부 (F4) |
 
 알아 둘 것:
 - 탭 iframe은 로드가 끝난 뒤에 건드린다. 로드 중에 `contentDocument`를 반복해서 읽으면 그 프레임의 preload가 붙지 않는다(`openWindowWith` 참고).
