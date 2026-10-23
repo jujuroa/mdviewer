@@ -2720,6 +2720,17 @@
     if (state.paneOpen) showPaneTrouble();
   });
 
+  // Its add-on was reloaded (protocol 16): the page anew, on screen if it was.
+  window.mdviewer.onPaneReload(async () => {
+    removePaneFrame();
+    hidePaneTrouble();
+    if (!state.paneOpen) return;
+    const pane = await window.mdviewer.openPane();
+    if (!pane || !state.paneOpen) return;
+    ensurePaneFrame(pane);
+    applyEditorPlace();
+  });
+
   async function onEditButton() {
     if (state.paneOpen) return showSource();
     return toggleEditMode();

@@ -32,9 +32,10 @@ function freePort() {
 // files: { 'relative/path': 'content' } written under the temp folder;
 // open: what to open on the command line (relative to it); settings: the
 // instance's settings.json (Korean UI by default, which the checks' status
-// line texts assume); addonDev: add-on folders (from the repository root)
-// loaded with --addon-dev; env: more environment variables, with {tmp} in
-// a value standing for the temp folder.
+// line texts assume); addonDev: add-on folders (from the repository root,
+// or under the temp folder as '{tmp}/...') loaded with --addon-dev; env:
+// more environment variables, with {tmp} in a value standing for the temp
+// folder.
 export async function launch({ files = {}, open = 'proj', settings = { language: 'ko' }, addonDev = ['test/addons/test', 'test/addons/other'], env: moreEnv = {} } = {}) {
   const tmp = mkdtempSync(path.join(tmpdir(), 'mdvtest-'));
   mkdirSync(path.join(tmp, 'userData'), { recursive: true });
@@ -58,7 +59,7 @@ export async function launch({ files = {}, open = 'proj', settings = { language:
     `--inspect=${inspectPort}`,
     `--user-data-dir=${path.join(tmp, 'userData')}`,
     `--remote-debugging-port=${port}`,
-    ...addonDev.map((dir) => `--addon-dev=${path.join(ROOT, dir)}`),
+    ...addonDev.map((dir) => `--addon-dev=${path.resolve(ROOT, dir.replace('{tmp}', tmp))}`),
   ];
   if (open) args.push(path.join(tmp, open));
   // The app's output goes to a file, not a pipe: helper processes inherit

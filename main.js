@@ -34,6 +34,7 @@ const { registerUiApi } = require('./addons/api/ui.js');
 const { registerTabsApi, smallJson } = require('./addons/api/tabs.js');
 const { registerStorageApi } = require('./addons/api/storage.js');
 const { registerMessagingApi } = require('./addons/api/messaging.js');
+const { LEVELS: TRACE_LEVELS, traceLevel, formatTrace } = require('./addons/trace.js');
 const { planEdit, needsConfirmation } = require('./addons/edits.js');
 const { diffForView } = require('./addons/diffview.js');
 const { ApiError } = require('./addons/api-router.js');
@@ -1924,6 +1925,16 @@ function buildAppMenu() {
           checked: alwaysConfirmAddonEdits(),
           click: (item) => saveSettings({ ...loadSettings(), 'addons.alwaysConfirmEdits': item.checked }),
         },
+        {
+          label: t('menu.addonsTrace'),
+          submenu: TRACE_LEVELS.map((level) => ({
+            label: t(`menu.addonsTrace.${level}`),
+            type: 'radio',
+            checked: addonTraceLevel() === level,
+            click: () => saveSettings({ ...loadSettings(), 'addons.trace': level }),
+          })),
+        },
+        ...(addonDevDirs().length ? [{ label: t('menu.reloadDevAddons'), click: () => reloadDevAddons('menu') }] : []),
         ...addonTabMenuItems((choice, win) => openAddonTabAsked(docHostFor(win), choice.addonId, choice.tabId)),
       ],
     },
@@ -3232,6 +3243,7 @@ appIpc.handle('addons:palette-items', () => {
     for (const command of c.commands || []) items.push({ kind: 'command', id: command.id, label: `${entry.manifest.name}: ${command.title}` });
     for (const tab of c.tabs || []) items.push({ kind: 'tab', addonId: entry.id, tabId: tab.id, label: t('palette.openTab', { name: `${entry.manifest.name}: ${tab.title}` }) });
   }
+  if (addonDevDirs().length) items.push({ kind: 'dev-reload', label: t('menu.reloadDevAddons') });
   return items;
 });
 
@@ -3239,6 +3251,10 @@ appIpc.handle('addons:palette-run', async (event, item) => {
   const win = windowFor(event.sender);
   if (!item || typeof item !== 'object') return { ok: false };
   if (item.kind === 'command') return executeAddonCommand(item.id, { source: 'palette' }, win);
+  if (item.kind === 'dev-reload') {
+    await reloadDevAddons('palette');
+    return { ok: true };
+  }
   if (item.kind === 'tab') {
     const tab = await openAddonTabAsked(docHostFor(win), item.addonId, item.tabId);
     return { ok: !!tab };
@@ -3869,9 +3885,12 @@ ipcMain.handle('addon:call', async (event, method, params) => {
     return { ok: false, error: { code: -32001, name: 'PermissionDenied', message: 'This frame is not a running add-on page' } };
   }
   if (caller.kind === 'background') backgroundFrames.callStarted(caller.rec);
+  const started = performance.now();
   try {
     const answer = await addonApi.call(caller, method, params);
     if (!answer.ok && answer.error.name !== 'UserCanceled') logAddon(caller.addonId, 'warn', `${method}: ${answer.error.name} — ${answer.error.message}`, { quiet: true });
+    const trace = addonTraceLevel();
+    if (trace !== 'off') logAddon(caller.addonId, 'info', formatTrace(trace, method, params, answer, performance.now() - started), { quiet: true });
     return answer;
   } finally {
     if (caller.kind === 'background') backgroundFrames.callEnded(caller.rec);
@@ -3947,6 +3966,8 @@ appIpc.handle('tabs:show-context-menu', (event, id) => {
     );
   }
   items.push(...addonMenuItems('tab/context', { tabId: tab.kind === 'addon' ? tab.addon.tabId : tab.id, path: filePath || '' }));
+  // Run from source: the add-on page's DevTools (protocol 16).
+  if (!app.isPackaged && tab.kind === 'addon') items.push({ type: 'separator' }, { label: t('tabs.devTools'), click: () => inspectTabFrame(tab) });
   Menu.buildFromTemplate(items).popup({ window: host.win });
   return { ok: true };
 });
@@ -4440,6 +4461,7 @@ function startAddonRegistry() {
     console.log(`[addons] ${entry.id} (${entry.source}) ${entry.status}${entry.enabled ? '' : ', off'}${why ? `: ${why}` : ''}`);
     if (why) addonLog.add(entry.id, entry.status === 'ok' ? 'info' : 'warn', `${entry.status}: ${why}`);
   }
+  watchDevAddons();
 }
 
 // ---- Add-ons: the extensions log (protocol 16, addons/log.js) ----
@@ -4449,13 +4471,15 @@ function startAddonRegistry() {
 
 let addonLog = null;
 
-// %LOCALAPPDATA%\mdviewer\logs\addons (17.7). Run from source,
-// MDVIEWER_LOGS_DIR can point elsewhere (the app checks use their own).
+// %LOCALAPPDATA%\mdviewer\addon-data (protocol 4.4), beside the logs.
+// Run from source, MDVIEWER_ADDON_DATA_DIR can point elsewhere.
 function addonDataDir() {
   if (!app.isPackaged && process.env.MDVIEWER_ADDON_DATA_DIR) return process.env.MDVIEWER_ADDON_DATA_DIR;
   return path.join(process.env.LOCALAPPDATA || app.getPath('appData'), 'mdviewer', 'addon-data');
 }
 
+// %LOCALAPPDATA%\mdviewer\logs\addons (17.7). Run from source,
+// MDVIEWER_LOGS_DIR can point elsewhere (the app checks use their own).
 function addonLogsDir() {
   if (!app.isPackaged && process.env.MDVIEWER_LOGS_DIR) return process.env.MDVIEWER_LOGS_DIR;
   return path.join(process.env.LOCALAPPDATA || app.getPath('appData'), 'mdviewer', 'logs', 'addons');
@@ -4465,6 +4489,100 @@ function addonLogsDir() {
 function logAddon(id, level, message, { quiet = false } = {}) {
   if (!quiet) (level === 'warn' || level === 'error' ? console.warn : console.log)(`[addons] ${id} ${message}`);
   if (addonLog && id) addonLog.add(id, level, message);
+}
+
+// ---- Add-on development (protocol 16) ----
+
+function addonTraceLevel() {
+  return traceLevel(loadSettings()['addons.trace']);
+}
+
+// An add-on page's DevTools: the window's, on the element at the top of
+// its frame (which takes DevTools into that frame).
+async function inspectTabFrame(tab) {
+  const contents = tab.host.win.webContents;
+  const at = await contents
+    .executeJavaScript(
+      `(() => { const f = document.querySelector('iframe.doc-frame[data-tab-id="${tab.id}"]'); if (!f) return null; const r = f.getBoundingClientRect(); return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + 8) }; })()`
+    )
+    .catch(() => null);
+  if (at) contents.inspectElement(at.x, at.y);
+  else contents.openDevTools({ mode: 'detach' });
+}
+
+appIpc.handle('addons:background-devtools', (event, id) => {
+  if (app.isPackaged) return { ok: false };
+  const bg = readyBackgroundFrame(id);
+  if (!bg) return { ok: false };
+  bg.rec.win.webContents.openDevTools({ mode: 'detach' });
+  return { ok: true };
+});
+
+// Loads an add-on's pages anew after its files changed: the manifest and
+// locales read again, its tabs and panes reloaded (each handing over its
+// snapshot, reason 'reloaded'), its background frame restarted if it ran.
+async function reloadAddon(id) {
+  const wasRunning = ['starting', 'running'].includes(backgroundFrames.stateOf(id));
+  addonRegistry.rescan(addonRegistryOptions());
+  closeTabsOfStoppedAddons();
+  const entry = addonRegistry.running(id);
+  if (wasRunning) await backgroundFrames.stop(id, 'reload');
+  if (!entry) {
+    buildAppMenu();
+    notifyAddonsChanged();
+    return;
+  }
+  await Promise.all(
+    [...tabsById.values()].map(async (tab) => {
+      if (tab.kind === 'addon' && tab.addon.id === id) {
+        const snapshot = tab.frame ? await askTab(tab, 'snapshot', { timeout: TAB_SNAPSHOT_TIMEOUT_MS }) : null;
+        if (!tabsById.has(tab.id)) return;
+        tab.init = TAB_KINDS.addon.handOver(tab, snapshot && typeof snapshot === 'object' ? snapshot : null, 'reloaded');
+        tab.frame = null;
+        if (!tab.host.owner.isDestroyed()) tab.host.owner.webContents.send('tabs:reload-frame', { container: tab.host.key, id: tab.id });
+      } else if (tab.pane && addonIdOf(tab.pane.url) === id) {
+        await snapshotPaneOf(tab, 'reloaded');
+        if (!tab.pane) return;
+        tab.pane.frame = null;
+        sendToTab(tab, 'doc:pane-reload');
+      }
+    })
+  );
+  if (wasRunning) backgroundFrames.start(entry, 'reload');
+  for (const host of tabHosts.values()) notifyTabsChanged(host);
+  buildAppMenu();
+  notifyAddonsChanged();
+}
+
+async function reloadDevAddons(why) {
+  for (const entry of addonRegistry.list()) {
+    if (entry.source !== 'dev') continue;
+    logAddon(entry.id, 'info', `reloading (${why})`);
+    await reloadAddon(entry.id);
+  }
+}
+
+// --addon-dev folders: a change in one reloads its add-on (changes that
+// come together, as an editor's save does, once).
+const DEV_RELOAD_DELAY_MS = 300;
+function watchDevAddons() {
+  for (const dir of addonDevDirs()) {
+    let timer = null;
+    try {
+      fs.watch(dir, { recursive: true }, () => {
+        clearTimeout(timer);
+        timer = setTimeout(async () => {
+          const entry = addonRegistry.list().find((e) => e.source === 'dev' && samePath(e.dir, dir));
+          const id = entry ? entry.id : null;
+          if (!id) return;
+          logAddon(id, 'info', 'reloading (files changed)');
+          await reloadAddon(id);
+        }, DEV_RELOAD_DELAY_MS);
+      });
+    } catch (err) {
+      console.warn(`[addons] cannot watch ${dir}: ${err.message}`);
+    }
+  }
 }
 
 const CONSOLE_LEVELS = { 0: 'log', 1: 'log', 2: 'warn', 3: 'error', verbose: 'log', debug: 'log', info: 'log', warning: 'warn', error: 'error' };
@@ -4513,6 +4631,8 @@ function addonListForPage() {
     hasSettings: !!(e.manifest && e.manifest.contributes && ((e.manifest.contributes.settings || []).length || (e.manifest.contributes.secrets || []).length)),
     // Keys of its that the app (or an earlier add-on) already uses.
     keyConflicts: keybindingConflicts.get(e.id) || [],
+    // Run from source: its background frame's DevTools button.
+    devTools: !app.isPackaged,
     // The tabs it can open now (for the tab strip's "+").
     tabs: addonRegistry.running(e.id) ? ((e.manifest.contributes && e.manifest.contributes.tabs) || []).map((tab) => tab.id) : [],
   }));

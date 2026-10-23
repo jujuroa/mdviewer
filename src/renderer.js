@@ -307,6 +307,13 @@
         settingsButton.addEventListener('click', () => openAddonSettings(addon.id));
         head.appendChild(settingsButton);
       }
+      if (addon.devTools && addon.background === 'running') {
+        const devButton = document.createElement('button');
+        devButton.className = 'addon-log-button addon-devtools-button';
+        devButton.textContent = t('addons.devToolsButton');
+        devButton.addEventListener('click', () => window.mdviewer.openBackgroundDevTools(addon.id));
+        head.appendChild(devButton);
+      }
       const logButton = document.createElement('button');
       logButton.className = 'addon-log-button';
       logButton.textContent = t('addons.logButton');
@@ -4178,6 +4185,7 @@
       if (!frame) {
         frame = area.doc.createElement('iframe');
         frame.className = 'doc-frame';
+        frame.dataset.tabId = String(tab.id);
         if (tab.page.sandbox != null) frame.setAttribute('sandbox', tab.page.sandbox);
         frame.src = tab.page.url;
         area.host.appendChild(frame);
@@ -4222,6 +4230,16 @@
     box.append(title, reload);
     area.host.appendChild(box);
     area.troubles.set(id, box);
+  });
+
+  // An add-on was reloaded (protocol 16): its tab's page is made anew.
+  window.mdviewer.onTabReloadFrame(({ container, id } = {}) => {
+    const area = tabAreas.get(container);
+    if (!area || !area.frames.has(id)) return;
+    removeFrameTrouble(area, id);
+    area.frames.get(id).remove();
+    area.frames.delete(id);
+    syncTabFrames(area, id === area.activeId ? id : null);
   });
 
   function focusTabFrame(area, id) {
