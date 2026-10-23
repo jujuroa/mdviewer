@@ -4,7 +4,8 @@
 // never touches an instance already running or the user's settings; only
 // the processes it started are stopped.
 import { spawn } from 'node:child_process';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, openSync, closeSync } from 'node:fs';
+import { rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import net from 'node:net';
 import path from 'node:path';
@@ -58,10 +59,20 @@ export async function launch({ files = {}, open = 'proj', settings = { language:
     ...addonDev.map((dir) => `--addon-dev=${path.join(ROOT, dir)}`),
   ];
   if (open) args.push(path.join(tmp, open));
-  const child = spawn(require('electron'), args, { cwd: ROOT, env, stdio: ['ignore', 'pipe', 'pipe'] });
-  const log = [];
-  child.stdout.on('data', (d) => log.push(String(d)));
-  child.stderr.on('data', (d) => log.push(String(d)));
+  // The app's output goes to a file, not a pipe: helper processes inherit
+  // the handles and can outlive the main one, and Node then hangs closing
+  // a pipe they still hold.
+  const logFile = path.join(tmp, 'app.log');
+  const logFd = openSync(logFile, 'a');
+  const child = spawn(require('electron'), args, { cwd: ROOT, env, stdio: ['ignore', logFd, logFd] });
+  closeSync(logFd);
+  const logText = () => {
+    try {
+      return readFileSync(logFile, 'utf-8');
+    } catch {
+      return '';
+    }
+  };
   for (let i = 0; i < 100; i++) {
     try {
       await fetch(`http://127.0.0.1:${port}/json/version`);
@@ -70,11 +81,31 @@ export async function launch({ files = {}, open = 'proj', settings = { language:
       await sleep(200);
     }
   }
-  const app = { tmp, child, port, log, logText: () => log.join('') };
-  app.stop = () => stop(app);
+  const app = { tmp, child, port, logText };
   // Code run in the main process (the body of an async function, with
   // electron at hand), for what no page can reach — the app menu, say.
+  // The inspector connection must be closed before the app ends: Node's
+  // WebSocket stalls the event loop when that peer dies under it. So a
+  // check that makes the app quit does it from a page (Page.close), after
+  // app.closeSessions() (all the others).
   let mainSession = null;
+  app.closeSessions = async (keep = null) => {
+    await app.closeMain();
+    const sessions = sessionsByPort.get(port);
+    if (!sessions) return;
+    await Promise.all([...sessions].filter((s) => s !== keep).map((s) => s.close()));
+    for (const s of [...sessions]) if (s !== keep) sessions.delete(s);
+  };
+  app.closeMain = async () => {
+    const session = mainSession;
+    mainSession = null;
+    if (session) await session.close();
+  };
+  app.stop = async () => {
+    await app.closeMain();
+    await closeSessionsOf(port);
+    return stop(app);
+  };
   app.main = async (expr) => {
     if (!mainSession) {
       const list = await (await fetch(`http://127.0.0.1:${inspectPort}/json/list`)).json();
@@ -105,19 +136,34 @@ export async function launch({ files = {}, open = 'proj', settings = { language:
 }
 
 async function stop({ child, tmp }) {
-  await new Promise((resolve) => {
-    const k = spawn('taskkill', ['/PID', String(child.pid), '/T', '/F'], { stdio: 'ignore' });
-    k.on('exit', resolve);
-    k.on('error', resolve);
-  });
-  for (let i = 0; i < 10; i++) {
+  // Already gone (a check that quit the app): nothing to stop, and taskkill
+  // on an exited process can hang.
+  const run = (cmd, args) =>
+    new Promise((resolve) => {
+      const p = spawn(cmd, args, { stdio: 'ignore' });
+      p.on('exit', resolve);
+      p.on('error', resolve);
+      setTimeout(resolve, 10000);
+    });
+  if (child.exitCode === null && child.signalCode === null) {
+    const exited = new Promise((resolve) => child.once('exit', resolve));
     try {
-      rmSync(tmp, { recursive: true, force: true });
-      return;
-    } catch {
-      await sleep(300);
+      child.kill();
+    } catch (err) {
+      /* already gone */
     }
+    await Promise.race([exited, sleep(5000)]);
   }
+  // Helpers of this instance that outlived its main process (they carry
+  // its temp folder in their command line, so only ours match).
+  const marker = tmp.replace(/'/g, "''");
+  await run('powershell', [
+    '-NoProfile',
+    '-Command',
+    `Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -and $_.CommandLine.Contains('${marker}') } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }`,
+  ]);
+  // rmSync can hang on a locked folder on Windows; the async one retries.
+  await Promise.race([rm(tmp, { recursive: true, force: true, maxRetries: 10, retryDelay: 300 }).catch(() => {}), sleep(15000)]);
 }
 
 export async function targets(port) {
@@ -133,13 +179,30 @@ export async function connect(port, match, { type = 'page', quiet = false } = {}
     await sleep(200);
   }
   if (!t) throw new Error('target not found');
-  return connectWs(t.webSocketDebuggerUrl, { quiet, target: t });
+  return track(port, await connectWs(t.webSocketDebuggerUrl, { quiet, target: t }));
 }
 
 // The browser-wide endpoint (SystemInfo and the like).
 export async function connectBrowser(port) {
   const v = await (await fetch(`http://127.0.0.1:${port}/json/version`)).json();
-  return connectWs(v.webSocketDebuggerUrl, { quiet: true, runtime: false });
+  return track(port, await connectWs(v.webSocketDebuggerUrl, { quiet: true, runtime: false }));
+}
+
+// Every DevTools connection to an instance, by its port: they are closed
+// before the instance is stopped. Node's WebSocket can stall the event
+// loop when the other end is killed under it.
+const sessionsByPort = new Map();
+
+function track(port, session) {
+  if (!sessionsByPort.has(port)) sessionsByPort.set(port, new Set());
+  sessionsByPort.get(port).add(session);
+  return session;
+}
+
+async function closeSessionsOf(port) {
+  const sessions = sessionsByPort.get(port);
+  sessionsByPort.delete(port);
+  if (sessions) await Promise.all([...sessions].map((s) => s.close()));
 }
 
 async function connectWs(url, { quiet = false, target = null, runtime = true } = {}) {
@@ -159,8 +222,17 @@ async function connectWs(url, { quiet = false, target = null, runtime = true } =
       console.log('  page exception:', d.exception?.description?.split('\n')[0] || d.text);
     }
   });
+  // A target that goes away (a closed frame, the app quitting) answers
+  // nothing more: what still waits gets an error result.
+  let closed = false;
+  ws.addEventListener('close', () => {
+    closed = true;
+    for (const r of pending.values()) r({ error: { message: 'target closed' } });
+    pending.clear();
+  });
   const send = (method, params = {}) =>
     new Promise((r) => {
+      if (closed) return r({ error: { message: 'target closed' } });
       const i = ++id;
       pending.set(i, r);
       ws.send(JSON.stringify({ id: i, method, params }));
@@ -174,7 +246,15 @@ async function connectWs(url, { quiet = false, target = null, runtime = true } =
   // Without waiting: for code that blocks the page.
   const fire = (expr) => ws.send(JSON.stringify({ id: ++id, method: 'Runtime.evaluate', params: { expression: expr } }));
   if (runtime) await send('Runtime.enable');
-  return { send, evaluate, fire, close: () => ws.close(), target };
+  // Resolves once the connection is closed (or after 3 s).
+  const close = () =>
+    new Promise((resolve) => {
+      if (closed) return resolve();
+      ws.addEventListener('close', () => resolve(), { once: true });
+      setTimeout(resolve, 3000);
+      ws.close();
+    });
+  return { send, evaluate, fire, close, target };
 }
 
 export async function waitFor(fn, { timeout = 10000, step = 200 } = {}) {
@@ -195,9 +275,12 @@ export function checker() {
     if (!ok) failed++;
     console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}${info ? `  — ${info}` : ''}`);
   };
+  // Ends the check: a socket to an instance that quit on its own can keep
+  // Node waiting otherwise.
   const done = () => {
     console.log(failed ? `${failed} FAILED` : 'ALL PASS');
     process.exitCode = failed ? 1 : 0;
+    setTimeout(() => process.exit(), 200);
   };
   return { check, done };
 }

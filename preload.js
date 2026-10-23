@@ -8,13 +8,14 @@ const { contextBridge, ipcRenderer, webUtils } = require('electron');
 const PAGE = location.protocol === 'file:' ? location.pathname.split('/').pop() : '';
 const TAB_ID = PAGE === 'doc.html' ? Number(new URLSearchParams(location.search).get('tab')) || 0 : 0;
 
-// An add-on's page in a tab (mdviewer-addon://<id>/...?tab=N) gets a bridge
-// of its own, mdviewerAddon — nothing of the app's — once main has made
-// sure this frame is that tab's page (addon:hello, synchronous so the
-// bridge is there before the page's scripts run).
+// An add-on's page — in a tab (mdviewer-addon://<id>/...?tab=N), a
+// document tab's pane, or a background frame's hidden window — gets a
+// bridge of its own, mdviewerAddon, nothing of the app's, once main has
+// made sure what the frame is (addon:hello, synchronous so the bridge is
+// there before the page's scripts run).
 const ADDON_SNAPSHOT_TIMEOUT_MS = 2000;
 const ADDON_WILL_CLOSE_TIMEOUT_MS = 3000;
-if (location.protocol === 'mdviewer-addon:' && window.top !== window) {
+if (location.protocol === 'mdviewer-addon:') {
   const hint = Number(new URLSearchParams(location.search).get('tab')) || 0;
   const hello = ipcRenderer.sendSync('addon:hello', hint);
   if (hello && hello.ok) {

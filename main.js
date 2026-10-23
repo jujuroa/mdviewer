@@ -22,6 +22,7 @@ const { SCHEME: ADDON_SCHEME } = require('./addons/pages.js');
 const { Registry: AddonRegistry } = require('./addons/registry.js');
 const { AddonStore } = require('./addons/store.js');
 const { mergePolicy } = require('./addons/policy.js');
+const { createBackgroundFrames } = require('./addons/background.js');
 
 // A preview build (`npm run dist:preview`) carries a prerelease version such
 // as 1.3.0-preview.3 and installs over the released app, so once it is running
@@ -2048,6 +2049,7 @@ function createWindow({ bounds: requestedBounds = null } = {}) {
     // window, including ones the user cannot see.
     closeMermaidWindow();
     stopPlantUmlServer();
+    if (backgroundFrames) backgroundFrames.stopAll();
   });
 
   appWindows.add(win);
@@ -2907,10 +2909,12 @@ function openAddonTab(host, addonId, tabId, { init = {}, activate = true } = {})
   if ((found.contribution.instances || 'single') === 'single') {
     const open = tabsOwnedBy(host.owner).find((t) => t.kind === 'addon' && t.addon.id === addonId && t.addon.tabId === tabId);
     if (open) {
+      activateAddons(`onTab:${tabId}`, (a) => a === `onTab:${tabId}`, addonId);
       if (activate) activateTab(open.host, open.id);
       return open;
     }
   }
+  activateAddons(`onTab:${tabId}`, (a) => a === `onTab:${tabId}`, addonId);
   return createTab(host, { ...init, addonId, tabId }, { kind: 'addon', activate });
 }
 
@@ -2968,8 +2972,14 @@ function addonIdOf(url) {
 // place decides.
 function addonFrameFor(event, hint) {
   const frame = event.senderFrame;
+  if (!frame) return null;
+  // A top frame: a background frame's page in its window.
+  if (!frame.parent) {
+    const rec = backgroundFrames && backgroundFrames.byContents(event.sender);
+    return rec && addonIdOf(frame.url) === rec.id ? { rec, kind: 'background' } : null;
+  }
   const win = windowFor(event.sender);
-  if (!frame || !win || !frame.parent) return null;
+  if (!win) return null;
   const owner = ownerOf(win);
   const tab = tabsById.get(Number(hint));
   if (!appWindows.has(owner) || !tab || tab.host.owner !== owner) return null;
@@ -2988,6 +2998,10 @@ function addonFrameFor(event, hint) {
 function addonCallerOf(event) {
   const frame = event.senderFrame;
   if (!frame) return null;
+  if (!frame.parent) {
+    const rec = backgroundFrames && backgroundFrames.byContents(event.sender);
+    return rec && rec.ready !== undefined ? { rec, kind: 'background', addonId: rec.id, tab: null } : null;
+  }
   for (const tab of tabsById.values()) {
     if (tab.kind === 'addon' && sameFrame(tab.frame, frame)) return { tab, kind: 'tab', addonId: tab.addon.id };
     if (tab.pane && sameFrame(tab.pane.frame, frame)) return { tab, kind: 'pane', addonId: addonIdOf(tab.pane.url) };
@@ -3078,7 +3092,9 @@ ipcMain.on('addon:hello', (event, hint) => {
   }
   const { tab, kind } = found;
   let restore;
-  if (kind === 'pane') {
+  if (kind === 'background') {
+    restore = { reason: 'new', state: null };
+  } else if (kind === 'pane') {
     tab.pane.frame = event.senderFrame;
     expectReady(tab.pane, `${addonIdOf(tab.pane.url)} pane of tab ${tab.id}`);
     restore = tab.paneRestore || { reason: 'new', state: null };
@@ -3096,6 +3112,10 @@ ipcMain.on('addon:hello', (event, hint) => {
 ipcMain.on('addon:ready', (event) => {
   const caller = addonCallerOf(event);
   if (!caller) return;
+  if (caller.kind === 'background') {
+    backgroundFrames.markReady(caller.rec);
+    return;
+  }
   const holder = caller.kind === 'pane' ? caller.tab.pane : caller.tab.addon;
   holder.ready = true;
   clearTimeout(holder.readyTimer);
@@ -3111,7 +3131,7 @@ ipcMain.handle('addon:call', (event, method) => {
   }
   if (method === 'app/info') {
     const { tab, kind, addonId } = caller;
-    return { version: app.getVersion(), language: currentLanguage, addon: addonId, kind, tab: tab.id, window: tab.host.key };
+    return { version: app.getVersion(), language: currentLanguage, addon: addonId, kind, tab: tab ? tab.id : null, window: tab ? tab.host.key : null };
   }
   throw new Error(`MethodNotFound: ${method}`);
 });
@@ -3429,8 +3449,69 @@ function spawnTerminalFor(event, key, cwd, cols, rows) {
 // the addons.extraDirs setting, then the install folder. Only an add-on
 // that can run has its pages served (addons/protocol.js).
 registerAddonScheme();
+// An add-on's tabs (iframes under the app's file: page) and its background
+// frame (a window of its own) are the same origin and share web storage
+// (protocol 4.4). Chromium would otherwise key an iframe's storage by the
+// page it sits in as well; the app embeds no third-party sites, which is
+// what that partitioning guards against. (The background check in
+// test/app notices if this switch ever stops working.)
+app.commandLine.appendSwitch('disable-features', 'ThirdPartyStoragePartitioning');
 
 let addonRegistry = null;
+let backgroundFrames = null;
+
+// A background frame's window stays on its add-on's pages and opens no
+// windows.
+function guardBackgroundWindow(win) {
+  win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  win.webContents.on('will-navigate', (event) => {
+    const here = originIn(win.webContents.getURL(), ADDON_SCHEME);
+    if (here && originIn(event.url, ADDON_SCHEME) !== here) {
+      event.preventDefault();
+      console.warn(`[nav] blocked a background frame going from ${win.webContents.getURL()} to ${event.url}`);
+    }
+  });
+}
+
+// Whether an add-on has a tab or pane open (it is not idle then).
+function addonHasOpenFrames(id) {
+  for (const tab of tabsById.values()) {
+    if (tab.kind === 'addon' && tab.addon.id === id) return true;
+    if (tab.pane && addonIdOf(tab.pane.url) === id) return true;
+  }
+  return false;
+}
+
+// ---- Add-ons: activation (protocol 7.3) ----
+// An activation event starts the background frame of each running add-on
+// that has one and listens for the event. onCommand comes with commands
+// (F3).
+
+function activateAddons(why, matches, onlyId = null) {
+  if (!addonRegistry || !backgroundFrames) return;
+  for (const entry of addonRegistry.list()) {
+    if (onlyId && entry.id !== onlyId) continue;
+    if (!addonRegistry.running(entry.id) || !entry.manifest.background) continue;
+    if (entry.activation.some(matches)) backgroundFrames.start(entry, why);
+  }
+}
+
+function openProjectRoots() {
+  return [...windowProjects.values()].flatMap((entry) => entry.roots || []);
+}
+
+// onStartup, onProject and onProjectContains:<name>, as things are now.
+function activateForStartupAndProjects() {
+  activateAddons('onStartup', (a) => a === 'onStartup');
+  const roots = openProjectRoots();
+  if (!roots.length) return;
+  activateAddons('onProject', (a) => a === 'onProject');
+  activateAddons('onProjectContains', (a) => {
+    if (!a.startsWith('onProjectContains:')) return false;
+    const name = a.slice('onProjectContains:'.length);
+    return roots.some((root) => fs.existsSync(path.join(root, name)));
+  });
+}
 
 function addonDevDirs() {
   return app.isPackaged ? [] : switchValues(process.argv, '--addon-dev').map((dir) => path.resolve(dir));
@@ -3477,6 +3558,17 @@ function addonRegistryOptions() {
 function startAddonRegistry() {
   addonStore = new AddonStore(path.join(app.getPath('userData'), 'addons-state.json'));
   addonRegistry = new AddonRegistry(addonRegistryOptions());
+  backgroundFrames = createBackgroundFrames({
+    BrowserWindow,
+    preload: path.join(__dirname, 'preload.js'),
+    scheme: ADDON_SCHEME,
+    ask: (frame, kind, timeout) => askFrame(frame, null, kind, { timeout }),
+    busy: (id) => addonHasOpenFrames(id),
+    running: (id) => addonRegistry.running(id),
+    log: (message) => console.log(message),
+    onChange: () => notifyAddonsChanged(),
+    guard: guardBackgroundWindow,
+  });
   for (const entry of addonRegistry.rescan()) {
     const why = entry.problems.map((p) => `${p.path || '-'} ${p.code}${p.detail ? ` (${p.detail})` : ''}`).join('; ');
     console.log(`[addons] ${entry.id} (${entry.source}) ${entry.status}${entry.enabled ? '' : ', off'}${why ? `: ${why}` : ''}`);
@@ -3498,6 +3590,9 @@ function addonListForPage() {
     problems: e.problems,
     warnings: e.warnings,
     activation: e.activation,
+    // Its background frame: 'starting', 'running', 'stopping', 'error',
+    // 'failed' or null (not running).
+    background: e.manifest && e.manifest.background ? backgroundFrames.stateOf(e.id) : undefined,
     // The tabs it can open now (for the tab strip's "+").
     tabs: addonRegistry.running(e.id) ? ((e.manifest.contributes && e.manifest.contributes.tabs) || []).map((tab) => tab.id) : [],
   }));
@@ -3516,6 +3611,10 @@ function notifyAddonsChanged() {
 function rescanAddons() {
   addonRegistry.rescan(addonRegistryOptions());
   closeTabsOfStoppedAddons();
+  for (const id of backgroundFrames.ids()) {
+    if (!addonRegistry.running(id)) backgroundFrames.stop(id, 'turned off');
+  }
+  activateForStartupAndProjects();
   buildAppMenu();
   return notifyAddonsChanged();
 }
@@ -3558,6 +3657,7 @@ if (!gotSingleInstanceLock) {
     limitPermissionsToAppPages();
     refuseAddonDownloads();
     const win = createWindow();
+    activateForStartupAndProjects();
     const target = extractOpenTargetFromArgv(process.argv);
     if (target) openTargetInWindow(win, target);
     restoreProjectsFromArgv(process.argv, win);
@@ -4776,6 +4876,7 @@ appIpc.handle('project:set-open', (event, roots, active) => {
   // these (see doc:context in doc.js).
   const owner = windowFor(event.sender);
   for (const host of hostsOwnedBy(owner)) sendToHostTabs(host, 'doc:context', tabContextFor(host));
+  activateForStartupAndProjects();
   return { ok: true };
 });
 
