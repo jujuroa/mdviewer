@@ -150,3 +150,47 @@ test('ui area: answers checked against what was offered; progress tokens are the
   assert.equal((await r.call(me, 'ui/progress/end', { token })).ok, true);
   assert.deepEqual(shown.map((m) => m.op), ['start', 'report', 'report', 'end']);
 });
+
+test('tabs area: own tabs only, a tab page\'s own fields, 64 KiB state', async () => {
+  const { registerTabsApi } = require('../addons/api/tabs.js');
+  const r = new ApiRouter();
+  const open = [];
+  const closed = [];
+  const changed = [];
+  registerTabsApi(r, {
+    contributes: (addonId, tabId) => addonId === 'a' && tabId === 'a.view',
+    open: (caller, tabId, opts) => {
+      const tab = { id: open.length + 10, addon: { id: caller.addonId, tabId, args: opts.args, state: null } };
+      open.push(tab);
+      return tab;
+    },
+    instances: (addonId, tabId, instanceId) => open.filter((t) => t.addon.id === addonId && t.addon.tabId === tabId && (instanceId === undefined || t.id === instanceId)),
+    close: async (tab) => closed.push(tab.id),
+    reveal: () => {},
+    changed: (tab) => changed.push(tab.id),
+  });
+  const bg = { addonId: 'a', kind: 'background', entry: { manifest: {} } };
+  assert.deepEqual((await r.call(bg, 'tabs/open', { tabId: 'a.view', args: { q: 1 } })).result, { instanceId: 10 });
+  assert.deepEqual(open[0].addon.args, { q: 1 });
+  assert.equal((await r.call(bg, 'tabs/open', { tabId: 'b.view' })).error.name, 'NotFound');
+  assert.equal((await r.call(bg, 'tabs/open', { tabId: 'a.view', args: 'x'.repeat(70000) })).error.name, 'TooLarge');
+  assert.equal((await r.call(bg, 'tabs/update', { title: 'x' })).error.name, 'NotSupported');
+  const me = { addonId: 'a', kind: 'tab', tab: open[0], entry: { manifest: {} } };
+  assert.equal((await r.call(me, 'tabs/update', { title: 'Found 3', dirty: true, icon: 'img/i.png' })).ok, true);
+  assert.equal(open[0].addon.title, 'Found 3');
+  assert.equal(open[0].addon.dirty, true);
+  assert.deepEqual(changed, [10]);
+  for (const icon of ['../x.png', '/x.png', 'C:/x.png', 'a\\b.png', 'a/./b.png']) {
+    assert.equal((await r.call(me, 'tabs/update', { icon })).error.name, 'InvalidParams', icon);
+  }
+  assert.equal((await r.call(me, 'tabs/getState')).result, null);
+  await r.call(me, 'tabs/setState', { state: { n: 2 } });
+  assert.deepEqual((await r.call(me, 'tabs/getState')).result, { n: 2 });
+  assert.equal((await r.call(me, 'tabs/setState', { state: 'y'.repeat(70000) })).error.name, 'TooLarge');
+  assert.deepEqual((await r.call(me, 'tabs/getRestoreState')).result, { reason: 'new', state: null });
+  assert.deepEqual((await r.call(me, 'tabs/getArgs')).result, { q: 1 });
+  assert.equal((await r.call(bg, 'tabs/close', { tabId: 'a.view', instanceId: 99 })).error.name, 'NotFound');
+  await r.call(bg, 'tabs/open', { tabId: 'a.view' });
+  await r.call(bg, 'tabs/close', { tabId: 'a.view' });
+  assert.deepEqual(closed, [10, 11]);
+});
