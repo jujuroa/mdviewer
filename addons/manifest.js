@@ -240,6 +240,9 @@ const HOST = {
   api: 1,
   manifestVersions: [1],
   capabilities: { app: 1, settings: 1, secrets: 1, context: 1, workspace: 1, documents: 1, editor: 1, edit: 1, ui: 1, tabs: 1, storage: 1, messaging: 1 },
+  // The experimental APIs this app has (protocol 5.4); they may change or
+  // go in any 2.x release.
+  experimentalApi: ['host.info', 'documents.sync'],
 };
 
 // Why the app cannot run a manifest that passed checkManifest, as problems
@@ -259,6 +262,14 @@ function compatibilityProblems(manifest, { host = HOST, experimentalAllowed = fa
     problems.push({ path: 'experimentalApi', code: 'experimentalNotAllowed', detail: manifest.experimentalApi.join(', ') });
   }
   return problems;
+}
+
+// Experimental API names this app does not have (a typo, or one that went
+// away): warnings, since asking for them simply finds nothing open.
+function experimentalWarnings(manifest, { host = HOST } = {}) {
+  return (manifest.experimentalApi || []).flatMap((name, i) =>
+    host.experimentalApi.includes(name) ? [] : [{ path: `experimentalApi[${i}]`, code: 'unknownExperimental', detail: name }]
+  );
 }
 
 // The activation events in effect: those inferred from contributes plus
@@ -290,4 +301,4 @@ function localize(value, strings) {
   return value;
 }
 
-module.exports = { HOST, checkManifest, compatibilityProblems, activationEvents, localize };
+module.exports = { HOST, checkManifest, compatibilityProblems, experimentalWarnings, activationEvents, localize };

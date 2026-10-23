@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { checkManifest, compatibilityProblems, activationEvents, localize, HOST } = require('../addons/manifest.js');
+const { checkManifest, compatibilityProblems, experimentalWarnings, activationEvents, localize, HOST } = require('../addons/manifest.js');
 const { discover, Registry } = require('../addons/registry.js');
 const { DEFAULT_POLICY, mergePolicy, policyProblems, isLoopback } = require('../addons/policy.js');
 const { AddonStore } = require('../addons/store.js');
@@ -269,4 +269,9 @@ test('AddonLog: memory, files turned over at the limit, all-add-ons view', () =>
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test('experimentalWarnings: names this app does not have', () => {
+  assert.deepEqual(experimentalWarnings({ experimentalApi: ['documents.sync', 'tree.viewz'] }), [{ path: 'experimentalApi[1]', code: 'unknownExperimental', detail: 'tree.viewz' }]);
+  assert.deepEqual(experimentalWarnings({}), []);
 });

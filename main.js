@@ -3843,7 +3843,7 @@ function listProjectFiles(root, extensions) {
 // The experimental APIs open to an add-on: those its manifest names, if it
 // was loaded with --addon-dev or policy allows it (protocol 5.4).
 function openExperimentalApi(entry) {
-  const named = (entry.manifest && entry.manifest.experimentalApi) || [];
+  const named = ((entry.manifest && entry.manifest.experimentalApi) || []).filter((name) => ADDON_HOST.experimentalApi.includes(name));
   if (entry.source === 'dev') return named;
   const allowed = addonRegistryOptions().policy.allowExperimentalApi;
   return allowed.includes(entry.id) ? named : [];
