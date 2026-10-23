@@ -84,14 +84,15 @@ if (location.protocol === 'mdviewer-addon:') {
       throw (answer && answer.error) || { code: -32603, name: 'InternalError', message: 'No answer from the host' };
     };
     // mdviewerAddon.<area>.<action>(params) for each method main lists for
-    // this add-on (so new methods need no change here).
+    // this add-on (so new methods need no change here); ui/progress/start
+    // is ui.progress.start.
     const areas = {};
     for (const name of hello.methods || []) {
-      const at = name.indexOf('/');
-      const area = name.slice(0, at);
-      const action = name.slice(at + 1);
-      if (!areas[area]) areas[area] = {};
-      areas[area][action] = (params) => call(name, params);
+      const parts = name.split('/');
+      const action = parts.pop();
+      let at = areas;
+      for (const part of parts) at = at[part] || (at[part] = {});
+      at[action] = (params) => call(name, params);
     }
     contextBridge.exposeInMainWorld('mdviewerAddon', {
       ...areas,
@@ -332,6 +333,9 @@ if (PAGE === 'index.html' || TAB_ID) contextBridge.exposeInMainWorld('mdviewer',
   onAddonLog: (callback) => ipcRenderer.on('addons:log', (event, entry) => callback(entry)),
   onAddonEditRequest: (callback) => ipcRenderer.on('addons:edit-request', (event, request) => callback(request)),
   answerAddonPage: (id, value) => ipcRenderer.send('addons:page-answer', id, value),
+  onAddonUiRequest: (callback) => ipcRenderer.on('addons:ui-request', (event, request) => callback(request)),
+  onAddonUiProgress: (callback) => ipcRenderer.on('addons:ui-progress', (event, message) => callback(message)),
+  cancelAddonProgress: (token) => ipcRenderer.send('addons:ui-progress-cancel', token),
   onAddonConsentRequest: (callback) => ipcRenderer.on('addons:consent-request', (event, request) => callback(request)),
   answerAddonConsent: (id, agreed) => ipcRenderer.send('addons:consent-answer', id, agreed),
   onMenuManageHiddenNames: (callback) => ipcRenderer.on('menu:manage-hidden-names', callback),
