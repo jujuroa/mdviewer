@@ -669,6 +669,124 @@
     addLogRow(entry);
   });
 
+  // An add-on's edit/apply: what it would change, file by file, for the
+  // user to apply or not (one question at a time).
+  const editEl = {
+    overlay: document.getElementById('addon-edit-overlay'),
+    title: document.getElementById('addon-edit-title'),
+    body: document.getElementById('addon-edit-body'),
+    apply: document.getElementById('btn-edit-apply'),
+    cancel: document.getElementById('btn-edit-cancel'),
+  };
+  const editQueue = [];
+
+  // A question from main for a tab window (request.container) is shown in
+  // that window: the overlay moves into its document while it is open.
+  function presentOverlay(overlay, container) {
+    const area = container && container !== 'main' ? tabAreas.get(container) : null;
+    const doc = area ? area.doc : document;
+    if (overlay.ownerDocument !== doc) doc.body.appendChild(doc.adoptNode(overlay));
+    if (area && area.win) area.win.focus();
+  }
+
+  function dismissOverlay(overlay) {
+    overlay.classList.add('hidden');
+    if (overlay.ownerDocument !== document) document.body.appendChild(document.adoptNode(overlay));
+  }
+
+  function diffLines(diff) {
+    const box = document.createElement('div');
+    box.className = 'diff-lines';
+    for (const hunk of diff.hunks) {
+      const head = document.createElement('div');
+      head.className = 'diff-hunk';
+      head.textContent = `@@ -${hunk.oldStart} +${hunk.newStart} @@`;
+      box.appendChild(head);
+      let oldNo = hunk.oldStart;
+      let newNo = hunk.newStart;
+      for (const line of hunk.lines) {
+        const row = document.createElement('div');
+        row.className = `diff-line ${line.type}`;
+        const no = document.createElement('span');
+        no.className = 'no';
+        no.textContent = line.type === 'add' ? newNo++ : line.type === 'del' ? oldNo++ : (oldNo++, newNo++);
+        const sign = document.createElement('span');
+        sign.className = 'sign';
+        sign.textContent = line.type === 'add' ? '+' : line.type === 'del' ? '-' : ' ';
+        const text = document.createElement('span');
+        text.className = 'text';
+        for (const part of line.parts || [{ text: line.text, changed: false }]) {
+          if (part.changed) {
+            const mark = document.createElement('mark');
+            mark.textContent = part.text;
+            text.appendChild(mark);
+          } else {
+            text.appendChild(document.createTextNode(part.text));
+          }
+        }
+        row.append(no, sign, text);
+        box.appendChild(row);
+      }
+    }
+    if (diff.truncated) {
+      const more = document.createElement('div');
+      more.className = 'diff-hunk';
+      more.textContent = t('addons.edit.truncated');
+      box.appendChild(more);
+    }
+    return box;
+  }
+
+  function showNextEdit() {
+    const request = editQueue[0];
+    if (!request) {
+      dismissOverlay(editEl.overlay);
+      return;
+    }
+    presentOverlay(editEl.overlay, request.container);
+    editEl.title.textContent = `${request.name}: ${request.label || t('addons.edit.untitled')}`;
+    editEl.body.textContent = '';
+    for (const op of request.operations) {
+      const box = document.createElement('div');
+      box.className = 'addon-edit-op';
+      const head = document.createElement('div');
+      head.className = 'addon-edit-op-head';
+      const kind = document.createElement('span');
+      kind.className = 'kind';
+      kind.textContent = t(`addons.edit.${op.kind}`);
+      head.append(kind, op.kind === 'rename' ? `${op.from} → ${op.to}` : op.path);
+      box.appendChild(head);
+      if (op.diff) {
+        if (op.diff.hunks.length) box.appendChild(diffLines(op.diff));
+        else {
+          const same = document.createElement('div');
+          same.className = 'note';
+          same.textContent = t('addons.edit.noChange');
+          box.appendChild(same);
+        }
+      }
+      editEl.body.appendChild(box);
+    }
+    editEl.overlay.classList.remove('hidden');
+    editEl.cancel.focus();
+  }
+
+  function answerEdit(apply) {
+    const request = editQueue.shift();
+    if (request) window.mdviewer.answerAddonPage(request.id, apply);
+    showNextEdit();
+  }
+
+  editEl.apply.addEventListener('click', () => answerEdit(true));
+  editEl.cancel.addEventListener('click', () => answerEdit(false));
+  editEl.overlay.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') answerEdit(false);
+  });
+  window.mdviewer.onAddonEditRequest((request) => {
+    editQueue.push(request);
+    if (editQueue.length === 1) showNextEdit();
+  });
+
   // Consent before an add-on first runs (protocol 10.3): main asks, one at
   // a time; the answer goes back.
   const consentEl = {

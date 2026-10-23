@@ -2237,6 +2237,23 @@ body.tab-window .doc-tab { -webkit-app-region: no-drag; }
 .addon-consent-body { padding: 10px 14px; font-size: 12px; overflow-y: auto; }
 .addons-log-box { width: min(900px, 94vw); height: 70vh; }
 .addon-settings-body { padding: 10px 14px 14px; overflow-y: auto; font-size: 12px; }
+/* The comparison screen for an add-on's edit/apply. */
+.addon-edit-box { width: min(1000px, 94vw); max-height: 86vh; }
+.addon-edit-body { padding: 8px 14px; overflow: auto; font-size: 12px; }
+.addon-edit-op { margin-bottom: 12px; border: 1px solid var(--border); border-radius: 4px; overflow: hidden; }
+.addon-edit-op-head { padding: 4px 8px; background: var(--bg-sidebar); font-weight: 600; word-break: break-all; }
+.addon-edit-op-head .kind { color: var(--accent); margin-right: 6px; }
+.addon-edit-op .note { padding: 4px 8px; color: var(--text-dim); }
+.diff-lines { font-family: "Consolas", "SFMono-Regular", monospace; white-space: pre-wrap; word-break: break-all; }
+.diff-hunk { padding: 2px 8px; color: var(--text-dim); background: var(--bg-sidebar); }
+.diff-line { display: flex; }
+.diff-line .no { width: 3.5em; flex-shrink: 0; text-align: right; padding-right: 6px; color: var(--text-dim); user-select: none; }
+.diff-line .sign { width: 1.2em; flex-shrink: 0; user-select: none; }
+.diff-line .text { flex: 1; }
+.diff-line.del { background: rgba(224, 82, 82, 0.12); }
+.diff-line.add { background: rgba(60, 170, 90, 0.14); }
+.diff-line.del mark { background: rgba(224, 82, 82, 0.4); color: inherit; }
+.diff-line.add mark { background: rgba(60, 170, 90, 0.45); color: inherit; }
 .addon-settings-body h4 { margin: 12px 0 6px; font-size: 12px; }
 .addon-setting { margin-bottom: 10px; }
 .addon-setting label { display: block; font-weight: 600; margin-bottom: 3px; }

@@ -5009,6 +5009,8 @@
       value = await saveForApi();
     } else if (kind === 'reload') {
       value = await reloadForApi(args && args.ifDirty);
+    } else if (kind === 'apply-edit') {
+      value = await applyEditForApi(args && args.text);
     }
     window.mdviewer.answerDoc(id, value);
   });
@@ -5038,6 +5040,22 @@
     const range = sourceRangeInBlocks(value, blocks);
     if (!range) return null;
     return { source: 'viewer', text: state.editMode ? value : null, start: range[0], end: range[1] };
+  }
+
+  // An add-on's confirmed edit (edit/apply) while editing: only the part
+  // that differs is replaced, through the editor's own undo stack — which
+  // needs the editor on screen (main brings the tab forward first).
+  async function applyEditForApi(text) {
+    if (!state.editMode || typeof text !== 'string') return { status: 'notEditing' };
+    const ta = el.mdSourceEditor;
+    for (let i = 0; i < 40 && !ta.offsetParent; i++) await new Promise((resolve) => setTimeout(resolve, 50));
+    const current = ta.value;
+    let start = 0;
+    while (start < current.length && start < text.length && current[start] === text[start]) start++;
+    let end = 0;
+    while (end < current.length - start && end < text.length - start && current[current.length - 1 - end] === text[text.length - 1 - end]) end++;
+    replaceEditorText(ta, text.slice(start, text.length - end), start, current.length - end);
+    return { status: 'applied' };
   }
 
   // A save asked by an add-on (documents/save): never asks the user; a
