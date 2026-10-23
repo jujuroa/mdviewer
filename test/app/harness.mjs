@@ -51,6 +51,7 @@ export async function launch({ files = {}, open = 'proj', settings = { language:
   // The test add-ons, and an install folder of its own.
   env.MDVIEWER_ADDONS_DIR = path.join(tmp, 'addons');
   env.MDVIEWER_LOGS_DIR = path.join(tmp, 'logs');
+  env.MDVIEWER_ADDON_DATA_DIR = path.join(tmp, 'addon-data');
   for (const [k, v] of Object.entries(moreEnv)) env[k] = String(v).replace('{tmp}', tmp);
   const args = [
     '.',

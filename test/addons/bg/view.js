@@ -6,6 +6,10 @@ if (window.mdviewerAddon) {
     window.shown.push(ctx);
     return 'shown';
   });
+  window.received = [];
+  window.mdviewerAddon.messaging.onMessage((message, from) => {
+    window.received.push({ message, from });
+  });
   window.mdviewerAddon.ready();
 }
 window.viewReady = true;

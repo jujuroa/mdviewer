@@ -50,6 +50,38 @@ if (location.protocol === 'mdviewer-addon:') {
         ipcRenderer.send('addon:command-result', id, { ok: true, result: null }); // not cloneable
       }
     });
+    // Messages from the add-on's other frames (protocol 13.14). A request
+    // (to the background frame) is answered by the first handler that
+    // returns something other than undefined.
+    const messageHandlers = new Set();
+    ipcRenderer.on('addon:message', (event, { message, from } = {}) => {
+      for (const handler of messageHandlers) {
+        try {
+          Promise.resolve(handler(message, from)).catch(() => {});
+        } catch (err) {
+          /* the handler's own problem */
+        }
+      }
+    });
+    ipcRenderer.on('addon:message-request', async (event, { id, message, from } = {}) => {
+      let answer = { ok: true, result: null };
+      try {
+        for (const handler of messageHandlers) {
+          const result = await handler(message, from);
+          if (result !== undefined) {
+            answer = { ok: true, result };
+            break;
+          }
+        }
+      } catch (err) {
+        answer = { ok: false, error: { name: 'InternalError', message: String((err && err.message) || err) } };
+      }
+      try {
+        ipcRenderer.send('addon:message-result', id, answer);
+      } catch (err) {
+        ipcRenderer.send('addon:message-result', id, { ok: false, error: { name: 'InternalError', message: 'The answer is not cloneable' } });
+      }
+    });
     // A handler gets so long, then the host goes on without it.
     const within = (handler, ms) =>
       Promise.race([Promise.resolve().then(handler), new Promise((resolve) => setTimeout(resolve, ms))]);
@@ -112,6 +144,14 @@ if (location.protocol === 'mdviewer-addon:') {
         },
         onWillClose: (handler) => {
           willCloseHandler = typeof handler === 'function' ? handler : null;
+        },
+      },
+      messaging: {
+        ...(areas.messaging || {}),
+        onMessage: (handler) => {
+          if (typeof handler !== 'function') return { dispose: () => {} };
+          messageHandlers.add(handler);
+          return { dispose: () => messageHandlers.delete(handler) };
         },
       },
       tabs: {
