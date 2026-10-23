@@ -14,7 +14,7 @@ const strip = (w) =>
     const w = await openWindowWith(app, 'a.md');
     check('no add-ons: no "+" in the tab strip', (await w.evaluate(`return !!document.querySelector('.doc-tab-new')`)) === false);
     const labels = await app.main(`return electron.Menu.getApplicationMenu().items.find((i) => i.label === '확장').submenu.items.map((i) => i.label)`);
-    check('no add-ons: Extensions has only its own items', labels.join('|') === '확장 관리...|add-on 다시 찾기|확장 로그', labels.join('|'));
+    check('no add-ons: Extensions has only its own items', labels.join('|') === '명령 팔레트...||확장 관리...|add-on 다시 찾기|확장 로그', labels.join('|'));
   } finally {
     await app.stop();
   }

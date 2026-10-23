@@ -102,8 +102,8 @@ try {
   a = await frameOf('mdviewer-addon://test/probe.html', seen2);
   const reloaded = await a.evaluate(`return window.mdviewerAddon.tabs.getRestoreState()`);
   check('language change (window page reload): state back, reason reloaded', reloaded && reloaded.reason === 'reloaded' && reloaded.state && reloaded.state.lang === 'switch', JSON.stringify(reloaded));
-  const lang = await a.evaluate(`return window.mdviewerAddon.app.language`);
-  check('  app.language follows', lang === 'en', lang);
+  const lang = await a.evaluate(`return window.mdviewerAddon.app.locale`);
+  check('  app.locale follows', lang === 'en', lang);
 
   // ---- modal of the window page over the add-on tab
   await w2.evaluate(`const tab = [...document.querySelectorAll('.doc-tab')].find(n => /probe/i.test(n.textContent)); tab && tab.click(); return 1`);

@@ -5,5 +5,11 @@ window.startedAt = Date.now();
 window.info = null;
 if (window.mdviewerAddon) {
   window.mdviewerAddon.call('app/info').then((info) => (window.info = info));
+  // bg.count: how many times it ran, and what it was given.
+  window.counted = 0;
+  window.mdviewerAddon.commands.register('bg.count', (ctx) => {
+    window.counted++;
+    return { counted: window.counted, ctx };
+  });
   if (localStorage.getItem('skipReady') !== '1') window.mdviewerAddon.ready();
 }

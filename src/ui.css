@@ -2227,6 +2227,22 @@ body.tab-window .doc-tab { -webkit-app-region: no-drag; }
 .addons-box { width: min(560px, 92vw); }
 .addon-consent-body { padding: 10px 14px; font-size: 12px; overflow-y: auto; }
 .addons-log-box { width: min(900px, 94vw); height: 70vh; }
+/* Command palette (Ctrl+Shift+P): at the top, like VS Code's. */
+.palette-overlay { position: fixed; inset: 0; z-index: 110; display: flex; justify-content: center; align-items: flex-start; padding-top: 8vh; }
+.palette-overlay.hidden { display: none; }
+.palette-box {
+  width: min(600px, 90vw);
+  background: var(--bg-app);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  overflow: hidden;
+}
+.palette-box input { width: 100%; box-sizing: border-box; border: none; border-bottom: 1px solid var(--border); padding: 10px 12px; font-size: 14px; background: var(--bg-app); color: var(--text); outline: none; }
+.palette-list { list-style: none; margin: 0; padding: 4px 0; max-height: 50vh; overflow-y: auto; font-size: 13px; }
+.palette-list li { padding: 6px 12px; cursor: pointer; }
+.palette-list li.selected { background: var(--hover); }
+.palette-list li.empty { color: var(--text-dim); cursor: default; }
 .addons-log-filter { margin-left: auto; margin-right: 8px; font-size: 12px; }
 .addons-log-list {
   flex: 1;

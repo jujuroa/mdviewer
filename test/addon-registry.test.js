@@ -52,6 +52,10 @@ test('checkManifest: contributes refer to what exists, ids carry the prefix', ()
   assert.ok(c.includes('contributes.keybindings[0].key:required'));
   const bg = good({ contributes: { commands: [{ id: 'sample.run', title: 'Run', handler: 'background' }] } });
   assert.ok(codes(checkManifest(bg, 'sample')).includes('contributes.commands[0].handler:noBackground'));
+  // No handler means the background frame (protocol 7.6).
+  const noHandler = good({ contributes: { tabs: [{ id: 'sample.t', title: 't', entry: 't.html' }], commands: [{ id: 'sample.run', title: 'Run' }] } });
+  assert.ok(codes(checkManifest(noHandler, 'sample')).includes('contributes.commands[0].handler:noBackground'));
+  assert.deepEqual(codes(checkManifest({ ...noHandler, background: { entry: 'bg.html' } }, 'sample')), []);
 });
 
 test('checkManifest: entries stay inside the folder; hosts and permissions are known', () => {

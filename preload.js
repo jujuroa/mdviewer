@@ -21,6 +21,28 @@ if (location.protocol === 'mdviewer-addon:') {
   if (hello && hello.ok) {
     let snapshotHandler = null;
     let willCloseHandler = null;
+    // Commands this page handles (protocol 7.6): main sends each with its
+    // ctx and waits for the handler's result.
+    const commandHandlers = new Map();
+    ipcRenderer.on('addon:command', async (event, { id, command, ctx } = {}) => {
+      const handler = commandHandlers.get(command);
+      let answer;
+      if (!handler) {
+        answer = { ok: false, error: { code: -32002, name: 'NotFound', message: `This page does not handle ${command}` } };
+      } else {
+        try {
+          const result = await handler(ctx || {});
+          answer = { ok: true, result: result === undefined ? null : result };
+        } catch (err) {
+          answer = { ok: false, error: { code: -32603, name: 'InternalError', message: String((err && err.message) || err) } };
+        }
+      }
+      try {
+        ipcRenderer.send('addon:command-result', id, answer);
+      } catch (err) {
+        ipcRenderer.send('addon:command-result', id, { ok: true, result: null }); // not cloneable
+      }
+    });
     // A handler gets so long, then the host goes on without it.
     const within = (handler, ms) =>
       Promise.race([Promise.resolve().then(handler), new Promise((resolve) => setTimeout(resolve, ms))]);
@@ -70,6 +92,12 @@ if (location.protocol === 'mdviewer-addon:') {
       call,
       // The page has set up what it handles (protocol 7.4).
       ready: () => ipcRenderer.send('addon:ready'),
+      commands: {
+        register: (command, handler) => {
+          if (typeof command === 'string' && typeof handler === 'function') commandHandlers.set(command, handler);
+          return { dispose: () => commandHandlers.delete(command) };
+        },
+      },
       lifecycle: {
         onSnapshot: (handler) => {
           snapshotHandler = typeof handler === 'function' ? handler : null;
@@ -280,6 +308,9 @@ if (PAGE === 'index.html' || TAB_ID) contextBridge.exposeInMainWorld('mdviewer',
   rescanAddons: () => ipcRenderer.invoke('addons:rescan'),
   onAddonsChanged: (callback) => ipcRenderer.on('addons:changed', (event, list) => callback(list)),
   onMenuAddonLog: (callback) => ipcRenderer.on('menu:addons-log', callback),
+  onMenuCommandPalette: (callback) => ipcRenderer.on('menu:command-palette', callback),
+  paletteItems: () => ipcRenderer.invoke('addons:palette-items'),
+  runPaletteItem: (item) => ipcRenderer.invoke('addons:palette-run', item),
   addonLogEntries: (id) => ipcRenderer.invoke('addons:log-entries', id),
   onAddonLog: (callback) => ipcRenderer.on('addons:log', (event, entry) => callback(entry)),
   onAddonConsentRequest: (callback) => ipcRenderer.on('addons:consent-request', (event, request) => callback(request)),

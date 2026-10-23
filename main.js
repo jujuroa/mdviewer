@@ -1757,6 +1757,8 @@ function buildAppMenu() {
     {
       label: t('menu.addons'),
       submenu: [
+        { label: t('menu.commandPalette'), accelerator: 'Ctrl+Shift+P', click: (item, win) => sendToWindow(win, 'menu:command-palette') },
+        { type: 'separator' },
         { label: t('menu.manageAddons'), click: (item, win) => sendToWindow(win, 'menu:manage-addons') },
         { label: t('menu.rescanAddons'), click: () => rescanAddons() },
         { label: t('menu.addonLog'), click: (item, win) => sendToWindow(win, 'menu:addons-log') },
@@ -2940,6 +2942,109 @@ async function openAddonTabAsked(host, addonId, tabId) {
   return openAddonTab(host, addonId, tabId);
 }
 
+// ---- Add-on commands (protocol 7.6, 12.1) ----
+// A command runs where its add-on says: the background frame (started if
+// need be, onCommand:<id>) or one of its tabs (opened or brought forward).
+// It goes to the page once that page is ready() (protocol 7.4) and the
+// handler it registered (mdviewerAddon.commands.register) answers.
+
+const COMMAND_TIMEOUT_MS = 30000;
+const commandRequests = new Map(); // request id -> { frame, settle }
+let nextCommandId = 1;
+
+// command id -> { entry, command }, for running add-ons.
+function findAddonCommand(commandId) {
+  if (!addonRegistry || typeof commandId !== 'string') return null;
+  for (const entry of addonRegistry.list()) {
+    if (!addonRegistry.running(entry.id)) continue;
+    const command = ((entry.manifest.contributes && entry.manifest.contributes.commands) || []).find((c) => c.id === commandId);
+    if (command) return { entry, command };
+  }
+  return null;
+}
+
+// Resolves once ready() returns a page, or null after timeoutMs.
+async function pageWhenReady(get, timeoutMs = ADDON_READY_TIMEOUT_MS + 2000) {
+  const end = Date.now() + timeoutMs;
+  while (Date.now() < end) {
+    const frame = get();
+    if (frame) return frame;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  return null;
+}
+
+function sendCommand(frame, command, ctx) {
+  return new Promise((resolve) => {
+    const id = nextCommandId++;
+    const timer = setTimeout(() => settle({ ok: false, error: { code: -32603, name: 'InternalError', message: 'The command did not answer in time' } }), COMMAND_TIMEOUT_MS);
+    const settle = (answer) => {
+      clearTimeout(timer);
+      commandRequests.delete(id);
+      resolve(answer);
+    };
+    commandRequests.set(id, { frame, settle });
+    sendToFrame(frame, 'addon:command', { id, command, ctx });
+  });
+}
+
+ipcMain.on('addon:command-result', (event, id, answer) => {
+  const request = commandRequests.get(id);
+  if (!request || !sameFrame(event.senderFrame, request.frame)) return;
+  request.settle(answer && typeof answer === 'object' ? answer : { ok: true, result: null });
+});
+
+// ctx: what the command is about (menu context) and { source }. win: the
+// window it was given in. Resolves to { ok, result } or { ok: false, error }.
+async function executeAddonCommand(commandId, ctx = {}, win = null) {
+  const found = findAddonCommand(commandId);
+  if (!found) return { ok: false, error: { code: -32002, name: 'NotFound', message: `No such command: ${commandId}` } };
+  const { entry, command } = found;
+  const owner = win ? ownerOf(win) : targetWindow();
+  if (!(await ensureConsent(entry, owner))) return { ok: false, error: { code: -32004, name: 'UserCanceled', message: 'Not allowed' } };
+  const handler = command.handler || 'background';
+  let frame;
+  if (handler === 'background') {
+    const rec = backgroundFrames.start(entry, `onCommand:${commandId}`);
+    if (!rec) return { ok: false, error: { code: -32603, name: 'InternalError', message: 'The background frame is off' } };
+    frame = await pageWhenReady(() => (rec.ready && rec.win && !rec.win.isDestroyed() ? rec.win.webContents.mainFrame : null));
+  } else {
+    const tab = openAddonTab(docHostFor(owner), entry.id, handler.slice(4));
+    if (!tab) return { ok: false, error: { code: -32002, name: 'NotFound', message: 'No tab to handle it' } };
+    frame = await pageWhenReady(() => (tab.frame && tab.addon.ready ? tab.frame : null));
+  }
+  if (!frame) return { ok: false, error: { code: -32603, name: 'InternalError', message: 'The page that handles it is not ready' } };
+  logAddon(entry.id, 'info', `command ${commandId} (${ctx.source || 'api'})`, { quiet: true });
+  const answer = await sendCommand(frame, commandId, ctx);
+  if (!answer.ok) logAddon(entry.id, 'warn', `command ${commandId}: ${answer.error && answer.error.name} — ${answer.error && answer.error.message}`, { quiet: true });
+  return answer;
+}
+
+// The command palette's list (Ctrl+Shift+P): each running add-on's
+// commands, and opening its tabs.
+appIpc.handle('addons:palette-items', () => {
+  const items = [];
+  if (!addonRegistry) return items;
+  for (const entry of addonRegistry.list()) {
+    if (!addonRegistry.running(entry.id)) continue;
+    const c = entry.manifest.contributes || {};
+    for (const command of c.commands || []) items.push({ kind: 'command', id: command.id, label: `${entry.manifest.name}: ${command.title}` });
+    for (const tab of c.tabs || []) items.push({ kind: 'tab', addonId: entry.id, tabId: tab.id, label: t('palette.openTab', { name: `${entry.manifest.name}: ${tab.title}` }) });
+  }
+  return items;
+});
+
+appIpc.handle('addons:palette-run', async (event, item) => {
+  const win = windowFor(event.sender);
+  if (!item || typeof item !== 'object') return { ok: false };
+  if (item.kind === 'command') return executeAddonCommand(item.id, { source: 'palette' }, win);
+  if (item.kind === 'tab') {
+    const tab = await openAddonTabAsked(docHostFor(win), item.addonId, item.tabId);
+    return { ok: !!tab };
+  }
+  return { ok: false };
+});
+
 // One menu item per tab a running add-on contributes: "Add-on: Tab".
 function addonTabMenuItems(onChoose) {
   if (!addonRegistry) return [];
@@ -3135,7 +3240,10 @@ ipcMain.on('addon:hello', (event, hint) => {
     return;
   }
   const caller = apiCaller({ kind, addonId, tab: tab || null, rec: found.rec || null });
-  event.returnValue = { ok: true, kind, app: addonAppInfo(entry), methods: addonApi.methodsFor(caller), restore };
+  const frameInfo =
+    kind === 'background' ? { kind } : kind === 'pane' ? { kind, tabId: null, instanceId: null } : { kind, tabId: tab.addon.tabId, instanceId: tab.id };
+  const activation = kind === 'background' ? found.rec.why : kind === 'tab' ? `onTab:${tab.addon.tabId}` : null;
+  event.returnValue = { ok: true, kind, app: addonAppInfo(entry, frameInfo, activation), methods: addonApi.methodsFor(caller), restore };
 });
 
 ipcMain.on('addon:ready', (event) => {
@@ -3183,7 +3291,7 @@ addonApi.register('app/info', {
   experimental: 'host.info',
   handler: ({ tab, kind, addonId }) => ({
     version: app.getVersion(),
-    language: currentLanguage,
+    locale: currentLanguage,
     addon: addonId,
     kind,
     tab: tab ? tab.id : null,
@@ -3208,14 +3316,22 @@ function apiCaller(found) {
 }
 
 // What mdviewerAddon.app holds (protocol 5.1, 7.4).
-function addonAppInfo(entry) {
+// frame: { kind: 'tab' | 'pane' | 'background', tabId?, instanceId? };
+// activationEvent: what started it (protocol 9).
+function addonAppInfo(entry, frame, activationEvent) {
   return {
-    version: app.getVersion(),
-    language: currentLanguage,
     apiVersion: ADDON_HOST.api,
+    version: app.getVersion(),
+    locale: currentLanguage,
+    theme: nativeTheme.shouldUseDarkColors ? 'dark' : 'light',
+    platform: process.platform,
     capabilities: { ...ADDON_HOST.capabilities },
     experimentalApi: openExperimentalApi(entry),
     resources: { threadBudget: Math.max(1, Math.floor(os.cpus().length / 2)) },
+    addon: { id: entry.id, version: entry.manifest.version },
+    frame,
+    grantedPermissions: [...(entry.manifest.permissions || [])],
+    activationEvent: activationEvent || null,
   };
 }
 
