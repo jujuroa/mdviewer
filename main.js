@@ -1,5 +1,5 @@
 const {
-  app, BrowserWindow, webContents, ipcMain, dialog, shell, Menu, clipboard, nativeImage, nativeTheme, net, protocol, screen,
+  app, BrowserWindow, webContents, ipcMain, dialog, shell, Menu, clipboard, nativeImage, nativeTheme, net, protocol, screen, safeStorage,
 } = require('electron');
 const path = require('path');
 const os = require('os');
@@ -27,6 +27,8 @@ const { createBackgroundFrames } = require('./addons/background.js');
 const { consentScope, needsConsent } = require('./addons/consent.js');
 const { AddonLog } = require('./addons/log.js');
 const { evaluateWhen } = require('./addons/when.js');
+const { AddonSettings, AddonSecrets } = require('./addons/settings.js');
+const { registerSettingsApi } = require('./addons/api/settings.js');
 const { ApiRouter } = require('./addons/api-router.js');
 const { registerAppApi } = require('./addons/api/app.js');
 const { HOST: ADDON_HOST } = require('./addons/manifest.js');
@@ -4033,8 +4035,24 @@ function addonRegistryOptions() {
   };
 }
 
+let addonSettings = null;
+let addonSecrets = null;
+
+function setAddonContext(addonId, key, value) {
+  if (value === null) addonContextValues.delete(`${addonId}.${key}`);
+  else addonContextValues.set(`${addonId}.${key}`, value);
+  scheduleMenuRebuild();
+}
+
 function startAddonRegistry() {
   addonLog = new AddonLog(addonLogsDir());
+  addonSettings = new AddonSettings(path.join(app.getPath('userData'), 'addon-settings.json'));
+  addonSecrets = new AddonSecrets(path.join(app.getPath('userData'), 'addon-secrets.json'), {
+    available: () => safeStorage.isEncryptionAvailable(),
+    encrypt: (text) => safeStorage.encryptString(text),
+    decrypt: (buffer) => safeStorage.decryptString(buffer),
+  });
+  registerSettingsApi(addonApi, { settings: addonSettings, secrets: addonSecrets, setContext: setAddonContext });
   addonLog.onAdd((entry) => {
     for (const win of appWindows) {
       if (!win.isDestroyed()) win.webContents.send('addons:log', entry);
@@ -4122,6 +4140,8 @@ function addonListForPage() {
     // Its background frame: 'starting', 'running', 'stopping', 'error',
     // 'failed' or null (not running).
     background: e.manifest && e.manifest.background ? backgroundFrames.stateOf(e.id) : undefined,
+    // Whether it has settings or secrets to show (its Settings button).
+    hasSettings: !!(e.manifest && e.manifest.contributes && ((e.manifest.contributes.settings || []).length || (e.manifest.contributes.secrets || []).length)),
     // Keys of its that the app (or an earlier add-on) already uses.
     keyConflicts: keybindingConflicts.get(e.id) || [],
     // The tabs it can open now (for the tab strip's "+").
@@ -4151,6 +4171,53 @@ function rescanAddons() {
 }
 
 appIpc.handle('addons:list', () => addonListForPage());
+
+// The Extensions screen's settings form for one add-on (protocol 12.5,
+// 12.6): its declared settings with their values, and its secrets as set
+// or not (never their values).
+function addonWithSettings(id) {
+  const entry = typeof id === 'string' && addonRegistry.get(id);
+  return entry && entry.status === 'ok' ? entry : null;
+}
+
+appIpc.handle('addons:settings-form', (event, id) => {
+  const entry = addonWithSettings(id);
+  if (!entry) return null;
+  const c = entry.manifest.contributes || {};
+  const values = addonSettings.get(entry);
+  return {
+    id: entry.id,
+    name: entry.manifest.name,
+    settings: (c.settings || []).map((s) => ({ ...s, value: values[s.key] })),
+    secrets: (c.secrets || []).map((s) => ({ key: s.key, title: s.title || s.key, set: addonSecrets.has(entry.id, s.key) })),
+    secretsAvailable: addonSecrets.available(),
+  };
+});
+
+appIpc.handle('addons:settings-update', (event, id, key, value) => {
+  const entry = addonWithSettings(id);
+  if (!entry) return { ok: false };
+  try {
+    addonSettings.update(entry, key, value);
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, message: err.message };
+  }
+});
+
+// value null clears it. Only secrets the manifest declares.
+appIpc.handle('addons:secret-set', (event, id, key, value) => {
+  const entry = addonWithSettings(id);
+  const declared = entry && ((entry.manifest.contributes && entry.manifest.contributes.secrets) || []).some((s) => s.key === key);
+  if (!declared) return { ok: false };
+  try {
+    if (value === null) addonSecrets.delete(entry.id, key);
+    else addonSecrets.set(entry.id, key, value);
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, message: err.message };
+  }
+});
 appIpc.handle('addons:rescan', () => rescanAddons());
 appIpc.handle('addons:set-enabled', (event, id, enabled) => {
   if (typeof id !== 'string' || !addonRegistry.get(id)) return addonListForPage();

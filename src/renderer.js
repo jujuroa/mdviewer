@@ -300,6 +300,13 @@
       status.className = `addon-status ${shown}`;
       status.textContent = t(`addons.status.${shown}`);
       head.append(name, version, status);
+      if (addon.hasSettings && addon.status === 'ok') {
+        const settingsButton = document.createElement('button');
+        settingsButton.className = 'addon-log-button addon-settings-button';
+        settingsButton.textContent = t('addons.settingsButton');
+        settingsButton.addEventListener('click', () => openAddonSettings(addon.id));
+        head.appendChild(settingsButton);
+      }
       const logButton = document.createElement('button');
       logButton.className = 'addon-log-button';
       logButton.textContent = t('addons.logButton');
@@ -377,6 +384,135 @@
   });
   addonsEl.rescan.addEventListener('click', async () => renderAddons(await window.mdviewer.rescanAddons()));
   window.mdviewer.onMenuManageAddons(openAddons);
+
+  // One add-on's settings and secrets (from the Extensions screen). Values
+  // are saved as they change; a secret is shown only as set or not.
+  const settingsEl = {
+    overlay: document.getElementById('addon-settings-overlay'),
+    title: document.getElementById('addon-settings-title'),
+    body: document.getElementById('addon-settings-body'),
+    close: document.getElementById('btn-close-addon-settings'),
+  };
+
+  function settingField(form, s) {
+    const box = document.createElement('div');
+    box.className = 'addon-setting';
+    box.dataset.key = s.key;
+    const label = document.createElement('label');
+    label.textContent = s.title || s.key;
+    box.appendChild(label);
+    if (s.description) {
+      const desc = document.createElement('div');
+      desc.className = 'desc';
+      desc.textContent = s.description;
+      box.appendChild(desc);
+    }
+    let input;
+    if (s.type === 'boolean') {
+      input = document.createElement('input');
+      input.type = 'checkbox';
+      input.checked = s.value === true;
+    } else if (s.type === 'enum') {
+      input = document.createElement('select');
+      for (const v of s.enum || []) {
+        const o = document.createElement('option');
+        o.value = String(v);
+        o.textContent = String(v);
+        input.appendChild(o);
+      }
+      input.value = String(s.value);
+    } else {
+      input = document.createElement('input');
+      input.type = s.type === 'number' ? 'number' : 'text';
+      input.value = s.value === null || s.value === undefined ? '' : String(s.value);
+    }
+    const error = document.createElement('div');
+    error.className = 'error';
+    input.addEventListener('change', async () => {
+      let value;
+      if (s.type === 'boolean') value = input.checked;
+      else if (s.type === 'number') value = input.value === '' ? NaN : Number(input.value);
+      else if (s.type === 'enum') value = (s.enum || []).find((v) => String(v) === input.value);
+      else value = input.value;
+      const result = await window.mdviewer.updateAddonSetting(form.id, s.key, value);
+      error.textContent = result.ok ? '' : t('addons.settings.invalid', { message: result.message || '' });
+    });
+    box.append(input, error);
+    return box;
+  }
+
+  function secretField(form, s) {
+    const box = document.createElement('div');
+    box.className = 'addon-setting';
+    box.dataset.secret = s.key;
+    const label = document.createElement('label');
+    label.textContent = s.title;
+    const row = document.createElement('div');
+    row.className = 'row';
+    const input = document.createElement('input');
+    input.type = 'password';
+    input.autocomplete = 'off';
+    input.disabled = !form.secretsAvailable;
+    const state = document.createElement('span');
+    state.className = 'state';
+    const shownState = (set) => (state.textContent = t(set ? 'addons.settings.secretSet' : 'addons.settings.secretUnset'));
+    shownState(s.set);
+    const save = document.createElement('button');
+    save.className = 'addon-log-button';
+    save.textContent = t('addons.settings.save');
+    save.disabled = !form.secretsAvailable;
+    const clear = document.createElement('button');
+    clear.className = 'addon-log-button';
+    clear.textContent = t('addons.settings.clear');
+    const error = document.createElement('div');
+    error.className = 'error';
+    save.addEventListener('click', async () => {
+      if (!input.value) return;
+      const result = await window.mdviewer.setAddonSecret(form.id, s.key, input.value);
+      input.value = '';
+      if (result.ok) shownState(true);
+      error.textContent = result.ok ? '' : result.message || '';
+    });
+    clear.addEventListener('click', async () => {
+      const result = await window.mdviewer.setAddonSecret(form.id, s.key, null);
+      if (result.ok) shownState(false);
+    });
+    row.append(input, save, clear, state);
+    box.append(label, row, error);
+    return box;
+  }
+
+  async function openAddonSettings(id) {
+    const form = await window.mdviewer.addonSettingsForm(id);
+    if (!form) return;
+    settingsEl.title.textContent = t('addons.settings.title', { name: form.name });
+    settingsEl.body.textContent = '';
+    settingsEl.overlay.dataset.addonId = form.id;
+    for (const s of form.settings) settingsEl.body.appendChild(settingField(form, s));
+    if (form.secrets.length) {
+      const h = document.createElement('h4');
+      h.textContent = t('addons.settings.secrets');
+      settingsEl.body.appendChild(h);
+      if (!form.secretsAvailable) {
+        const note = document.createElement('div');
+        note.className = 'addon-meta';
+        note.textContent = t('addons.settings.noEncryption');
+        settingsEl.body.appendChild(note);
+      }
+      for (const s of form.secrets) settingsEl.body.appendChild(secretField(form, s));
+    }
+    closeAddons();
+    settingsEl.overlay.classList.remove('hidden');
+    settingsEl.close.focus();
+  }
+
+  settingsEl.close.addEventListener('click', () => settingsEl.overlay.classList.add('hidden'));
+  settingsEl.overlay.addEventListener('click', (e) => {
+    if (e.target === settingsEl.overlay) settingsEl.overlay.classList.add('hidden');
+  });
+  settingsEl.overlay.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') settingsEl.overlay.classList.add('hidden');
+  });
 
   // Command palette (Ctrl+Shift+P): add-ons' commands and tabs, filtered
   // by what is typed (every word must appear).

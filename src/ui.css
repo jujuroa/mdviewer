@@ -2236,6 +2236,19 @@ body.tab-window .doc-tab { -webkit-app-region: no-drag; }
 .addons-box { width: min(560px, 92vw); }
 .addon-consent-body { padding: 10px 14px; font-size: 12px; overflow-y: auto; }
 .addons-log-box { width: min(900px, 94vw); height: 70vh; }
+.addon-settings-body { padding: 10px 14px 14px; overflow-y: auto; font-size: 12px; }
+.addon-settings-body h4 { margin: 12px 0 6px; font-size: 12px; }
+.addon-setting { margin-bottom: 10px; }
+.addon-setting label { display: block; font-weight: 600; margin-bottom: 3px; }
+.addon-setting .desc { color: var(--text-dim); margin-bottom: 3px; }
+.addon-setting input[type=text],
+.addon-setting input[type=number],
+.addon-setting input[type=password],
+.addon-setting select { width: 100%; box-sizing: border-box; padding: 4px 6px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg-app); color: var(--text); font-size: 12px; }
+.addon-setting .row { display: flex; gap: 6px; align-items: center; }
+.addon-setting .row input { flex: 1; }
+.addon-setting .error { color: #e05252; margin-top: 2px; }
+.addon-setting .state { color: var(--text-dim); white-space: nowrap; }
 /* Command palette (Ctrl+Shift+P): at the top, like VS Code's. */
 .palette-overlay { position: fixed; inset: 0; z-index: 110; display: flex; justify-content: center; align-items: flex-start; padding-top: 8vh; }
 .palette-overlay.hidden { display: none; }

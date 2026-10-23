@@ -38,6 +38,10 @@
       "menubar/addons": [
         {
           "command": "bg.count"
+        },
+        {
+          "command": "bg.show",
+          "when": "bg.ready"
         }
       ],
       "explorer/item": [
@@ -68,6 +72,43 @@
       {
         "command": "bg.show",
         "key": "Ctrl+Shift+P"
+      }
+    ],
+    "settings": [
+      {
+        "key": "greeting",
+        "type": "string",
+        "default": "hi",
+        "title": "Greeting",
+        "description": "What the background says."
+      },
+      {
+        "key": "count",
+        "type": "number",
+        "default": 1,
+        "title": "Count"
+      },
+      {
+        "key": "mode",
+        "type": "enum",
+        "enum": [
+          "a",
+          "b"
+        ],
+        "default": "a",
+        "title": "Mode"
+      },
+      {
+        "key": "on",
+        "type": "boolean",
+        "default": true,
+        "title": "On"
+      }
+    ],
+    "secrets": [
+      {
+        "key": "token",
+        "title": "Token"
       }
     ]
   },
