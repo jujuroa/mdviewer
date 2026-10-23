@@ -2,6 +2,7 @@ const {
   app, BrowserWindow, webContents, ipcMain, dialog, shell, Menu, clipboard, nativeImage, nativeTheme, net, protocol, screen,
 } = require('electron');
 const path = require('path');
+const os = require('os');
 const { pathToFileURL } = require('url');
 const fs = require('fs');
 const { spawn } = require('child_process');
@@ -23,6 +24,9 @@ const { Registry: AddonRegistry } = require('./addons/registry.js');
 const { AddonStore } = require('./addons/store.js');
 const { mergePolicy } = require('./addons/policy.js');
 const { createBackgroundFrames } = require('./addons/background.js');
+const { ApiRouter } = require('./addons/api-router.js');
+const { registerAppApi } = require('./addons/api/app.js');
+const { HOST: ADDON_HOST } = require('./addons/manifest.js');
 
 // Tells preload.js where the app's own pages are, so the bridge goes to
 // them alone and not to a project's .html file that happens to share a
@@ -3147,7 +3151,14 @@ ipcMain.on('addon:hello', (event, hint) => {
     tab.init = TAB_KINDS[tab.kind].reopen(tab);
   }
   watchAddonFrames();
-  event.returnValue = { ok: true, kind, app: { version: app.getVersion(), language: currentLanguage }, restore };
+  const addonId = kind === 'background' ? found.rec.id : kind === 'pane' ? addonIdOf(tab.pane.url) : tab.addon.id;
+  const entry = addonRegistry.running(addonId);
+  if (!entry) {
+    event.returnValue = { ok: false };
+    return;
+  }
+  const caller = apiCaller({ kind, addonId, tab: tab || null, rec: found.rec || null });
+  event.returnValue = { ok: true, kind, app: addonAppInfo(entry), methods: addonApi.methodsFor(caller), restore };
 });
 
 ipcMain.on('addon:ready', (event) => {
@@ -3164,17 +3175,87 @@ ipcMain.on('addon:ready', (event) => {
 
 // Every add-on API call. The caller is the frame itself (a tab page that
 // said hello), never what it claims.
-ipcMain.handle('addon:call', (event, method) => {
-  const caller = addonCallerOf(event);
+// ---- Add-on API (protocol 8, 13) ----
+// addons/api-router.js checks each call against the caller's add-on; the
+// areas are in addons/api/*.js.
+const addonApi = new ApiRouter();
+
+registerAppApi(addonApi, {
+  openExternal: (url) => shell.openExternal(url),
+  writeClipboard: (text) => clipboard.writeText(text),
+  // Until ui/* draws in the window page (F4), a native question.
+  confirmOpen: async (caller, url) => {
+    const win = (caller.tab && caller.tab.host.win) || targetWindow();
+    const { response } = await dialog.showMessageBox(win, {
+      type: 'question',
+      message: t('addons.openExternal', { name: caller.entry.manifest.name }),
+      detail: url,
+      buttons: [t('addons.openExternalOk'), t('close.cancelButton')],
+      defaultId: 1,
+      cancelId: 1,
+      noLink: true,
+    });
+    return response === 0;
+  },
+});
+
+// Not in the protocol: what the host knows of the calling frame, for
+// trying things out (experimental, so only --addon-dev add-ons and those
+// policy allows get it).
+addonApi.register('app/info', {
+  experimental: 'host.info',
+  handler: ({ tab, kind, addonId }) => ({
+    version: app.getVersion(),
+    language: currentLanguage,
+    addon: addonId,
+    kind,
+    tab: tab ? tab.id : null,
+    window: tab ? tab.host.key : null,
+  }),
+});
+
+// The experimental APIs open to an add-on: those its manifest names, if it
+// was loaded with --addon-dev or policy allows it (protocol 5.4).
+function openExperimentalApi(entry) {
+  const named = (entry.manifest && entry.manifest.experimentalApi) || [];
+  if (entry.source === 'dev') return named;
+  const allowed = addonRegistryOptions().policy.allowExperimentalApi;
+  return allowed.includes(entry.id) ? named : [];
+}
+
+// The caller as the router sees it: the frame (addonCallerOf) and its
+// add-on, while that runs.
+function apiCaller(found) {
+  const entry = addonRegistry && addonRegistry.running(found.addonId);
+  return entry ? { ...found, entry, experimentalApi: openExperimentalApi(entry) } : null;
+}
+
+// What mdviewerAddon.app holds (protocol 5.1, 7.4).
+function addonAppInfo(entry) {
+  return {
+    version: app.getVersion(),
+    language: currentLanguage,
+    apiVersion: ADDON_HOST.api,
+    capabilities: { ...ADDON_HOST.capabilities },
+    experimentalApi: openExperimentalApi(entry),
+    resources: { threadBudget: Math.max(1, Math.floor(os.cpus().length / 2)) },
+  };
+}
+
+// Every add-on API call: { ok, result } or { ok: false, error }.
+ipcMain.handle('addon:call', async (event, method, params) => {
+  const found = addonCallerOf(event);
+  const caller = found && apiCaller(found);
   if (!caller) {
     refuseIpc(event, 'addon:call');
-    throw new Error('NotRegistered: this frame is not an add-on page');
+    return { ok: false, error: { code: -32001, name: 'PermissionDenied', message: 'This frame is not a running add-on page' } };
   }
-  if (method === 'app/info') {
-    const { tab, kind, addonId } = caller;
-    return { version: app.getVersion(), language: currentLanguage, addon: addonId, kind, tab: tab ? tab.id : null, window: tab ? tab.host.key : null };
+  if (caller.kind === 'background') backgroundFrames.callStarted(caller.rec);
+  try {
+    return await addonApi.call(caller, method, params);
+  } finally {
+    if (caller.kind === 'background') backgroundFrames.callEnded(caller.rec);
   }
-  throw new Error(`MethodNotFound: ${method}`);
 });
 
 appIpc.handle('tabs:new-draft', (event, container) => {

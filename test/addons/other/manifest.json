@@ -16,5 +16,8 @@
         "entry": "probe.html"
       }
     ]
-  }
+  },
+  "experimentalApi": [
+    "host.info"
+  ]
 }

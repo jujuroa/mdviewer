@@ -54,9 +54,27 @@ if (location.protocol === 'mdviewer-addon:') {
         ipcRenderer.send('tab:answer', id, null); // not cloneable
       }
     });
+    // Every method resolves to its result or rejects with the protocol's
+    // error ({ code, name, message, data }, protocol 8.5).
+    const call = async (method, params) => {
+      const answer = await ipcRenderer.invoke('addon:call', method, params);
+      if (answer && answer.ok) return answer.result;
+      throw (answer && answer.error) || { code: -32603, name: 'InternalError', message: 'No answer from the host' };
+    };
+    // mdviewerAddon.<area>.<action>(params) for each method main lists for
+    // this add-on (so new methods need no change here).
+    const areas = {};
+    for (const name of hello.methods || []) {
+      const at = name.indexOf('/');
+      const area = name.slice(0, at);
+      const action = name.slice(at + 1);
+      if (!areas[area]) areas[area] = {};
+      areas[area][action] = (params) => call(name, params);
+    }
     contextBridge.exposeInMainWorld('mdviewerAddon', {
-      app: hello.app,
-      call: (method, params) => ipcRenderer.invoke('addon:call', method, params),
+      ...areas,
+      app: { ...hello.app, ...(areas.app || {}) },
+      call,
       // The page has set up what it handles (protocol 7.4).
       ready: () => ipcRenderer.send('addon:ready'),
       lifecycle: {
@@ -68,6 +86,7 @@ if (location.protocol === 'mdviewer-addon:') {
         },
       },
       tabs: {
+        ...(areas.tabs || {}),
         getRestoreState: () => hello.restore,
       },
     });
