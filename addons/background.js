@@ -21,7 +21,7 @@ const DEFAULT_IDLE_TIMEOUT_SEC = 600;
 //   ask(frame, kind, timeoutMs) -> answer   (tab:ask to the frame)
 //   busy(id) -> whether the add-on has tabs or panes open
 //   running(id) -> the registry entry while the add-on runs, else null
-//   log(message), onChange() (the management screen's view changed)
+//   log(id, level, message), onChange() (the management screen's view changed)
 //   guard(win) (navigation and window-open limits for its window)
 function createBackgroundFrames(deps) {
   const frames = new Map(); // add-on id -> record
@@ -67,7 +67,7 @@ function createBackgroundFrames(deps) {
       if (rec.win === win && !rec.ready) fail(rec, win, `did not call ready() within ${READY_TIMEOUT_MS / 1000} s`);
     }, READY_TIMEOUT_MS);
     frames.set(entry.id, rec);
-    deps.log(`[addons] ${entry.id} background starting (${why})`);
+    deps.log(entry.id, 'info', `background starting (${why})`);
     win.loadURL(`${deps.scheme}://${entry.id}/${background.entry}`).catch(() => {});
     watchIdle();
     deps.onChange();
@@ -81,11 +81,11 @@ function createBackgroundFrames(deps) {
     if (!win.isDestroyed()) win.destroy();
     const now = Date.now();
     rec.restarts = rec.restarts.filter((t) => now - t < RESTART_WINDOW_MS);
-    deps.log(`[addons] ${rec.id} background stopped: ${reason}`);
+    deps.log(rec.id, 'warn', `background stopped: ${reason}`);
     if (rec.restarts.length >= RESTART_LIMIT) {
       rec.state = 'failed';
       failed.add(rec.id);
-      deps.log(`[addons] ${rec.id} background restarted ${RESTART_LIMIT} times in 5 minutes; off until the app restarts`);
+      deps.log(rec.id, 'error', `background restarted ${RESTART_LIMIT} times in 5 minutes; off until the app restarts`);
       deps.onChange();
       return;
     }
@@ -117,7 +117,7 @@ function createBackgroundFrames(deps) {
     rec.state = 'stopping';
     deps.onChange();
     const win = rec.win;
-    deps.log(`[addons] ${id} background stopping (${why})`);
+    deps.log(id, 'info', `background stopping (${why})`);
     if (rec.ready && !win.isDestroyed()) await deps.ask(win.webContents.mainFrame, 'close', 3500);
     if (!win.isDestroyed()) win.destroy();
     if (rec.state === 'stopping') forget(rec);
@@ -169,7 +169,7 @@ function createBackgroundFrames(deps) {
     if (rec.state === 'starting') {
       rec.state = 'running';
       rec.lastActivity = Date.now();
-      deps.log(`[addons] ${rec.id} background running`);
+      deps.log(rec.id, 'info', 'background running');
       deps.onChange();
     }
   }

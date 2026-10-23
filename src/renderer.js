@@ -300,6 +300,11 @@
       status.className = `addon-status ${shown}`;
       status.textContent = t(`addons.status.${shown}`);
       head.append(name, version, status);
+      const logButton = document.createElement('button');
+      logButton.className = 'addon-log-button';
+      logButton.textContent = t('addons.logButton');
+      logButton.addEventListener('click', () => openAddonLog(addon.id));
+      head.appendChild(logButton);
       if (addon.status !== 'shadowed') {
         const toggle = document.createElement('label');
         toggle.className = 'addon-toggle';
@@ -366,6 +371,82 @@
   });
   addonsEl.rescan.addEventListener('click', async () => renderAddons(await window.mdviewer.rescanAddons()));
   window.mdviewer.onMenuManageAddons(openAddons);
+
+  // The extensions log: one add-on's entries or all of them, kept up to
+  // date while open.
+  const logEl = {
+    overlay: document.getElementById('addons-log-overlay'),
+    filter: document.getElementById('addons-log-filter'),
+    list: document.getElementById('addons-log-list'),
+    close: document.getElementById('btn-close-addons-log'),
+  };
+  const LOG_ROWS = 1000;
+
+  function addLogRow(entry) {
+    const row = document.createElement('div');
+    row.className = `addon-log-row ${entry.level}`;
+    const when = document.createElement('span');
+    when.className = 'when';
+    when.textContent = `${entry.time.slice(11, 19)} `;
+    const who = document.createElement('span');
+    who.className = 'who';
+    who.textContent = logEl.filter.value ? '' : `${entry.id} `;
+    row.append(when, who, entry.message);
+    const atEnd = logEl.list.scrollTop + logEl.list.clientHeight >= logEl.list.scrollHeight - 4;
+    logEl.list.appendChild(row);
+    while (logEl.list.childElementCount > LOG_ROWS) logEl.list.firstElementChild.remove();
+    if (atEnd) logEl.list.scrollTop = logEl.list.scrollHeight;
+  }
+
+  async function showLogEntries() {
+    logEl.list.textContent = '';
+    const entries = await window.mdviewer.addonLogEntries(logEl.filter.value || null);
+    if (!entries.length) {
+      const empty = document.createElement('div');
+      empty.className = 'ext-list-empty';
+      empty.textContent = t('addons.log.empty');
+      logEl.list.appendChild(empty);
+    }
+    for (const entry of entries) addLogRow(entry);
+  }
+
+  async function openAddonLog(id = '') {
+    const list = await window.mdviewer.listAddons();
+    logEl.filter.textContent = '';
+    const all = document.createElement('option');
+    all.value = '';
+    all.textContent = t('addons.log.all');
+    logEl.filter.appendChild(all);
+    for (const addon of list) {
+      if (addon.status === 'shadowed') continue;
+      const option = document.createElement('option');
+      option.value = addon.id;
+      option.textContent = `${addon.name} (${addon.id})`;
+      logEl.filter.appendChild(option);
+    }
+    logEl.filter.value = id || '';
+    await showLogEntries();
+    closeAddons();
+    logEl.overlay.classList.remove('hidden');
+    logEl.close.focus();
+  }
+
+  logEl.filter.addEventListener('change', showLogEntries);
+  logEl.close.addEventListener('click', () => logEl.overlay.classList.add('hidden'));
+  logEl.overlay.addEventListener('click', (e) => {
+    if (e.target === logEl.overlay) logEl.overlay.classList.add('hidden');
+  });
+  logEl.overlay.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') logEl.overlay.classList.add('hidden');
+  });
+  window.mdviewer.onMenuAddonLog(() => openAddonLog());
+  window.mdviewer.onAddonLog((entry) => {
+    if (logEl.overlay.classList.contains('hidden')) return;
+    if (logEl.filter.value && logEl.filter.value !== entry.id) return;
+    const empty = logEl.list.querySelector('.ext-list-empty');
+    if (empty) empty.remove();
+    addLogRow(entry);
+  });
 
   // Consent before an add-on first runs (protocol 10.3): main asks, one at
   // a time; the answer goes back.

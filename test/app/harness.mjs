@@ -50,6 +50,7 @@ export async function launch({ files = {}, open = 'proj', settings = { language:
   delete env.ELECTRON_RUN_AS_NODE;
   // The test add-ons, and an install folder of its own.
   env.MDVIEWER_ADDONS_DIR = path.join(tmp, 'addons');
+  env.MDVIEWER_LOGS_DIR = path.join(tmp, 'logs');
   for (const [k, v] of Object.entries(moreEnv)) env[k] = String(v).replace('{tmp}', tmp);
   const args = [
     '.',

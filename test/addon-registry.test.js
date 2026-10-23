@@ -240,3 +240,26 @@ test('AddonStore: consent records', () => {
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('AddonLog: memory, files turned over at the limit, all-add-ons view', () => {
+  const { AddonLog } = require('../addons/log.js');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mdv-log-'));
+  try {
+    const log = new AddonLog(dir, { maxBytes: 200, memory: 3 });
+    const seen = [];
+    log.onAdd((e) => seen.push(e.message));
+    for (let i = 0; i < 12; i++) log.add('a', 'info', `message number ${i} with some padding`);
+    log.add('b', 'error', 'line one\nline two');
+    assert.deepEqual(log.entries('a').map((e) => e.message.split(' ')[2]), ['9', '10', '11']);
+    assert.equal(seen.length, 13);
+    const files = fs.readdirSync(dir).sort();
+    assert.deepEqual(files, ['a.log', 'a.log.1', 'a.log.2', 'b.log']);
+    assert.ok(fs.statSync(path.join(dir, 'a.log')).size <= 200);
+    assert.match(fs.readFileSync(path.join(dir, 'b.log'), 'utf8'), /ERROR line one\n  line two\n/);
+    assert.deepEqual(log.entries().map((e) => e.id).slice(-1), ['b']);
+    log.add('../evil', 'info', 'x');
+    assert.ok(!fs.readdirSync(path.dirname(dir)).includes('evil.log'));
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

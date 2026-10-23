@@ -14,7 +14,7 @@ const strip = (w) =>
     const w = await openWindowWith(app, 'a.md');
     check('no add-ons: no "+" in the tab strip', (await w.evaluate(`return !!document.querySelector('.doc-tab-new')`)) === false);
     const labels = await app.main(`return electron.Menu.getApplicationMenu().items.find((i) => i.label === '확장').submenu.items.map((i) => i.label)`);
-    check('no add-ons: Extensions has only its own items', labels.join('|') === '확장 관리...|add-on 다시 찾기', labels.join('|'));
+    check('no add-ons: Extensions has only its own items', labels.join('|') === '확장 관리...|add-on 다시 찾기|확장 로그', labels.join('|'));
   } finally {
     await app.stop();
   }
@@ -97,7 +97,8 @@ try {
   const seen = new Set((await targets(app.port)).map((t) => t.id));
   await w.evaluate(`document.querySelector('.frame-trouble.active button').click(); return 1`);
   const f5 = await connect(app.port, (t) => t.url === `mdviewer-addon://test/probe.html?tab=${t4.id}` && !seen.has(t.id), { type: 'iframe', quiet: true });
-  check('  Reload: the page again, the notice gone', (await f5.evaluate(`return !!window.probeReady`)) && !(await w.evaluate(`return !!document.querySelector('.frame-trouble')`)));
+  const reloaded = await waitFor(() => f5.evaluate(`return !!window.probeReady`), { timeout: 5000 }).catch(() => false);
+  check('  Reload: the page again, the notice gone', reloaded && !(await w.evaluate(`return !!document.querySelector('.frame-trouble')`)));
 
   check('no IPC refused from app pages', !/\[ipc\] refused .* from file:/.test(app.logText()));
 } finally {

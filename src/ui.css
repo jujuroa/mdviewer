@@ -2226,6 +2226,23 @@ body.tab-window .doc-tab { -webkit-app-region: no-drag; }
 
 .addons-box { width: min(560px, 92vw); }
 .addon-consent-body { padding: 10px 14px; font-size: 12px; overflow-y: auto; }
+.addons-log-box { width: min(900px, 94vw); height: 70vh; }
+.addons-log-filter { margin-left: auto; margin-right: 8px; font-size: 12px; }
+.addons-log-list {
+  flex: 1;
+  overflow: auto;
+  padding: 8px 14px;
+  font-family: "Consolas", "SFMono-Regular", monospace;
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+.addon-log-row { padding: 1px 0; }
+.addon-log-row .when { color: var(--text-dim); }
+.addon-log-row .who { color: var(--accent); }
+.addon-log-row.warn { color: #c78a00; }
+.addon-log-row.error { color: #e05252; }
+.addon-log-button { font-size: 11px; padding: 1px 6px; border: 1px solid var(--border); border-radius: 4px; background: none; color: var(--text); cursor: pointer; }
 .addon-consent-body .addon-name { font-size: 14px; }
 .addon-consent-body h4 { margin: 10px 0 4px; font-size: 12px; }
 .addon-consent-body ul { margin: 0; padding-left: 18px; }

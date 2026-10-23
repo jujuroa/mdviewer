@@ -25,6 +25,7 @@ const { AddonStore } = require('./addons/store.js');
 const { mergePolicy } = require('./addons/policy.js');
 const { createBackgroundFrames } = require('./addons/background.js');
 const { consentScope, needsConsent } = require('./addons/consent.js');
+const { AddonLog } = require('./addons/log.js');
 const { ApiRouter } = require('./addons/api-router.js');
 const { registerAppApi } = require('./addons/api/app.js');
 const { HOST: ADDON_HOST } = require('./addons/manifest.js');
@@ -1758,6 +1759,7 @@ function buildAppMenu() {
       submenu: [
         { label: t('menu.manageAddons'), click: (item, win) => sendToWindow(win, 'menu:manage-addons') },
         { label: t('menu.rescanAddons'), click: () => rescanAddons() },
+        { label: t('menu.addonLog'), click: (item, win) => sendToWindow(win, 'menu:addons-log') },
         ...addonTabMenuItems((choice, win) => openAddonTabAsked(docHostFor(win), choice.addonId, choice.tabId)),
       ],
     },
@@ -2495,6 +2497,8 @@ function refuseIpc(event, channel) {
   if (refusedIpc.has(key)) return;
   refusedIpc.add(key);
   console.warn(`[ipc] refused ${channel} from ${url}`);
+  const addonId = addonIdOf(url);
+  if (addonId) logAddon(addonId, 'warn', `refused ${channel} from ${url}`, { quiet: true });
 }
 
 const appIpc = {
@@ -2527,6 +2531,8 @@ function guardFrameNavigation(win) {
     if (subframeNavigationAllowed({ fromUrl, targetUrl: details.url, tabLevel }, APP_PAGES)) return;
     details.preventDefault();
     console.warn(`[nav] blocked a frame going from ${fromUrl || 'nothing'} to ${details.url}`);
+    const addonId = addonIdOf(fromUrl);
+    if (addonId) logAddon(addonId, 'warn', `blocked navigation to ${details.url}`, { quiet: true });
   });
 }
 
@@ -2820,6 +2826,7 @@ async function returnTabsToOwner(host) {
 // screen in them.
 function wireDocWindowEvents(win, host) {
   guardFrameNavigation(win);
+  forwardAddonConsole(win.webContents);
 
   // Mouse "back"/"forward" buttons (Windows: XButton1/XButton2) — the app
   // has no real browser-style navigation for webContents.goBack() to
@@ -3071,11 +3078,11 @@ function watchAddonFrames() {
 // doesn't is logged (a background frame is also stopped, see there).
 const ADDON_READY_TIMEOUT_MS = 10000;
 
-function expectReady(holder, what) {
+function expectReady(holder, addonId, what) {
   clearTimeout(holder.readyTimer);
   holder.ready = false;
   holder.readyTimer = setTimeout(() => {
-    if (!holder.ready) console.warn(`[addons] ${what} did not call ready() within ${ADDON_READY_TIMEOUT_MS / 1000} s`);
+    if (!holder.ready) logAddon(addonId, 'warn', `${what} did not call ready() within ${ADDON_READY_TIMEOUT_MS / 1000} s`);
   }, ADDON_READY_TIMEOUT_MS);
 }
 
@@ -3111,12 +3118,12 @@ ipcMain.on('addon:hello', (event, hint) => {
     restore = { reason: 'new', state: null };
   } else if (kind === 'pane') {
     tab.pane.frame = event.senderFrame;
-    expectReady(tab.pane, `${addonIdOf(tab.pane.url)} pane of tab ${tab.id}`);
+    expectReady(tab.pane, addonIdOf(tab.pane.url), `pane of tab ${tab.id}`);
     restore = tab.paneRestore || { reason: 'new', state: null };
     tab.paneRestore = null;
   } else {
     tab.frame = event.senderFrame;
-    expectReady(tab.addon, `${tab.addon.id} tab ${tab.id}`);
+    expectReady(tab.addon, tab.addon.id, `tab ${tab.id}`);
     restore = (tab.init && tab.init.restore) || { reason: 'new', state: null };
     tab.init = TAB_KINDS[tab.kind].reopen(tab);
   }
@@ -3222,7 +3229,9 @@ ipcMain.handle('addon:call', async (event, method, params) => {
   }
   if (caller.kind === 'background') backgroundFrames.callStarted(caller.rec);
   try {
-    return await addonApi.call(caller, method, params);
+    const answer = await addonApi.call(caller, method, params);
+    if (!answer.ok && answer.error.name !== 'UserCanceled') logAddon(caller.addonId, 'warn', `${method}: ${answer.error.name} — ${answer.error.message}`, { quiet: true });
+    return answer;
   } finally {
     if (caller.kind === 'background') backgroundFrames.callEnded(caller.rec);
   }
@@ -3557,12 +3566,14 @@ let backgroundFrames = null;
 // A background frame's window stays on its add-on's pages and opens no
 // windows.
 function guardBackgroundWindow(win) {
+  forwardAddonConsole(win.webContents);
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   win.webContents.on('will-navigate', (event) => {
     const here = originIn(win.webContents.getURL(), ADDON_SCHEME);
     if (here && originIn(event.url, ADDON_SCHEME) !== here) {
       event.preventDefault();
       console.warn(`[nav] blocked a background frame going from ${win.webContents.getURL()} to ${event.url}`);
+      logAddon(addonIdOf(here), 'warn', `blocked navigation to ${event.url}`, { quiet: true });
     }
   });
 }
@@ -3633,7 +3644,7 @@ function ensureConsent(entry, win = null) {
   }).then((agreed) => {
     consentAsking.delete(entry.id);
     if (agreed) addonStore.recordConsent(entry.id, consentScope(entry.manifest));
-    console.log(`[addons] ${entry.id} consent ${agreed ? 'given' : 'refused'}`);
+    logAddon(entry.id, 'info', `consent ${agreed ? 'given' : 'refused'}`);
     return agreed;
   });
   consentAsking.set(entry.id, asking);
@@ -3716,6 +3727,12 @@ function addonRegistryOptions() {
 }
 
 function startAddonRegistry() {
+  addonLog = new AddonLog(addonLogsDir());
+  addonLog.onAdd((entry) => {
+    for (const win of appWindows) {
+      if (!win.isDestroyed()) win.webContents.send('addons:log', entry);
+    }
+  });
   addonStore = new AddonStore(path.join(app.getPath('userData'), 'addons-state.json'));
   addonRegistry = new AddonRegistry(addonRegistryOptions());
   backgroundFrames = createBackgroundFrames({
@@ -3725,15 +3742,60 @@ function startAddonRegistry() {
     ask: (frame, kind, timeout) => askFrame(frame, null, kind, { timeout }),
     busy: (id) => addonHasOpenFrames(id),
     running: (id) => addonRegistry.running(id),
-    log: (message) => console.log(message),
+    log: (id, level, message) => logAddon(id, level, message),
     onChange: () => notifyAddonsChanged(),
     guard: guardBackgroundWindow,
   });
   for (const entry of addonRegistry.rescan()) {
     const why = entry.problems.map((p) => `${p.path || '-'} ${p.code}${p.detail ? ` (${p.detail})` : ''}`).join('; ');
     console.log(`[addons] ${entry.id} (${entry.source}) ${entry.status}${entry.enabled ? '' : ', off'}${why ? `: ${why}` : ''}`);
+    if (why) addonLog.add(entry.id, entry.status === 'ok' ? 'info' : 'warn', `${entry.status}: ${why}`);
   }
 }
+
+// ---- Add-ons: the extensions log (protocol 16, addons/log.js) ----
+// What happens to each add-on — starting and stopping, consent, what was
+// refused or blocked, its frames' console — in a file per add-on and on
+// the Extensions Log screen.
+
+let addonLog = null;
+
+// %LOCALAPPDATA%\mdviewer\logs\addons (17.7). Run from source,
+// MDVIEWER_LOGS_DIR can point elsewhere (the app checks use their own).
+function addonLogsDir() {
+  if (!app.isPackaged && process.env.MDVIEWER_LOGS_DIR) return process.env.MDVIEWER_LOGS_DIR;
+  return path.join(process.env.LOCALAPPDATA || app.getPath('appData'), 'mdviewer', 'logs', 'addons');
+}
+
+// quiet: already printed in another form.
+function logAddon(id, level, message, { quiet = false } = {}) {
+  if (!quiet) (level === 'warn' || level === 'error' ? console.warn : console.log)(`[addons] ${id} ${message}`);
+  if (addonLog && id) addonLog.add(id, level, message);
+}
+
+const CONSOLE_LEVELS = { 0: 'log', 1: 'log', 2: 'warn', 3: 'error', verbose: 'log', debug: 'log', info: 'log', warning: 'warn', error: 'error' };
+
+// A frame's console.* output, when the frame is an add-on page.
+function forwardAddonConsole(contents) {
+  contents.on('console-message', (event, legacyLevel, legacyMessage, legacyLine, legacySource) => {
+    const level = event.level !== undefined ? event.level : legacyLevel;
+    const message = event.message !== undefined ? event.message : legacyMessage;
+    const source = event.sourceId !== undefined ? event.sourceId : legacySource;
+    const line = event.lineNumber !== undefined ? event.lineNumber : legacyLine;
+    let url = '';
+    try {
+      url = (event.frame && event.frame.url) || source || '';
+    } catch (err) {
+      url = source || '';
+    }
+    const addonId = addonIdOf(url) || addonIdOf(source || '');
+    if (!addonId || !addonLog) return;
+    const where = source ? ` (${source.replace(/^[a-z-]+:\/\/[^/]+\//, '')}:${line})` : '';
+    addonLog.add(addonId, CONSOLE_LEVELS[level] || 'log', `${message}${where}`);
+  });
+}
+
+appIpc.handle('addons:log-entries', (event, id) => (addonLog ? addonLog.entries(typeof id === 'string' ? id : null) : []));
 
 // What the management screen shows of each add-on found.
 function addonListForPage() {
