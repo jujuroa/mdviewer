@@ -32,6 +32,8 @@ const { registerSettingsApi } = require('./addons/api/settings.js');
 const { registerDocumentsApi } = require('./addons/api/documents.js');
 const { registerUiApi } = require('./addons/api/ui.js');
 const { registerTabsApi, smallJson } = require('./addons/api/tabs.js');
+const { registerStorageApi } = require('./addons/api/storage.js');
+const { registerMessagingApi } = require('./addons/api/messaging.js');
 const { planEdit, needsConfirmation } = require('./addons/edits.js');
 const { diffForView } = require('./addons/diffview.js');
 const { ApiError } = require('./addons/api-router.js');
@@ -3717,6 +3719,65 @@ registerTabsApi(addonApi, {
   changed: (tab) => notifyTabsChanged(tab.host),
 });
 
+// storage/* (protocol 13.13): under addon-data, beside the logs.
+registerStorageApi(addonApi, { baseDir: addonDataDir, projectRoots: () => openProjectRoots() });
+
+// messaging/* (protocol 13.14): between one add-on's frames. A request
+// keeps the background frame from going idle while it answers.
+const MESSAGE_TIMEOUT_MS = 30000;
+const messageRequests = new Map(); // id -> { frame, settle }
+let nextMessageId = 1;
+
+function readyBackgroundFrame(addonId) {
+  const rec = backgroundFrames && backgroundFrames.get(addonId);
+  return rec && rec.ready && rec.win && !rec.win.isDestroyed() ? { rec, frame: rec.win.webContents.mainFrame } : null;
+}
+
+registerMessagingApi(addonApi, {
+  frames: (caller, to) => {
+    const out = [];
+    if (to !== 'tabs') {
+      const bg = readyBackgroundFrame(caller.addonId);
+      if (bg && caller.kind !== 'background') out.push(bg.frame);
+    }
+    if (to !== 'background') {
+      for (const tab of tabsById.values()) {
+        if (tab.kind === 'addon' && tab.addon.id === caller.addonId && tab.frame && tab.addon.ready && !(caller.kind === 'tab' && caller.tab === tab)) out.push(tab.frame);
+        if (tab.pane && tab.pane.frame && tab.pane.ready && addonIdOf(tab.pane.url) === caller.addonId && !(caller.kind === 'pane' && caller.tab === tab)) out.push(tab.pane.frame);
+      }
+    }
+    return out;
+  },
+  background: async (caller) => {
+    const entry = addonRegistry.running(caller.addonId);
+    const rec = entry && backgroundFrames.start(entry, 'messaging');
+    if (!rec) return null;
+    await pageWhenReady(() => readyBackgroundFrame(caller.addonId));
+    return readyBackgroundFrame(caller.addonId);
+  },
+  send: (frame, message, from) => sendToFrame(frame, 'addon:message', { message, from }),
+  request: ({ rec, frame }, message, from) =>
+    new Promise((resolve) => {
+      const id = nextMessageId++;
+      backgroundFrames.callStarted(rec);
+      const timer = setTimeout(() => settle({ ok: false, error: { name: 'RequestCancelled', message: 'The background frame did not answer in time' } }), MESSAGE_TIMEOUT_MS);
+      const settle = (answer) => {
+        clearTimeout(timer);
+        messageRequests.delete(id);
+        backgroundFrames.callEnded(rec);
+        resolve(answer);
+      };
+      messageRequests.set(id, { frame, settle });
+      sendToFrame(frame, 'addon:message-request', { id, message, from });
+    }),
+});
+
+ipcMain.on('addon:message-result', (event, id, answer) => {
+  const request = messageRequests.get(id);
+  if (!request || !sameFrame(event.senderFrame, request.frame)) return;
+  request.settle(answer && typeof answer === 'object' ? answer : { ok: true, result: null });
+});
+
 appIpc.on('addons:ui-progress-cancel', (event, token) => {
   const shown = progressShown.get(token);
   if (shown && shown.host.owner.webContents === event.sender) addonUi.cancelProgress(token);
@@ -4390,6 +4451,11 @@ let addonLog = null;
 
 // %LOCALAPPDATA%\mdviewer\logs\addons (17.7). Run from source,
 // MDVIEWER_LOGS_DIR can point elsewhere (the app checks use their own).
+function addonDataDir() {
+  if (!app.isPackaged && process.env.MDVIEWER_ADDON_DATA_DIR) return process.env.MDVIEWER_ADDON_DATA_DIR;
+  return path.join(process.env.LOCALAPPDATA || app.getPath('appData'), 'mdviewer', 'addon-data');
+}
+
 function addonLogsDir() {
   if (!app.isPackaged && process.env.MDVIEWER_LOGS_DIR) return process.env.MDVIEWER_LOGS_DIR;
   return path.join(process.env.LOCALAPPDATA || app.getPath('appData'), 'mdviewer', 'logs', 'addons');

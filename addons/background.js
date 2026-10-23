@@ -193,7 +193,7 @@ function createBackgroundFrames(deps) {
     return rec ? rec.state : null;
   }
 
-  return { start, stop, stopAll, byContents, markReady, callStarted, callEnded, stateOf, ids: () => [...frames.keys()] };
+  return { start, stop, stopAll, byContents, markReady, callStarted, callEnded, stateOf, get: record, ids: () => [...frames.keys()] };
 }
 
 module.exports = { createBackgroundFrames };

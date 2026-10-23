@@ -11,5 +11,18 @@ if (window.mdviewerAddon) {
     window.counted++;
     return { counted: window.counted, ctx };
   });
+  // messaging: what came in, and answers to requests.
+  window.received = [];
+  window.mdviewerAddon.messaging.onMessage(async (message, from) => {
+    window.received.push({ message, from });
+    if (!message || !message.op) return undefined;
+    if (message.op === 'add') return message.a + message.b;
+    if (message.op === 'fail') throw new Error('asked to fail');
+    if (message.op === 'echo-to-tabs') {
+      await window.mdviewerAddon.messaging.post({ to: 'tabs', message: { echo: message.text } });
+      return 'posted';
+    }
+    return undefined;
+  });
   if (localStorage.getItem('skipReady') !== '1') window.mdviewerAddon.ready();
 }

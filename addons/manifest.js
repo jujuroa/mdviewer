@@ -239,7 +239,7 @@ const HOST = {
   version: '2.0.0',
   api: 1,
   manifestVersions: [1],
-  capabilities: { app: 1, settings: 1, secrets: 1, context: 1, workspace: 1, documents: 1, editor: 1, edit: 1, ui: 1, tabs: 1 },
+  capabilities: { app: 1, settings: 1, secrets: 1, context: 1, workspace: 1, documents: 1, editor: 1, edit: 1, ui: 1, tabs: 1, storage: 1, messaging: 1 },
 };
 
 // Why the app cannot run a manifest that passed checkManifest, as problems
