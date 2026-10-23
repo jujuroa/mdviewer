@@ -4862,7 +4862,7 @@
   }
 
   // Questions from the tab host (see askTab in main.js).
-  window.mdviewer.onDocAsk(async ({ id, kind } = {}) => {
+  window.mdviewer.onDocAsk(async ({ id, kind, args } = {}) => {
     await appReady;
     let value = null;
     if (kind === 'close') {
@@ -4870,9 +4870,82 @@
     } else if (kind === 'snapshot') {
       value = docSnapshot();
       textSettled = true;
+    } else if (kind === 'text') {
+      value = docTextForApi();
+    } else if (kind === 'selection') {
+      value = await docSelectionForApi();
+    } else if (kind === 'save') {
+      value = await saveForApi();
+    } else if (kind === 'reload') {
+      value = await reloadForApi(args && args.ifDirty);
     }
     window.mdviewer.answerDoc(id, value);
   });
+
+  // ---- Answers for add-ons (main asks, see addons/api/documents.js) ----
+
+  // The editor's text while editing (unsaved changes included); otherwise
+  // main reads the file.
+  function docTextForApi() {
+    if (!state.currentFilePath || state.untitledDraft) return null;
+    const editing = !!state.editMode;
+    return { path: state.currentFilePath, editMode: editing, dirty: editing && !!state.sourceDirty, text: editing ? el.mdSourceEditor.value : null };
+  }
+
+  // The selection as offsets into the source: the editor's while editing
+  // with something selected, else the viewer's (mapped to source lines).
+  async function docSelectionForApi() {
+    if (!state.currentFilePath || state.untitledDraft) return null;
+    const ta = el.mdSourceEditor;
+    if (state.editMode && ta.selectionStart !== ta.selectionEnd) {
+      return { source: 'editor', text: ta.value, start: ta.selectionStart, end: ta.selectionEnd };
+    }
+    const blocks = viewerSelectionBlocks();
+    if (!blocks) return null;
+    const value = await sourceTextFor(state.currentFilePath);
+    if (value == null) return null;
+    const range = sourceRangeInBlocks(value, blocks);
+    if (!range) return null;
+    return { source: 'viewer', text: state.editMode ? value : null, start: range[0], end: range[1] };
+  }
+
+  // A save asked by an add-on (documents/save): never asks the user; a
+  // file changed on disk meanwhile is a conflict.
+  async function saveForApi() {
+    if (!state.editMode || !state.sourceDirty || state.untitledDraft || !state.currentFilePath) return { status: 'clean' };
+    const filePath = state.currentFilePath;
+    state.suppressNextWatch = true;
+    const result = await window.mdviewer.writeFile(filePath, el.mdSourceEditor.value, state.diskVersion);
+    if (result.conflict) {
+      state.suppressNextWatch = false;
+      el.editStatus.textContent = t('edit.savePostponed');
+      return { status: 'conflict' };
+    }
+    if (!result.ok) {
+      state.suppressNextWatch = false;
+      return { status: 'failed' };
+    }
+    state.diskVersion = result.version;
+    state.sourceDirty = false;
+    el.editStatus.textContent = t('edit.saved');
+    markTreeRowFresh(filePath);
+    return { status: 'saved', version: result.version };
+  }
+
+  // A reload asked by an add-on (documents/reload). ifDirty: 'skip' leaves
+  // unsaved edits alone, 'ask' asks the user first.
+  async function reloadForApi(ifDirty) {
+    if (!state.currentFilePath || state.untitledDraft) return { status: 'skipped' };
+    if (state.editMode && state.sourceDirty) {
+      if (ifDirty !== 'ask') return { status: 'skipped' };
+      if (!(await window.mdviewer.confirmDiscard())) return { status: 'canceled' };
+    }
+    const readResult = await window.mdviewer.readFile(state.currentFilePath);
+    if (!readResult.ok) return { status: 'failed' };
+    if (state.editMode) await takeDiskText(readResult);
+    else await loadAndRenderByPath(state.currentFilePath);
+    return { status: 'reloaded', version: readResult.version };
+  }
 
   window.mdviewer.onDocInit((init) => initDocument(init || {}));
 

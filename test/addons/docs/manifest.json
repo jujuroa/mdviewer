@@ -1,0 +1,28 @@
+{
+  "manifestVersion": 1,
+  "id": "docs",
+  "name": "Docs",
+  "description": "문서 API 시험용 add-on (test/addons/README.md)",
+  "version": "0.0.1",
+  "engines": {
+    "mdviewer": ">=2.0.0 <3.0.0",
+    "api": 1
+  },
+  "permissions": [
+    "documents.read",
+    "documents.write"
+  ],
+  "experimentalApi": [
+    "host.info",
+    "documents.sync"
+  ],
+  "contributes": {
+    "tabs": [
+      {
+        "id": "docs.panel",
+        "title": "Panel",
+        "entry": "panel.html"
+      }
+    ]
+  }
+}

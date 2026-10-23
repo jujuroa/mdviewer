@@ -29,6 +29,7 @@ const { AddonLog } = require('./addons/log.js');
 const { evaluateWhen } = require('./addons/when.js');
 const { AddonSettings, AddonSecrets } = require('./addons/settings.js');
 const { registerSettingsApi } = require('./addons/api/settings.js');
+const { registerDocumentsApi } = require('./addons/api/documents.js');
 const { ApiRouter } = require('./addons/api-router.js');
 const { registerAppApi } = require('./addons/api/app.js');
 const { HOST: ADDON_HOST } = require('./addons/manifest.js');
@@ -2705,7 +2706,7 @@ function askTab(tab, kind, options) {
 
 // The same question to any page the tab host knows (a tab's, or the pane
 // in a document tab).
-function askFrame(frame, owner, kind, { timeout = 0 } = {}) {
+function askFrame(frame, owner, kind, { timeout = 0, args } = {}) {
   if (!frame) return Promise.resolve(null);
   return new Promise((resolve) => {
     const id = nextTabAskId++;
@@ -2717,7 +2718,7 @@ function askFrame(frame, owner, kind, { timeout = 0 } = {}) {
     };
     tabAsks.set(id, { frame, owner, settle });
     if (timeout) timer = setTimeout(() => settle(null), timeout);
-    sendToFrame(frame, 'tab:ask', { id, kind });
+    sendToFrame(frame, 'tab:ask', args === undefined ? { id, kind } : { id, kind, args });
   });
 }
 
@@ -3450,6 +3451,47 @@ addonApi.register('app/info', {
   }),
 });
 
+// The program window a caller's calls are about: its tab's (a tab window's
+// own), else the one the user was last in.
+function callerWindow(caller) {
+  const tab = caller.tab;
+  if (tab && tab.host && !tab.host.win.isDestroyed()) return tab.host.win;
+  return targetWindow();
+}
+
+// Every file under a project root that the explorer would show (hidden
+// names left out), at most LIST_FILES_MAX. extensions: lower case, without
+// the dot, or null for all.
+const LIST_FILES_MAX = 20000;
+function listProjectFiles(root, extensions) {
+  const out = [];
+  const isUserHidden = hiddenNameMatcher();
+  const walk = (dir) => {
+    let entries;
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch (err) {
+      return;
+    }
+    for (const e of entries) {
+      if (out.length >= LIST_FILES_MAX) return;
+      if (isHidden(e.name) || isUserHidden(e.name)) continue;
+      const full = path.join(dir, e.name);
+      if (e.isDirectory()) walk(full);
+      else if (e.isFile() && (!extensions || extensions.includes(path.extname(e.name).slice(1).toLowerCase()))) {
+        try {
+          const st = fs.statSync(full);
+          out.push({ path: full, size: st.size, mtimeMs: st.mtimeMs });
+        } catch (err) {
+          /* gone meanwhile */
+        }
+      }
+    }
+  };
+  walk(root);
+  return out;
+}
+
 // The experimental APIs open to an add-on: those its manifest names, if it
 // was loaded with --addon-dev or policy allows it (protocol 5.4).
 function openExperimentalApi(entry) {
@@ -4012,6 +4054,27 @@ function startAddonRegistry() {
     decrypt: (buffer) => safeStorage.decryptString(buffer),
   });
   registerSettingsApi(addonApi, { settings: addonSettings, secrets: addonSecrets, setContext: setAddonContext });
+  registerDocumentsApi(addonApi, {
+    roots: () => openProjectRoots(),
+    projectsOf: (caller) => {
+      const entry = windowProjects.get(callerWindow(caller).webContents.id) || { roots: [], active: null };
+      return (entry.roots || []).map((root) => ({ root, name: path.basename(root), active: samePath(root, entry.active) }));
+    },
+    docTabFor: (filePath) => [...tabsById.values()].find((tab) => tab.kind === 'doc' && samePath(tab.doc.path, filePath)) || null,
+    dirtyDocTabs: () => [...tabsById.values()].filter((tab) => tab.kind === 'doc' && tab.doc.dirty && tab.doc.path),
+    activeDocTab: (caller) => {
+      const tab = activeTabOf(hostOf(callerWindow(caller)));
+      return tab && tab.kind === 'doc' ? tab : null;
+    },
+    ask: (tab, kind, args) => askTab(tab, kind, { timeout: kind === 'reload' ? 0 : TAB_SNAPSHOT_TIMEOUT_MS, args }),
+    readFile: (filePath) => fs.readFileSync(filePath, 'utf-8'),
+    version: contentVersion,
+    listFiles: listProjectFiles,
+    openDocument: (caller, filePath, line) => {
+      const host = docHostFor(callerWindow(caller));
+      if (host) openDocumentInTab(host, filePath, { target: line === undefined ? null : { line: line + 1 } });
+    },
+  });
   addonLog.onAdd((entry) => {
     for (const win of appWindows) {
       if (!win.isDestroyed()) win.webContents.send('addons:log', entry);
