@@ -959,6 +959,98 @@
     });
   }
 
+  // Renames an entry in place (F2 or the Rename menu item): the row's label
+  // turns into a text box holding the current name, with the part before
+  // the extension selected. Enter renames, Escape or clicking away cancels.
+  // Project rows aren't renamed here (see the tree context menu in main.js).
+  function beginRenameTreeEntry(row) {
+    if (!row || !row.dataset.path) return;
+    if (row.parentElement.classList.contains('project-node')) return;
+    if (row.classList.contains('tree-row-editing')) return;
+    const label = row.querySelector(':scope > .tree-label');
+    if (!label) return;
+
+    const stale = el.tree.querySelector('.tree-row-editing');
+    if (stale) {
+      const staleInput = stale.querySelector('.tree-new-input');
+      if (staleInput) staleInput.blur();
+    }
+
+    const sourcePath = row.dataset.path;
+    const oldName = pathBasename(sourcePath);
+    const isDir = row.classList.contains('dir');
+
+    const input = document.createElement('input');
+    input.className = 'tree-new-input';
+    input.type = 'text';
+    input.spellcheck = false;
+    input.value = oldName;
+    // The row's own click/dblclick would open or toggle it, and dragging the
+    // row would start a move; neither should happen from inside the box.
+    for (const type of ['click', 'dblclick', 'mousedown', 'contextmenu']) {
+      input.addEventListener(type, (e) => e.stopPropagation());
+    }
+    const wasDraggable = row.draggable;
+    row.draggable = false;
+    row.classList.add('tree-row-editing');
+    label.style.display = 'none';
+    label.after(input);
+    input.focus();
+    const dot = isDir ? -1 : oldName.lastIndexOf('.');
+    input.setSelectionRange(0, dot > 0 ? dot : oldName.length);
+
+    let settled = false;
+    let submitting = false;
+    const finish = () => {
+      settled = true;
+      input.remove();
+      label.style.display = '';
+      row.classList.remove('tree-row-editing');
+      row.draggable = wasDraggable;
+    };
+
+    input.addEventListener('keydown', async (e) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        finish();
+        el.tree.focus({ preventScroll: true });
+        return;
+      }
+      if (e.key !== 'Enter') return;
+      e.preventDefault();
+      if (settled || submitting) return;
+      const newName = input.value.trim();
+      if (!newName || newName === oldName) {
+        finish();
+        el.tree.focus({ preventScroll: true });
+        return;
+      }
+
+      submitting = true;
+      input.classList.remove('tree-new-input-error');
+      const result = await window.mdviewer.renameEntry(sourcePath, newName);
+      submitting = false;
+
+      if (!result.ok) {
+        input.classList.add('tree-new-input-error');
+        input.title = result.error || '';
+        setToolbarStatus(t('rename.failed', { name: oldName, error: result.error || '' }));
+        return;
+      }
+      finish();
+      if (result.unchanged) return;
+      await refreshTreeDir(dirnameOf(sourcePath));
+      await revealPathInTree(result.path, { select: true });
+      setToolbarStatus(t('rename.renamed', { name: oldName, newName: pathBasename(result.path) }));
+    });
+
+    input.addEventListener('blur', () => {
+      setTimeout(() => {
+        if (!settled && !submitting) finish();
+      }, 100);
+    });
+  }
+
   let selectedRow = null;
   function selectTreeRow(row) {
     if (selectedRow) selectedRow.classList.remove('selected');
@@ -1006,6 +1098,12 @@
     // Text boxes inside the tree (a project's search box, a new-entry name)
     // need their arrows, Enter and Space for themselves.
     if (e.target instanceof HTMLInputElement) return;
+    if (e.key === 'F2') {
+      if (!selectedRow) return;
+      e.preventDefault();
+      beginRenameTreeEntry(selectedRow);
+      return;
+    }
     if (!['ArrowDown', 'ArrowUp', 'ArrowRight', 'ArrowLeft', 'Enter', ' '].includes(e.key)) return;
     const rows = getVisibleTreeRows();
     if (!rows.length) return;
@@ -2069,6 +2167,15 @@
     beginCreateTreeEntry({ targetDir, kind });
   });
 
+  window.mdviewer.onTreeRename(async ({ itemPath }) => {
+    // From a document tab the file's row may sit in a collapsed folder.
+    if (!findTreeRow(itemPath)) await revealPathInTree(itemPath);
+    const row = findTreeRow(itemPath);
+    if (!row) return;
+    selectTreeRow(row);
+    beginRenameTreeEntry(row);
+  });
+
   window.mdviewer.onTreeRefreshDir(({ targetDir }) => {
     refreshTreeDir(targetDir);
   });
@@ -2296,7 +2403,8 @@
   //
   // A row drag carries its own data type rather than 'Files', so none of the
   // external-drop handlers above react to it (no copy hint, no viewer
-  // overlay); these handlers only react to it.
+  // overlay); these handlers only react to it. Holding Ctrl while dropping
+  // copies the entry instead, as in a native file explorer.
 
   const TREE_MOVE_TYPE = 'application/x-mdviewer-tree-path';
   const TREE_MOVE_EXPAND_DELAY_MS = 700;
@@ -2307,7 +2415,7 @@
   function beginTreeMoveDrag(e, row) {
     treeMoveSource = row.dataset.path;
     e.dataTransfer.setData(TREE_MOVE_TYPE, treeMoveSource);
-    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.effectAllowed = 'copyMove';
     row.classList.add('tree-row-dragging');
   }
 
@@ -2322,6 +2430,15 @@
     const targetDir = treeDropTargetDir(e);
     if (!targetDir || !treeMoveSource) return null;
     if (normalizePath(targetDir) === normalizePath(dirnameOf(treeMoveSource))) return null;
+    if (isPathUnder(targetDir, treeMoveSource)) return null;
+    return targetDir;
+  }
+
+  // Where a Ctrl-drag copy would land. Unlike a move, its own folder is a
+  // fine target: the copy gets a numbered name there (see copyEntriesInto).
+  function treeCopyTargetDir(e) {
+    const targetDir = treeDropTargetDir(e);
+    if (!targetDir || !treeMoveSource) return null;
     if (isPathUnder(targetDir, treeMoveSource)) return null;
     return targetDir;
   }
@@ -2366,8 +2483,9 @@
     e.preventDefault();
     const row = e.target.closest('.tree-row');
     scheduleTreeMoveExpand(row);
-    const targetDir = treeMoveTargetDir(e);
-    e.dataTransfer.dropEffect = targetDir ? 'move' : 'none';
+    const copy = e.ctrlKey;
+    const targetDir = copy ? treeCopyTargetDir(e) : treeMoveTargetDir(e);
+    e.dataTransfer.dropEffect = targetDir ? (copy ? 'copy' : 'move') : 'none';
     setTreeDropRow(targetDir ? findTreeRow(targetDir) : null);
   });
 
@@ -2386,10 +2504,29 @@
     e.preventDefault();
     e.stopPropagation();
     const sourcePath = treeMoveSource;
-    const targetDir = treeMoveTargetDir(e);
+    const copy = e.ctrlKey;
+    const targetDir = copy ? treeCopyTargetDir(e) : treeMoveTargetDir(e);
     endTreeMoveDrag();
-    if (targetDir) await moveTreeEntry(sourcePath, targetDir);
+    if (!targetDir) return;
+    if (copy) await copyTreeEntry(sourcePath, targetDir);
+    else await moveTreeEntry(sourcePath, targetDir);
   });
+
+  async function copyTreeEntry(sourcePath, targetDir) {
+    const name = pathBasename(sourcePath);
+    const dirLabel = pathBasename(targetDir) || targetDir;
+    const result = await window.mdviewer.copyEntries(targetDir, [sourcePath]);
+    if (!result.ok || !result.copied.length) {
+      const skip = result.ok ? result.skipped[0] : null;
+      const key = skip && skip.reason === 'intoItself' ? 'copy.intoItself' : 'copy.failed';
+      const error = result.ok ? (skip && skip.error) || '' : result.error;
+      setToolbarStatus(t(key, { name, error }));
+      return;
+    }
+    await refreshTreeDir(targetDir);
+    await revealPathInTree(result.copied[0].path, { select: true });
+    setToolbarStatus(t('copy.copied', { name: result.copied[0].name, dir: dirLabel }));
+  }
 
   // The documents open in tabs follow their files on their own: main.js
   // tells every tab about the move (see fs:move-entry), and a tab with

@@ -3309,6 +3309,56 @@ ipcMain.handle('fs:move-entry', async (event, sourcePath, targetDir) => {
   return result;
 });
 
+// Renames one tree entry in place (F2 / the tree's Rename menu item). As
+// with a move, an existing name is refused rather than overwritten — except
+// when only the letter case changes, which on Windows and macOS names the
+// same entry.
+async function renameEntryTo(sourcePath, newName) {
+  const validation = validateNewEntryName(newName);
+  if (!validation.ok) return { ok: false, code: 'invalid', error: validation.error };
+  try {
+    await fs.promises.stat(sourcePath);
+  } catch (err) {
+    return { ok: false, code: 'missing', error: err.message };
+  }
+  const dest = path.join(path.dirname(sourcePath), validation.name);
+  if (dest === sourcePath) return { ok: true, path: sourcePath, unchanged: true };
+  if (samePathKey(dest) !== samePathKey(sourcePath) && fs.existsSync(dest)) {
+    return { ok: false, code: 'exists', error: t('tree.newAlreadyExists') };
+  }
+  try {
+    await fs.promises.rename(sourcePath, dest);
+  } catch (err) {
+    return { ok: false, code: 'error', error: err.message };
+  }
+  return { ok: true, path: dest };
+}
+
+ipcMain.handle('fs:rename-entry', async (event, sourcePath, newName) => {
+  // Same watcher dance as fs:move-entry: a watched folder can't be renamed
+  // on Windows, and the tabs need to learn the new path either way.
+  for (const id of [...fileWatchers.keys()]) stopWatching(id);
+  let result;
+  try {
+    result = await renameEntryTo(sourcePath, newName);
+  } catch (err) {
+    result = { ok: false, code: 'error', error: err.message };
+  }
+  const to = result.ok && !result.unchanged ? result.path : sourcePath;
+  sendToAllTabs('doc:path-moved', { from: sourcePath, to });
+  return result;
+});
+
+// F2 in a document tab (see src/doc.js): the explorer of the window the tab
+// belongs to starts renaming that document's file.
+ipcMain.handle('tree:request-rename', (event, itemPath) => {
+  const owner = ownerOf(windowFor(event.sender));
+  if (!owner || owner.isDestroyed() || !itemPath) return;
+  if (!owner.isFocused()) owner.focus();
+  owner.webContents.focus();
+  owner.webContents.send('tree:rename', { itemPath });
+});
+
 ipcMain.handle('fs:stat-path', async (event, targetPath) => {
   try {
     const stat = await fs.promises.stat(targetPath);
@@ -3609,6 +3659,23 @@ ipcMain.handle('tree:show-context-menu', (event, itemPath, rootPath, options = {
       click: () => win.webContents.send('tree:create-new', { targetDir, kind: 'folder' }),
     },
     { type: 'separator' },
+  ];
+  // A project root's name is the project itself (recent list, saved
+  // state), so it isn't renamed from here.
+  if (!(options && options.isProjectRoot)) {
+    items.push(
+      {
+        label: t('context.rename'),
+        // Shown only; the tree's own keydown handler does the work, so F2
+        // acts on the tree's selection rather than on the whole window.
+        accelerator: 'F2',
+        registerAccelerator: false,
+        click: () => win.webContents.send('tree:rename', { itemPath }),
+      },
+      { type: 'separator' }
+    );
+  }
+  items.push(
     {
       label: t('context.refresh'),
       click: () => win.webContents.send('tree:refresh-dir', { targetDir }),
@@ -3629,8 +3696,8 @@ ipcMain.handle('tree:show-context-menu', (event, itemPath, rootPath, options = {
     {
       label: t('context.copyRelativePath'),
       click: () => clipboard.writeText(projectRelativePath(itemPath, rootPath)),
-    },
-  ];
+    }
+  );
   if (!isDir && /\.(md|markdown)$/i.test(itemPath)) {
     items.push({ type: 'separator' });
     items.push({

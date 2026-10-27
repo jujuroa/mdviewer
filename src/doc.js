@@ -702,6 +702,18 @@
   }
 
   document.addEventListener('keydown', onFullscreenEscape);
+
+  // Opening a document from the explorer hands the keyboard to it, so F2
+  // pressed right after clicking a file lands here; it renames the file
+  // being viewed, in the explorer, as F2 there would. Text boxes and the
+  // source editor keep the key.
+  document.addEventListener('keydown', (e) => {
+    if (e.key !== 'F2' || e.defaultPrevented || !state.currentFilePath) return;
+    const target = e.target;
+    if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target.isContentEditable) return;
+    e.preventDefault();
+    window.mdviewer.requestTreeRename(state.currentFilePath);
+  });
   el.btnFullscreen.addEventListener('click', toggleDocFullscreen);
   el.btnNavBack.addEventListener('click', () => navigateBack());
   el.btnNavForward.addEventListener('click', () => navigateForward());

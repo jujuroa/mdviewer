@@ -32,6 +32,8 @@ if (PAGE === 'index.html' || TAB_ID) contextBridge.exposeInMainWorld('mdviewer',
   createFile: (dirPath, name) => ipcRenderer.invoke('fs:create-file', dirPath, name),
   copyEntries: (targetDir, sourcePaths) => ipcRenderer.invoke('fs:copy-entries', targetDir, sourcePaths),
   moveEntry: (sourcePath, targetDir) => ipcRenderer.invoke('fs:move-entry', sourcePath, targetDir),
+  renameEntry: (sourcePath, newName) => ipcRenderer.invoke('fs:rename-entry', sourcePath, newName),
+  requestTreeRename: (itemPath) => ipcRenderer.invoke('tree:request-rename', itemPath),
   statPath: (targetPath) => ipcRenderer.invoke('fs:stat-path', targetPath),
   resolveLinkPaths: (candidates, baseDirs, rootPath) =>
     ipcRenderer.invoke('fs:resolve-link-paths', candidates, baseDirs, rootPath),
@@ -173,6 +175,11 @@ if (PAGE === 'index.html' || TAB_ID) contextBridge.exposeInMainWorld('mdviewer',
     const listener = (event, payload) => callback(payload);
     ipcRenderer.on('tree:create-new', listener);
     return () => ipcRenderer.removeListener('tree:create-new', listener);
+  },
+  onTreeRename: (callback) => {
+    const listener = (event, payload) => callback(payload);
+    ipcRenderer.on('tree:rename', listener);
+    return () => ipcRenderer.removeListener('tree:rename', listener);
   },
   onTreeRefreshDir: (callback) => {
     const listener = (event, payload) => callback(payload);
