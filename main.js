@@ -1758,6 +1758,44 @@ function collectAccelerators(items, into = new Set()) {
   return into;
 }
 
+// An add-on's icon (manifest icon) read from its folder: a nativeImage of
+// `size` px for menus, or null (none, SVG — nativeImage cannot read it —
+// or unreadable). Kept while the file is unchanged.
+const addonIconCache = new Map(); // "<file>|<size>" -> { mtimeMs, image }
+function addonIconImage(entry, size) {
+  const icon = entry.manifest && entry.manifest.icon;
+  if (!icon || /.svg$/i.test(icon)) return null;
+  const file = path.join(entry.dir, icon);
+  let mtimeMs;
+  try {
+    mtimeMs = fs.statSync(file).mtimeMs;
+  } catch (err) {
+    return null;
+  }
+  const key = `${file}|${size}`;
+  const cached = addonIconCache.get(key);
+  if (cached && cached.mtimeMs === mtimeMs) return cached.image;
+  const image = nativeImage.createFromPath(file);
+  const result = image.isEmpty() ? null : image.resize({ width: size, height: size, quality: 'best' });
+  addonIconCache.set(key, { mtimeMs, image: result });
+  return result;
+}
+
+// The same for a page (the Extensions screen): a data: URL, SVG as it is.
+function addonIconDataUrl(entry) {
+  const icon = entry.manifest && entry.manifest.icon;
+  if (!icon) return null;
+  if (/.svg$/i.test(icon)) {
+    try {
+      return `data:image/svg+xml;base64,${fs.readFileSync(path.join(entry.dir, icon)).toString('base64')}`;
+    } catch (err) {
+      return null;
+    }
+  }
+  const image = addonIconImage(entry, 32);
+  return image ? image.toDataURL() : null;
+}
+
 // One submenu per running add-on in the Extensions menu, named after it:
 // "Open Window" (its main view) first, its other tabs by title, then its
 // menubar/addons items.
@@ -1775,7 +1813,8 @@ function addonExtensionSubmenus(onOpenTab) {
     const commands = addonMenuItems('menubar/addons', {}, { addonId: entry.id });
     while (commands.length && commands[0].type === 'separator') commands.shift();
     const submenu = [...opens, ...(opens.length && commands.length ? [{ type: 'separator' }] : []), ...commands];
-    if (submenu.length) out.push({ label: entry.manifest.name, submenu });
+    const icon = addonIconImage(entry, 16);
+    if (submenu.length) out.push({ label: entry.manifest.name, submenu, ...(icon ? { icon } : {}) });
   }
   return out.length ? [{ type: 'separator' }, ...out] : [];
 }
@@ -2449,7 +2488,7 @@ const TAB_KINDS = {
     view: (tab) => {
       const found = addonTabContribution(tab.addon.id, tab.addon.tabId);
       const title = tab.addon.title || (found ? found.contribution.title : tab.addon.tabId);
-      const iconPath = tab.addon.icon || (found && found.contribution.icon);
+      const iconPath = tab.addon.icon || (found && (found.contribution.icon || found.entry.manifest.icon));
       const icon = iconPath ? { url: `${ADDON_SCHEME}://${tab.addon.id}/${iconPath}` } : { badge: 'ext' };
       return { title, tooltip: found ? `${found.entry.manifest.name}: ${title}` : title, icon, dirty: !!tab.addon.dirty };
     },
@@ -4702,6 +4741,8 @@ function addonListForPage() {
     version: (e.manifest && e.manifest.version) || '',
     description: (e.manifest && e.manifest.description) || '',
     publisher: (e.manifest && e.manifest.publisher) || '',
+    // Its manifest icon as a data: URL, or null.
+    icon: e.manifest ? addonIconDataUrl(e) : null,
     source: e.source,
     dir: e.dir,
     status: e.status,

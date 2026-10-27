@@ -291,6 +291,13 @@
 
       const head = document.createElement('div');
       head.className = 'addon-head';
+      if (addon.icon) {
+        const icon = document.createElement('img');
+        icon.className = 'addon-icon';
+        icon.src = addon.icon;
+        icon.alt = '';
+        head.appendChild(icon);
+      }
       const name = document.createElement('span');
       name.className = 'addon-name';
       name.textContent = addon.name;

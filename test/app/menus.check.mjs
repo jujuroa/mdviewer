@@ -28,6 +28,9 @@ try {
   await app.clickMenu('확장', 'Background', 'Count');
   const sub = await app.main(`const i = electron.Menu.getApplicationMenu().items.find((m) => m.label === '확장').submenu.items.find((m) => m.label === 'Background'); return { items: i.submenu.items.filter((x) => x.visible).map((x) => x.type === 'separator' ? '-' : x.label), icon: !!i.icon && !i.icon.isEmpty(), size: i.icon ? i.icon.getSize() : null }`);
   check('Extensions: one submenu per add-on, "창 열기" (main view) first, then its commands', sub.items[0] === '창 열기' && sub.items[1] === '-' && sub.items.includes('Count'), JSON.stringify(sub.items));
+  check('  with the manifest icon, 16 px', sub.icon && sub.size && sub.size.width === 16, JSON.stringify(sub));
+  const listed = (await w.evaluate(`return await window.mdviewer.listAddons()`)).find((x) => x.id === 'bg');
+  check('Extensions screen gets the icon as a data URL', typeof listed.icon === 'string' && listed.icon.startsWith('data:image/png'), String(listed.icon).slice(0, 30));
   check('  and runs the command', (await waitFor(async () => ((await counted()) === 1 ? 1 : null), { timeout: 10000 }).catch(() => 0)) === 1);
 
   // explorer/item with when resourceExt == 'md'
@@ -46,6 +49,7 @@ try {
   await w.evaluate(`await window.mdviewer.showTabContextMenu(${docTab}); return 1`);
   check('tab/context: on a document tab', (await lastPopup()).includes('Count'));
   const view = await openAddonTab(app, w, 'Background: View');
+  check('its tab without an icon of its own shows the add-on icon', (await w.evaluate(`const img = document.querySelector('.doc-tab[data-tab-id="${view.id}"] .doc-tab-icon img'); return img ? img.getAttribute('src') : null`)) === 'mdviewer-addon://bg/icon.png');
   await w.evaluate(`await window.mdviewer.showTabContextMenu(${view.id}); return 1`);
   check('  not while an add-on tab is active', !(await lastPopup()).includes('Count'), JSON.stringify(await lastPopup()));
 

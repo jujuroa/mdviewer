@@ -48,6 +48,7 @@ hello/
   "name": "%name%",
   "version": "1.0.0",
   "engines": { "mdviewer": ">=2.0.0 <3.0.0", "api": 1 },
+  "icon": "icon.png",
   "background": { "entry": "background.html", "idleTimeoutSec": 30 },
   "contributes": {
     "tabs": [{ "id": "hello.view", "title": "%tab.view%", "entry": "view.html" }],
@@ -59,6 +60,7 @@ hello/
 
 - `id`는 소문자로 시작하는 2~40자(`a-z`, `0-9`, `-`)이고 폴더 이름과 같아야 한다. 명령·탭 id는 `<id>.`로 시작한다.
 - **탭(대표 view)이 하나 이상 있어야 한다.** 확장 메뉴에는 add-on마다 하위 메뉴가 생기고 첫 항목 "창 열기"가 대표 view(`"main": true`인 탭, 없으면 첫 탭)를 연다. 그 아래 `menubar/addons` 항목이 온다.
+- `icon`(선택)은 add-on 폴더 안의 `.png`·`.jpg`·`.ico`·`.svg`. 확장 메뉴(16px), 관리 화면, 자기 아이콘이 없는 탭에 쓰인다. (위 예의 `icon`은 설명용이며 `hello/`에는 아이콘 파일이 없다.)
 - `engines.capabilities`(예: `{ "edit": 1 }`)를 적으면 그 영역 버전이 없는 앱에서는 "호환되지 않음"이 된다.
 - 문서를 읽으려면 `permissions`에 `documents.read`, 고치려면 `documents.write`를 적는다. 권한 없는 호출은 `PermissionDenied`.
 - 기여 지점은 `commands`, `menus`(`menubar/addons`, `editor/context`, `explorer/item`, `tab/context`, `viewer/selection`), `keybindings`, `tabs`, `settings`, `secrets`다. 메뉴 항목의 `when`으로 보일 때를 정한다(`editMode`, `activeDocument`, `resourceExt == 'md'`, `hasSelection` 등).

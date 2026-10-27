@@ -9,7 +9,7 @@ const { parseWhen } = require('./when.js');
 
 const ID_PATTERN = /^[a-z][a-z0-9-]{1,39}$/;
 const KNOWN_FIELDS = new Set([
-  'manifestVersion', 'id', 'name', 'description', 'version', 'publisher', 'license', 'homepage',
+  'manifestVersion', 'id', 'name', 'description', 'version', 'publisher', 'license', 'homepage', 'icon',
   'engines', 'background', 'permissions', 'network', 'executables', 'activation', 'experimentalApi', 'contributes',
 ]);
 const PERMISSIONS = new Set(['documents.read', 'documents.write', 'terminal']);
@@ -24,6 +24,9 @@ const isObject = (v) => !!v && typeof v === 'object' && !Array.isArray(v);
 const isText = (v) => typeof v === 'string' && v.trim() !== '';
 // A path inside the add-on folder, written with forward slashes.
 const isEntry = (v) => isText(v) && !/^[/\\]|^[a-z]:|(^|[/\\])\.\.([/\\]|$)/i.test(v);
+
+// The add-on's icon (Extensions menu, Extensions screen, its tabs).
+const ICON_TYPES = /.(png|jpe?g|ico|svg)$/i;
 
 // Problems with `manifest` for an add-on found in a folder named
 // `folderName`: { errors, warnings }. Any error keeps the add-on from
@@ -54,6 +57,10 @@ function checkManifest(manifest, folderName) {
   else if (!isText(manifest.name)) err('name', 'notText');
   for (const key of ['description', 'publisher', 'license', 'homepage']) {
     if (manifest[key] !== undefined && typeof manifest[key] !== 'string') err(key, 'notText');
+  }
+  if (manifest.icon !== undefined) {
+    if (!isEntry(manifest.icon)) err('icon', 'badEntry', String(manifest.icon));
+    else if (!ICON_TYPES.test(manifest.icon)) err('icon', 'badIcon', manifest.icon);
   }
 
   if (manifest.version === undefined) err('version', 'required');

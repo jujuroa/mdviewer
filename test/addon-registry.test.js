@@ -327,3 +327,11 @@ test('main view: every add-on has one, "main": true picks it, else the first tab
   assert.ok(codes(checkManifest(good({ contributes: { tabs: [{ id: 'sample.a', title: 'A', entry: 'a.html', main: 'yes' }] } }), 'sample')).includes('contributes.tabs[0].main:badValue'));
   assert.equal(mainTabOf({}), null);
 });
+
+test('icon: a picture file inside the add-on folder', () => {
+  assert.deepEqual(checkManifest(good({ icon: 'icon.png' }), 'sample').errors, []);
+  assert.deepEqual(checkManifest(good({ icon: 'img/logo.svg' }), 'sample').errors, []);
+  assert.ok(codes(checkManifest(good({ icon: 'icon.gif' }), 'sample')).includes('icon:badIcon'));
+  assert.ok(codes(checkManifest(good({ icon: '../icon.png' }), 'sample')).includes('icon:badEntry'));
+  assert.deepEqual(checkManifest(good({ icon: 'icon.png' }), 'sample').warnings, [], 'a known field');
+});
