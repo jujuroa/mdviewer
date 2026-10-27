@@ -135,6 +135,31 @@ export async function launch({ files = {}, open = 'proj', settings = { language:
       const win = electron.BrowserWindow.getAllWindows().find((w) => w.isVisible());
       item.click(undefined, win, {});
       return true;`);
+  // The Extensions menu's visible items; an add-on's submenu as
+  // "<add-on>: <item>" for each of its items ("<add-on>: 창 열기" for its
+  // main view).
+  app.extensionLabels = () =>
+    app.main(`
+      const out = [];
+      for (const i of electron.Menu.getApplicationMenu().items.find((m) => m.label === '확장').submenu.items) {
+        if (!i.visible) continue;
+        if (i.submenu && i.submenu.items.length && String(i.submenu.items[0].id).startsWith('addon-open:')) for (const s of i.submenu.items) { if (s.visible && s.type !== 'separator') out.push(i.label + ': ' + s.label); }
+        else out.push(i.label);
+      }
+      return out;`);
+  // "<add-on>: <tab title>": the add-on's submenu item of that title, else
+  // its "창 열기" (the main view).
+  app.clickAddonMenu = (label) => {
+    const [name, ...rest] = label.split(': ');
+    return app.main(`
+      const sub = electron.Menu.getApplicationMenu().items.find((m) => m.label === '확장').submenu.items.find((i) => i.label === ${JSON.stringify(name)} && i.submenu);
+      if (!sub) throw new Error('no add-on submenu ' + ${JSON.stringify(name)});
+      const want = ${JSON.stringify(rest.join(': '))};
+      const item = sub.submenu.items.find((i) => i.label === want) || sub.submenu.items.find((i) => i.label === '창 열기');
+      if (!item) throw new Error('no menu item ' + want);
+      item.click(undefined, electron.BrowserWindow.getAllWindows().find((w) => w.isVisible()), {});
+      return true;`);
+  };
   return app;
 }
 
@@ -322,7 +347,7 @@ export async function enterEditMode(d) {
 // Opens an add-on's tab from Extensions in the menu bar ("Add-on: Tab") and
 // resolves to { ok, id } — the tab that became active.
 export async function openAddonTab(app, w, label) {
-  await app.clickMenu('확장', label);
+  await app.clickAddonMenu(label);
   await sleep(1500);
   const id = await w.evaluate(`const n = document.querySelector('#doc-host ~ * .doc-tab.active, .doc-tab.active'); return n ? +n.dataset.tabId : null`);
   return { ok: id != null, id };

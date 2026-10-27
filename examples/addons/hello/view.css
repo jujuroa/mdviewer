@@ -1,0 +1,20 @@
+:root {
+  color-scheme: light dark;
+  font-family: "Segoe UI", system-ui, sans-serif;
+}
+body {
+  margin: 0;
+  display: grid;
+  place-items: center;
+  min-height: 100vh;
+}
+main {
+  max-width: 420px;
+  text-align: center;
+}
+.dim {
+  opacity: 0.7;
+}
+#count {
+  font-size: 32px;
+}

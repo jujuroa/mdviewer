@@ -16,8 +16,8 @@ try {
   const w = await openWindowWith(app, 'a.md');
   const list = await w.evaluate(`return (await window.mdviewer.listAddons()).map((a) => a.id + ':' + a.status + ':' + a.warnings.length)`);
   check('all three load, no warnings', ['hello:ok:0', 'hello-tab:ok:0', 'ai-edit:ok:0'].every((x) => list.includes(x)), list.join(' '));
-  const names = await app.main(`return electron.Menu.getApplicationMenu().items.find((i) => i.label === '확장').submenu.items.map((i) => i.label)`);
-  check('  their names and commands in Korean (locales/ko.json)', names.includes('Hello: 인사하기') && names.includes('Hello Tab: Counter'), names.join('|'));
+  const names = await app.extensionLabels();
+  check('  their names and commands in Korean (locales/ko.json)', names.includes('Hello: 인사하기') && names.includes('Hello Tab: 창 열기') && names.includes('Hello: 창 열기') && names.includes('마크다운 도우미: 창 열기'), names.join('|'));
 
   // hello
   await run(w, 'hello.sayHello');

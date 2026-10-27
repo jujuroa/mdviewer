@@ -16,13 +16,18 @@ async function countHello() {
   return count;
 }
 
-api.commands.register('hello.sayHello', async () => {
+async function sayHello() {
   const greeting = await api.settings.get({ key: 'greeting' });
   const count = await countHello();
   const message = api.app.locale === 'ko' ? `${greeting}! (${count}번째)` : `${greeting}! (#${count})`;
   await api.ui.notify({ message });
   return count;
-});
+}
+
+api.commands.register('hello.sayHello', sayHello);
+
+// The main view's button (view.js).
+api.messaging.onMessage((message) => (message && message.op === 'sayHello' ? sayHello() : undefined));
 
 // Set up: the app may send commands now.
 api.ready();

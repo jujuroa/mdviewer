@@ -23,9 +23,11 @@ try {
   const clickInPopup = (label) => app.main(`const m = global.__popups[global.__popups.length - 1]; const i = m.items.find((x) => x.label === ${JSON.stringify(label)}); i.click(); return true`);
 
   // menubar/addons: in the Extensions menu, with the add-on's name.
-  const ext = await app.main(`return electron.Menu.getApplicationMenu().items.find((i) => i.label === '확장').submenu.items.map((i) => i.label)`);
+  const ext = await app.extensionLabels();
   check('menubar/addons: the item is in Extensions', ext.includes('Background: Count'), ext.join('|'));
-  await app.clickMenu('확장', 'Background: Count');
+  await app.clickMenu('확장', 'Background', 'Count');
+  const sub = await app.main(`const i = electron.Menu.getApplicationMenu().items.find((m) => m.label === '확장').submenu.items.find((m) => m.label === 'Background'); return { items: i.submenu.items.filter((x) => x.visible).map((x) => x.type === 'separator' ? '-' : x.label), icon: !!i.icon && !i.icon.isEmpty(), size: i.icon ? i.icon.getSize() : null }`);
+  check('Extensions: one submenu per add-on, "창 열기" (main view) first, then its commands', sub.items[0] === '창 열기' && sub.items[1] === '-' && sub.items.includes('Count'), JSON.stringify(sub.items));
   check('  and runs the command', (await waitFor(async () => ((await counted()) === 1 ? 1 : null), { timeout: 10000 }).catch(() => 0)) === 1);
 
   // explorer/item with when resourceExt == 'md'

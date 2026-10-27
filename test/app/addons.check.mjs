@@ -51,7 +51,7 @@ try {
   check('broken JSON', st('broken|installed') === 'manifest 오류' && r['broken|installed'].text.includes('JSON 형식이 아닙니다'));
   check('folder name mismatch, with the field', st('mismatch|installed') === 'manifest 오류' && /id: 폴더 이름과 다릅니다/.test(r['mismatch|installed'].text), r['mismatch|installed'].text);
   check('needs another app version', st('future|installed') === '호환되지 않음' && r['future|installed'].text.includes('다른 앱 버전이 필요합니다'));
-  check('nothing to run', st('idle|installed') === 'manifest 오류' && r['idle|installed'].text.includes('백그라운드 프레임도 탭도 없습니다'));
+  check('no main view', st('idle|installed') === 'manifest 오류' && r['idle|installed'].text.includes('대표 view가 없습니다'));
   check('blocked by policy (network)', st('netty|installed') === '정책으로 차단' && r['netty|installed'].text.includes('api.example.com'));
   check('same id installed: hidden by the dev copy, no toggle', st('test|installed') === '가려짐' && !r['test|installed'].toggle);
   check('ready ones show when they start', r['good|installed'].text.includes('onTab:good.main'));

@@ -13,7 +13,7 @@ const strip = (w) =>
   try {
     const w = await openWindowWith(app, 'a.md');
     check('no add-ons: no "+" in the tab strip', (await w.evaluate(`return !!document.querySelector('.doc-tab-new')`)) === false);
-    const labels = await app.main(`return electron.Menu.getApplicationMenu().items.find((i) => i.label === '확장').submenu.items.map((i) => i.label)`);
+    const labels = await app.extensionLabels();
     // Add-ons' items read "Add-on: Title"; the app's own do not.
     check('no add-ons: Extensions has only its own items', labels.length > 0 && labels.every((l) => !l.includes(': ')), labels.join('|'));
   } finally {
@@ -24,8 +24,8 @@ const strip = (w) =>
 const app = await launch({ files: { 'proj/a.md': '# A\n' } });
 try {
   const w = await openWindowWith(app, 'a.md');
-  const labels = await app.main(`return electron.Menu.getApplicationMenu().items.find((i) => i.label === '확장').submenu.items.map((i) => i.label)`);
-  check('Extensions lists the add-ons\' tabs', ['Test: Probe', 'Other: Probe'].every((l) => labels.includes(l)), labels.join('|'));
+  const labels = await app.extensionLabels();
+  check('Extensions lists the add-ons\' tabs', ['Test: 창 열기', 'Other: 창 열기'].every((l) => labels.includes(l)), labels.join('|'));
   check('the tab strip has a "+"', (await w.evaluate(`return !!document.querySelector('.doc-tab-new')`)) === true);
 
   const a = await openAddonTab(app, w, 'Other: Probe');
@@ -45,8 +45,8 @@ try {
   await sleep(1000);
   s = await strip(w);
   check('turning an add-on off closes its tabs', s.length === 2 && !s.some((t) => t.id === p1.id || t.id === p2.id), JSON.stringify(s.map((t) => t.text)));
-  const labelsOff = await app.main(`return electron.Menu.getApplicationMenu().items.find((i) => i.label === '확장').submenu.items.map((i) => i.label)`);
-  check('  and its tabs leave the menu', !labelsOff.includes('Test: Probe') && labelsOff.includes('Other: Probe'), labelsOff.join('|'));
+  const labelsOff = await app.extensionLabels();
+  check('  and its tabs leave the menu', !labelsOff.includes('Test: 창 열기') && labelsOff.includes('Other: 창 열기'), labelsOff.join('|'));
   await w.evaluate(`return await window.mdviewer.setAddonEnabled('test', true)`);
   await sleep(500);
 

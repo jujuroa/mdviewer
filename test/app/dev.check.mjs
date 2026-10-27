@@ -40,7 +40,7 @@ const viewTarget = (id) => (t) => t.url === `mdviewer-addon://dev/view.html?tab=
 const bgPage = async () => (await targets(app.port)).find((t) => t.type === 'page' && t.url.startsWith('mdviewer-addon://dev/bg.html')) || null;
 try {
   const w = await openWindowWith(app, 'a.md');
-  const menu = await app.main(`return electron.Menu.getApplicationMenu().items.find((i) => i.label === '확장').submenu.items.map((i) => i.label)`);
+  const menu = await app.extensionLabels();
   check('Extensions has the reload command and API trace', menu.includes('개발: add-on 다시 불러오기') && menu.includes('API 추적'), menu.join('|'));
   const palette = await w.evaluate(`return (await window.mdviewer.paletteItems()).map((i) => i.label)`).catch((e) => String(e));
   check('  so does the command palette', Array.isArray(palette) && palette.includes('개발: add-on 다시 불러오기'), JSON.stringify(palette));

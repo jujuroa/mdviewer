@@ -67,7 +67,7 @@ try {
   await w.evaluate(`document.getElementById('btn-close-addon-settings').click(); return 1`);
 
   // context/set feeds when: an item shown only while bg.ready.
-  const labels = () => app.main(`return electron.Menu.getApplicationMenu().items.find((i) => i.label === '확장').submenu.items.filter((i) => i.visible).map((i) => i.label)`);
+  const labels = () => app.extensionLabels();
   check('before context/set the item is hidden (when bg.ready)', !(await labels()).includes('Background: Show in View'));
   await api(`await m.context.set({ key: 'ready', value: true }); return 1`);
   await sleep(500);

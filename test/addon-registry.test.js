@@ -31,7 +31,7 @@ test('checkManifest: a good manifest has no errors', () => {
 
 test('checkManifest: required fields, formats, folder name', () => {
   assert.deepEqual(codes(checkManifest({}, 'x')).sort(), [
-    ':nothingToRun', 'engines:required', 'id:required', 'manifestVersion:required', 'name:required', 'version:required',
+    'contributes.tabs:noMainView', 'engines:required', 'id:required', 'manifestVersion:required', 'name:required', 'version:required',
   ].sort());
   assert.ok(codes(checkManifest(good({ id: 'Bad_Id' }), 'Bad_Id')).includes('id:badId'));
   assert.ok(codes(checkManifest(good(), 'other-folder')).includes('id:folderMismatch'));
@@ -312,4 +312,18 @@ test('registered add-on folders: kept by the store, looked at after --addon-dev,
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
+});
+
+test('main view: every add-on has one, "main": true picks it, else the first tab', () => {
+  const { mainTabOf } = require('../addons/manifest.js');
+  const bgOnly = good({ background: { entry: 'bg.html' }, contributes: {} });
+  assert.ok(codes(checkManifest(bgOnly, 'sample')).includes('contributes.tabs:noMainView'));
+  const two = good({ contributes: { tabs: [{ id: 'sample.a', title: 'A', entry: 'a.html' }, { id: 'sample.b', title: 'B', entry: 'b.html', main: true }] } });
+  assert.deepEqual(checkManifest(two, 'sample').errors, []);
+  assert.equal(mainTabOf(two).id, 'sample.b');
+  assert.equal(mainTabOf(good()).id, 'sample.main');
+  const both = good({ contributes: { tabs: [{ id: 'sample.a', title: 'A', entry: 'a.html', main: true }, { id: 'sample.b', title: 'B', entry: 'b.html', main: true }] } });
+  assert.ok(codes(checkManifest(both, 'sample')).includes('contributes.tabs:manyMainViews'));
+  assert.ok(codes(checkManifest(good({ contributes: { tabs: [{ id: 'sample.a', title: 'A', entry: 'a.html', main: 'yes' }] } }), 'sample')).includes('contributes.tabs[0].main:badValue'));
+  assert.equal(mainTabOf({}), null);
 });

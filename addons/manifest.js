@@ -142,7 +142,9 @@ function checkManifest(manifest, folderName) {
     if (!isEntry(tab.entry)) err(`${path}.entry`, 'badEntry', String(tab.entry));
     if (tab.icon !== undefined && !isEntry(tab.icon)) err(`${path}.icon`, 'badEntry', String(tab.icon));
     if (tab.instances !== undefined && tab.instances !== 'single' && tab.instances !== 'multiple') err(`${path}.instances`, 'badValue', String(tab.instances));
+    if (tab.main !== undefined && typeof tab.main !== 'boolean') err(`${path}.main`, 'badValue', String(tab.main));
   });
+  if (Array.isArray(c.tabs) && c.tabs.filter((tab) => isObject(tab) && tab.main === true).length > 1) err('contributes.tabs', 'manyMainViews');
   eachItem(c.commands, 'contributes.commands', err, (cmd, path) => {
     if (ownId(cmd.id, `${path}.id`)) {
       if (commandIds.has(cmd.id)) err(`${path}.id`, 'duplicate', cmd.id);
@@ -196,8 +198,9 @@ function checkManifest(manifest, folderName) {
     }
   }
 
-  // Code has to run somewhere.
-  if (!isObject(background) && tabIds.size === 0) err('', 'nothingToRun');
+  // Every add-on has a main view, the tab "Open Window" opens (its submenu
+  // of the Extensions menu).
+  if (tabIds.size === 0) err('contributes.tabs', 'noMainView');
 
   return { errors, warnings };
 }
@@ -301,4 +304,10 @@ function localize(value, strings) {
   return value;
 }
 
-module.exports = { HOST, checkManifest, compatibilityProblems, experimentalWarnings, activationEvents, localize };
+// The main view: the tab marked "main": true, else the first.
+function mainTabOf(manifest) {
+  const tabs = (manifest && manifest.contributes && manifest.contributes.tabs) || [];
+  return tabs.find((tab) => tab.main === true) || tabs[0] || null;
+}
+
+module.exports = { HOST, mainTabOf, checkManifest, compatibilityProblems, experimentalWarnings, activationEvents, localize };

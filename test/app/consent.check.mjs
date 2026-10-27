@@ -18,7 +18,7 @@ const app = await launch({
     'proj/a.md': '# A\n',
     'addons/needy/manifest.json': needy(['api.example.com']),
     'addons/needy/main.html': '<!doctype html><p>needy</p>',
-    'addons/starter/manifest.json': manifest('starter', { background: { entry: 'bg.html', idleTimeoutSec: 0 }, activation: ['onStartup'] }),
+    'addons/starter/manifest.json': manifest('starter', { background: { entry: 'bg.html', idleTimeoutSec: 0 }, activation: ['onStartup'], contributes: { tabs: [{ id: 'starter.view', title: 'View', entry: 'view.html' }] } }),
     'addons/starter/bg.html': '<!doctype html><script src="bg.js"></script>',
     'addons/starter/bg.js': 'window.mdviewerAddon && window.mdviewerAddon.ready();',
   },
@@ -48,7 +48,7 @@ try {
   check('  the consent is kept', consents().starter && consents().starter.version === '1.0.0');
 
   // A tab: denied, nothing opens.
-  app.clickMenu('확장', 'Needy: Main');
+  app.clickAddonMenu('Needy: Main');
   const asked = await waitFor(modal, { timeout: 5000 }).catch(() => null);
   check('opening an add-on tab the first time asks', asked && asked.id === 'needy');
   check('  shows publisher, permissions, hosts, programs and the warning',
@@ -59,14 +59,14 @@ try {
   check('denied: no tab, nothing kept', !(await tabs()).some((t) => t.startsWith('Needy')) && !consents().needy);
 
   // Allowed: the tab opens; the next time no question.
-  app.clickMenu('확장', 'Needy: Main');
+  app.clickAddonMenu('Needy: Main');
   await waitFor(modal, { timeout: 5000 });
   await w.evaluate(`document.getElementById('btn-consent-allow').click(); return 1`);
   await sleep(1500);
   check('allowed: the tab opens', (await tabs()).includes('Needy: Main'));
   check('  kept with what was agreed', JSON.stringify(consents().needy && consents().needy.hosts) === '["api.example.com"]');
   await w.evaluate(`const n = [...document.querySelectorAll('.doc-tab')].find((x) => x.title === 'Needy: Main'); await window.mdviewer.closeTab(+n.dataset.tabId); return 1`);
-  app.clickMenu('확장', 'Needy: Main');
+  app.clickAddonMenu('Needy: Main');
   await sleep(1500);
   check('opening it again: no question', !(await modal()) && (await tabs()).includes('Needy: Main'));
 
@@ -75,14 +75,14 @@ try {
   writeFileSync(path.join(app.tmp, 'addons', 'needy', 'manifest.json'), needy(['api.example.com', 'more.example.com']));
   await app.clickMenu('확장', 'add-on 다시 찾기');
   await sleep(500);
-  app.clickMenu('확장', 'Needy: Main');
+  app.clickAddonMenu('Needy: Main');
   const again = await waitFor(modal, { timeout: 5000 }).catch(() => null);
   check('an update asking for more asks again', again && again.text.includes('more.example.com'));
   await w.evaluate(`document.getElementById('btn-consent-allow').click(); return 1`);
   await sleep(1000);
 
   // A --addon-dev add-on is the developer's own: not asked.
-  app.clickMenu('확장', 'Test: Probe');
+  app.clickAddonMenu('Test: Probe');
   await sleep(1500);
   check('a --addon-dev add-on opens without asking', !(await modal()) && (await tabs()).includes('Test: Probe'));
 } finally {

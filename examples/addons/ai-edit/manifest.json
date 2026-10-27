@@ -22,6 +22,14 @@
     "idleTimeoutSec": 60
   },
   "contributes": {
+    "tabs": [
+      {
+        "id": "ai-edit.view",
+        "title": "%tab.view%",
+        "entry": "view.html",
+        "instances": "single"
+      }
+    ],
     "commands": [
       {
         "id": "ai-edit.tidy",

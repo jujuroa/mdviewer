@@ -4,7 +4,7 @@ MD Viewer 2.0부터 add-on으로 앱에 명령·메뉴·탭·설정을 더할 �
 
 | 예제 | 보여 주는 것 |
 |---|---|
-| `hello/` | 가장 작은 add-on. 백그라운드 프레임이 명령 하나를 처리하고, 설정을 읽고, 데이터 폴더에 횟수를 적고, 알림을 띄운다. 이름·제목은 `locales/`로 현지화 |
+| `hello/` | 가장 작은 add-on. 대표 view 하나와, 백그라운드 프레임이 명령 하나를 처리하고, 설정을 읽고, 데이터 폴더에 횟수를 적고, 알림을 띄운다. 이름·제목은 `locales/`로 현지화 |
 | `hello-tab/` | 자기 탭을 가진 add-on. 탭 줄의 제목과 변경 표시를 바꾸고, 창을 옮기거나 앱을 다시 켜도 값을 잃지 않는다 |
 | `ai-edit/` | AI 편집 add-on의 흐름을 규칙으로 흉내 낸다. 선택(없으면 문서 전체)을 읽고, 규칙을 고르게 하고, 진행 표시를 띄운 뒤, 비교 화면을 거쳐 문서를 고친다 |
 
@@ -31,6 +31,7 @@ npm start -- --addon-dev=examples/addons/hello
 ```text
 hello/
 ├── manifest.json       필수. 폴더 이름 = id
+├── view.html, view.js  대표 view (필수 — 확장 메뉴 "창 열기")
 ├── background.html     백그라운드 프레임 (선택)
 ├── background.js
 └── locales/            "%키%" 문자열 (선택)
@@ -49,6 +50,7 @@ hello/
   "engines": { "mdviewer": ">=2.0.0 <3.0.0", "api": 1 },
   "background": { "entry": "background.html", "idleTimeoutSec": 30 },
   "contributes": {
+    "tabs": [{ "id": "hello.view", "title": "%tab.view%", "entry": "view.html" }],
     "commands": [{ "id": "hello.sayHello", "title": "%command.sayHello%" }],
     "menus": { "menubar/addons": [{ "command": "hello.sayHello" }] }
   }
@@ -56,6 +58,7 @@ hello/
 ```
 
 - `id`는 소문자로 시작하는 2~40자(`a-z`, `0-9`, `-`)이고 폴더 이름과 같아야 한다. 명령·탭 id는 `<id>.`로 시작한다.
+- **탭(대표 view)이 하나 이상 있어야 한다.** 확장 메뉴에는 add-on마다 하위 메뉴가 생기고 첫 항목 "창 열기"가 대표 view(`"main": true`인 탭, 없으면 첫 탭)를 연다. 그 아래 `menubar/addons` 항목이 온다.
 - `engines.capabilities`(예: `{ "edit": 1 }`)를 적으면 그 영역 버전이 없는 앱에서는 "호환되지 않음"이 된다.
 - 문서를 읽으려면 `permissions`에 `documents.read`, 고치려면 `documents.write`를 적는다. 권한 없는 호출은 `PermissionDenied`.
 - 기여 지점은 `commands`, `menus`(`menubar/addons`, `editor/context`, `explorer/item`, `tab/context`, `viewer/selection`), `keybindings`, `tabs`, `settings`, `secrets`다. 메뉴 항목의 `when`으로 보일 때를 정한다(`editMode`, `activeDocument`, `resourceExt == 'md'`, `hasSelection` 등).

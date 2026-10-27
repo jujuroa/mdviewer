@@ -40,7 +40,7 @@ const { diffForView } = require('./addons/diffview.js');
 const { ApiError } = require('./addons/api-router.js');
 const { ApiRouter } = require('./addons/api-router.js');
 const { registerAppApi } = require('./addons/api/app.js');
-const { HOST: ADDON_HOST } = require('./addons/manifest.js');
+const { HOST: ADDON_HOST, mainTabOf } = require('./addons/manifest.js');
 
 // Tells preload.js where the app's own pages are, so the bridge goes to
 // them alone and not to a project's .html file that happens to share a
@@ -1709,13 +1709,14 @@ function addonCommandTitle(entry, commandId) {
 
 // The items running add-ons put in menu `menuId`, as menu template items
 // (grouped by `group`, a separator before each group). values: what the
-// menu is about (12.2), also given to the command.
-function addonMenuItems(menuId, values = {}, { withName = false } = {}) {
+// menu is about (12.2), also given to the command. addonId: that add-on's
+// items only.
+function addonMenuItems(menuId, values = {}, { withName = false, addonId = null } = {}) {
   if (!addonRegistry) return [];
   const lookup = whenLookup(values);
   const groups = new Map();
   for (const entry of addonRegistry.list()) {
-    if (!addonRegistry.running(entry.id)) continue;
+    if (!addonRegistry.running(entry.id) || (addonId && entry.id !== addonId)) continue;
     const items = (entry.manifest.contributes && entry.manifest.contributes.menus && entry.manifest.contributes.menus[menuId]) || [];
     for (const item of items) {
       if (!evaluateWhen(item.when, lookup)) continue;
@@ -1757,12 +1758,34 @@ function collectAccelerators(items, into = new Set()) {
   return into;
 }
 
-// Adds the add-ons' menubar items and keybindings to the Extensions menu
-// of `template` (before it is built).
+// One submenu per running add-on in the Extensions menu, named after it:
+// "Open Window" (its main view) first, its other tabs by title, then its
+// menubar/addons items.
+function addonExtensionSubmenus(onOpenTab) {
+  const out = [];
+  for (const entry of addonRegistry.list()) {
+    if (!addonRegistry.running(entry.id)) continue;
+    const main = mainTabOf(entry.manifest);
+    const tabs = (entry.manifest.contributes && entry.manifest.contributes.tabs) || [];
+    const opens = [main, ...tabs.filter((tab) => tab !== main)].filter(Boolean).map((tab) => ({
+      id: `addon-open:${entry.id}:${tab.id}`,
+      label: tab === main ? t('menu.addonOpenWindow') : tab.title,
+      click: (item, win) => onOpenTab({ addonId: entry.id, tabId: tab.id }, win),
+    }));
+    const commands = addonMenuItems('menubar/addons', {}, { addonId: entry.id });
+    while (commands.length && commands[0].type === 'separator') commands.shift();
+    const submenu = [...opens, ...(opens.length && commands.length ? [{ type: 'separator' }] : []), ...commands];
+    if (submenu.length) out.push({ label: entry.manifest.name, submenu });
+  }
+  return out.length ? [{ type: 'separator' }, ...out] : [];
+}
+
+// Adds the add-ons' submenus and keybindings to the Extensions menu of
+// `template` (before it is built).
 function addAddonMenus(template) {
   const extensions = template.find((m) => m.label === t('menu.addons'));
   if (!extensions || !addonRegistry) return;
-  extensions.submenu.push(...addonMenuItems('menubar/addons', {}, { withName: true }));
+  extensions.submenu.push(...addonExtensionSubmenus((choice, win) => openAddonTabAsked(docHostFor(win), choice.addonId, choice.tabId)));
   const taken = collectAccelerators(template);
   keybindingConflicts.clear();
   const lookup = whenLookup();
@@ -1964,7 +1987,6 @@ function buildAppMenu() {
           })),
         },
         ...(addonDevDirs().length || (addonStore && addonStore.registered().length) ? [{ label: t('menu.reloadDevAddons'), click: () => reloadDevAddons('menu') }] : []),
-        ...addonTabMenuItems((choice, win) => openAddonTabAsked(docHostFor(win), choice.addonId, choice.tabId)),
       ],
     },
     {

@@ -2,5 +2,6 @@
   "name": "Hello",
   "description": "가장 작은 add-on: 백그라운드 프레임이 실행하는 명령 하나.",
   "command.sayHello": "인사하기",
-  "setting.greeting": "인사말"
+  "setting.greeting": "인사말",
+  "tab.view": "Hello"
 }

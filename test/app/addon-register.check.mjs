@@ -15,7 +15,7 @@ const manifest = {
   engines: { mdviewer: '>=2.0.0 <3.0.0', api: 1 },
   experimentalApi: ['settings.open'],
   background: { entry: 'background.html' },
-  contributes: { commands: [{ id: 'regd.hello', title: 'Hello' }], menus: { 'menubar/addons': [{ command: 'regd.hello' }] } },
+  contributes: { tabs: [{ id: 'regd.view', title: 'View', entry: 'view.html' }], commands: [{ id: 'regd.hello', title: 'Hello' }], menus: { 'menubar/addons': [{ command: 'regd.hello' }] } },
 };
 const { check, done } = checker();
 const app = await launch({
@@ -31,7 +31,7 @@ const app = await launch({
 try {
   const w = await openWindowWith(app, 'a.md');
   const file = path.join(app.tmp, 'work', 'regd', 'manifest.json');
-  const labels = () => app.main(`return electron.Menu.getApplicationMenu().items.find((i) => i.label === '확장').submenu.items.filter((i) => i.visible).map((i) => i.label)`);
+  const labels = () => app.extensionLabels();
   check('not there before', !(await labels()).includes('Registered: Hello'));
 
   await app.clickMenu('확장', '확장 관리...');

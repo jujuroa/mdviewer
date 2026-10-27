@@ -2,5 +2,6 @@
   "name": "Hello",
   "description": "The smallest add-on: a command run by a background frame.",
   "command.sayHello": "Say Hello",
-  "setting.greeting": "Greeting"
+  "setting.greeting": "Greeting",
+  "tab.view": "Hello"
 }
