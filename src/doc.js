@@ -24,6 +24,7 @@
     projectRootIn,
     escapeHtml,
     isPlainTextPathWith,
+    embeddedKindOf,
     fileBadgeSvg,
     treeAgeStep,
     findPathCandidates,
@@ -113,6 +114,7 @@
 
   const el = {
     frame: document.getElementById('preview-frame'),
+    embedFrame: document.getElementById('embed-frame'),
     fileName: document.getElementById('current-file-name'),
     cssAppliedBadge: document.getElementById('css-applied-badge'),
     previewBody: document.getElementById('preview-body'),
@@ -1082,7 +1084,14 @@
     // A .puml document is one diagram and nothing else: the prose reading
     // width would only make it scroll inside a narrow column while the
     // window sits half empty next to it.
+    const embedded = isEmbeddedKind(state.currentFileKind);
+    el.frame.classList.toggle('hidden', embedded);
+    el.embedFrame.classList.toggle('hidden', !embedded);
+    if (!embedded) el.embedFrame.removeAttribute('src');
+    // A PDF has no source to edit.
+    el.btnToggleEdit.classList.toggle('hidden', state.currentFileKind === 'pdf');
     const isWideView =
+      embedded ||
       state.currentFileKind === 'json' ||
       state.currentFileKind === 'text' ||
       state.currentFileKind === 'puml';
@@ -1233,9 +1242,81 @@
     persistProjectState();
   }
 
+  function isEmbeddedKind(kind) {
+    return kind === 'html' || kind === 'pdf';
+  }
+
+  // Loads the file into embed-frame, which takes preview-frame's place for
+  // it. An HTML page runs sandboxed: its own scripts and styles work, but it
+  // gets an opaque origin, so it can't reach this page or the bridge; it
+  // comes over the mdv-file scheme, the one way such a page can still load
+  // the stylesheets and images beside it (see EMBED_FILE_SCHEME in main.js).
+  // A PDF goes to Chromium's viewer, a plugin that a sandboxed frame would
+  // block. Setting src again reloads the file (after a save, or a change on
+  // disk).
+  function showEmbeddedFile(kind, filePath) {
+    const fileUrl = pathToFileUrl(filePath);
+    // The sandbox flags apply from the next load on, so they go first.
+    if (kind === 'html') {
+      el.embedFrame.setAttribute('sandbox', 'allow-scripts allow-forms allow-popups');
+      el.embedFrame.src = fileUrl.replace(/^file:\/\//, 'mdv-file://local');
+    } else {
+      el.embedFrame.removeAttribute('sandbox');
+      el.embedFrame.src = fileUrl;
+    }
+  }
+
+  // .html and .pdf files are shown as themselves (see showEmbeddedFile)
+  // rather than rendered here, so find, the TOC and scroll memory have
+  // nothing to work with. Like PlantUML, an HTML page is shown again on
+  // save rather than on every keystroke: it reloads, scripts and all.
+  async function loadAndRenderEmbedded(filePath, kind) {
+    await switchProjectForPath(filePath);
+    beginDocumentNavigation(filePath);
+    beginRenderRequest(); // nothing to render here; this just invalidates any slower request left over from before navigating here.
+    const stat = await window.mdviewer.statPath(filePath);
+    if (!stat.ok || !stat.isFile) {
+      el.frame.contentDocument.body.innerHTML =
+        `<div class="mdviewer-empty-state">${escapeHtml(t('file.openFailed', { error: stat.error || filePath }))}</div>`;
+      el.embedFrame.classList.add('hidden');
+      el.frame.classList.remove('hidden');
+      return;
+    }
+    // What the previous document left there would otherwise still be found
+    // by find and listed in the TOC.
+    el.frame.contentDocument.body.innerHTML = '';
+    if (state.editMode && kind === 'pdf') {
+      state.editMode = false;
+      state.sourceDirty = false;
+      setEditModeUI(false);
+      el.editStatus.textContent = '';
+    }
+    showEmbeddedFile(kind, filePath);
+    renderBreadcrumb(filePath);
+    state.currentFilePath = filePath;
+    state.currentFileKind = kind;
+    updateFileKindUI();
+    window.mdviewer.watchFile(filePath);
+
+    if (state.editMode) {
+      const readResult = await window.mdviewer.readFile(filePath);
+      if (readResult.ok) {
+        el.mdSourceEditor.value = readResult.content;
+      }
+      state.sourceDirty = false;
+      el.editStatus.textContent = '';
+    }
+
+    refreshToc();
+    persistProjectState();
+  }
+
   // Dispatches to the right loader for a file path based on its extension.
   async function loadAndRenderByPath(filePath) {
-    if (/\.puml$/i.test(filePath)) {
+    const embeddedKind = embeddedKindOf(filePath);
+    if (embeddedKind) {
+      await loadAndRenderEmbedded(filePath, embeddedKind);
+    } else if (/\.puml$/i.test(filePath)) {
       await loadAndRenderPuml(filePath);
     } else if (/\.json$/i.test(filePath)) {
       await loadAndRenderJson(filePath);
@@ -1362,6 +1443,8 @@
 
     if (state.currentFileKind === 'puml') {
       await renderPumlFromText(readResult.content);
+    } else if (state.currentFileKind === 'html') {
+      showEmbeddedFile('html', state.currentFilePath);
     } else {
       await renderSourcePreview();
     }
@@ -2189,7 +2272,7 @@
       const html =
         state.currentFileKind === 'markdown'
           ? renderMarkdownSyntax(value)
-          : state.currentFileKind === 'text'
+          : state.currentFileKind === 'text' || state.currentFileKind === 'html'
             ? renderCodeSyntax(value)
             : escapeSyntaxHtml(value);
       // The trailing newline gives a final empty line a line box, as the
@@ -2534,6 +2617,7 @@
       el.editStatus.textContent = t('edit.selectFirst');
       return;
     }
+    if (state.currentFileKind === 'pdf') return;
     const result = await window.mdviewer.readFile(state.currentFilePath);
     if (!result.ok) {
       el.editStatus.textContent = t('edit.readFailed', { error: result.error });
@@ -2586,6 +2670,11 @@
     // land after a newer one (or after the user's stopped editing this file).
     const requestId = beginRenderRequest();
 
+    // An HTML page shows what is on disk (see loadAndRenderEmbedded).
+    if (state.currentFileKind === 'html') {
+      if (state.currentFilePath) showEmbeddedFile('html', state.currentFilePath);
+      return;
+    }
     if (state.currentFileKind === 'json') {
       await renderJsonFromText(el.mdSourceEditor.value);
       refreshToc();
@@ -2631,6 +2720,8 @@
       markTreeRowFresh(state.currentFilePath);
       if (state.currentFileKind === 'puml') {
         await renderPumlFromText(el.mdSourceEditor.value);
+      } else if (state.currentFileKind === 'html') {
+        showEmbeddedFile('html', state.currentFilePath);
       }
     } else {
       state.suppressNextWatch = false;
@@ -2672,8 +2763,9 @@
   el.mdSourceEditor.addEventListener('input', () => {
     state.sourceDirty = true;
     el.editStatus.textContent = t('edit.unsavedChanges');
-    // PlantUML re-renders only on open/save/refresh, not on every keystroke.
-    if (state.currentFileKind === 'puml') return;
+    // PlantUML and HTML re-render only on open/save/refresh, not on every
+    // keystroke.
+    if (state.currentFileKind === 'puml' || state.currentFileKind === 'html') return;
     clearTimeout(state.sourceDebounceTimer);
     state.sourceDebounceTimer = setTimeout(renderSourcePreview, 200);
   });
@@ -2802,6 +2894,8 @@
   // ---------------------------------------------------------------------
 
   function fileKindForPath(filePath) {
+    const embeddedKind = embeddedKindOf(filePath);
+    if (embeddedKind) return embeddedKind;
     if (/\.puml$/i.test(filePath)) return 'puml';
     if (/\.json$/i.test(filePath)) return 'json';
     if (isPlainTextPath(filePath)) return 'text';
@@ -4092,6 +4186,7 @@
       if (/\.(md|markdown)$/i.test(absPath)) type = 'internal-doc';
       else if (/\.puml$/i.test(absPath)) type = 'internal-puml';
       else if (/\.json$/i.test(absPath)) type = 'internal-json';
+      else if (embeddedKindOf(absPath)) type = 'internal-' + embeddedKindOf(absPath);
       else if (isPlainTextPath(absPath)) type = 'internal-text';
       return { type, absPath, hash: hash || '', key: internal };
     }
@@ -4111,6 +4206,8 @@
     'internal-doc': 'md',
     'internal-puml': 'puml',
     'internal-json': 'json',
+    'internal-html': 'html',
+    'internal-pdf': 'pdf',
     'internal-text': 'text',
   };
   const LINK_TYPE_ICON = {
@@ -4224,6 +4321,10 @@
         ? 'puml'
         : item.isJson
         ? 'json'
+        : item.isHtml
+        ? 'html'
+        : item.isPdf
+        ? 'pdf'
         : item.isPlainText
         ? 'plaintext'
         : 'non-md';
@@ -4242,7 +4343,7 @@
       caret.textContent = item.isDir ? '▶' : '';
       const icon = document.createElement('span');
       icon.className = 'tree-icon';
-      const badgeKind = { md: 'md', puml: 'puml', json: 'json', plaintext: 'text' }[kind];
+      const badgeKind = { md: 'md', puml: 'puml', json: 'json', html: 'html', pdf: 'pdf', plaintext: 'text' }[kind];
       if (badgeKind) icon.innerHTML = fileBadgeSvg(badgeKind, item.name);
       else icon.textContent = item.isDir ? '📁' : '·';
       const label = document.createElement('span');
@@ -4344,7 +4445,7 @@
   }
 
   function isViewablePath(filePath) {
-    return /\.(md|markdown|puml|json)$/i.test(filePath) || isPlainTextPath(filePath);
+    return /\.(md|markdown|puml|json|pdf)$/i.test(filePath) || isPlainTextPath(filePath);
   }
 
   // The toolbar's one-line status slot, the same place save and paste

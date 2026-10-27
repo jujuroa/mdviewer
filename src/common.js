@@ -117,6 +117,17 @@
     return CODE_FILE_EXTENSIONS.has(ext) || customExtensions.includes(ext);
   }
 
+  // Files the viewer shows as the page itself, in a frame of their own,
+  // rather than as markup it renders: 'html' (the page, its source in the
+  // editor) and 'pdf' (the built-in PDF viewer, not editable). Null for the
+  // rest. An .html file is a source file too (isPlainTextPathWith), so this
+  // is checked first.
+  function embeddedKindOf(filePath) {
+    if (/\.(html?|xhtml)$/i.test(filePath || '')) return 'html';
+    if (/\.pdf$/i.test(filePath || '')) return 'pdf';
+    return null;
+  }
+
   // Page-with-a-label-band icon for the files the app opens, used by the
   // explorer, the tab strip and the TOC links list. Emoji for these were
   // hard to tell apart at tree size; the band colour carries the kind, the
@@ -126,6 +137,8 @@
     puml: '#8a3ffc',
     json: '#d48c00',
     text: '#6e7781',
+    html: '#e34c26',
+    pdf: '#b30b00',
   };
 
   // `kind` is one of the FILE_BADGE_COLOR keys; plain-text files show their
@@ -291,6 +304,7 @@
     projectRootIn,
     escapeHtml,
     isPlainTextPathWith,
+    embeddedKindOf,
     CODE_FILE_EXTENSIONS,
     fileBadgeSvg,
     treeAgeStep,

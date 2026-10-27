@@ -1,8 +1,9 @@
 const {
-  app, BrowserWindow, webContents, ipcMain, dialog, shell, Menu, clipboard, nativeImage, nativeTheme, net, screen,
+  app, BrowserWindow, webContents, ipcMain, dialog, shell, Menu, clipboard, nativeImage, nativeTheme, net, protocol, screen,
 } = require('electron');
 const path = require('path');
 const fs = require('fs');
+const { pathToFileURL } = require('url');
 const { spawn } = require('child_process');
 const pty = require('node-pty');
 const MarkdownIt = require('markdown-it');
@@ -12,6 +13,33 @@ const hljs = require('highlight.js');
 const sanitizeHtml = require('sanitize-html');
 const { CODE_LANGUAGE_BY_EXT, CODE_HIGHLIGHT_MAX_LENGTH, codeLanguageOf } = require('./src/code-languages.js');
 const { DEFAULT_LANGUAGE, SUPPORTED_LANGUAGES, STRINGS, translate } = require('./assets/i18n.js');
+
+// Tells preload.js where the app's own pages are, so the bridge goes to
+// them alone and not to a project's .html file that happens to share a
+// page's name (the viewer shows those in a frame of the tab page).
+const APP_PAGES_ARG = `--mdv-app-pages=${pathToFileURL(path.join(__dirname, 'src')).href}`;
+
+// An .html file the viewer shows is loaded as mdv-file://local/<path>
+// (see showEmbeddedFile in doc.js) rather than file://: its frame is
+// sandboxed to an opaque origin, which Chromium won't let load file://
+// stylesheets, scripts or images, so the page's relative links resolve to
+// this scheme instead. Being another origin than the app's pages, it gets
+// no bridge (preload.js) and can't reach the tab page; and as an opaque
+// origin it can't fetch() other files to read them, only embed them, as a
+// browser allows a page.
+const EMBED_FILE_SCHEME = 'mdv-file';
+protocol.registerSchemesAsPrivileged([
+  { scheme: EMBED_FILE_SCHEME, privileges: { standard: true, secure: true, stream: true } },
+]);
+
+function registerEmbedFileProtocol() {
+  protocol.handle(EMBED_FILE_SCHEME, (request) => {
+    let filePath = decodeURIComponent(new URL(request.url).pathname);
+    // /D:/dir/page.html on Windows.
+    if (/^\/[a-zA-Z]:\//.test(filePath)) filePath = filePath.slice(1);
+    return net.fetch(pathToFileURL(filePath).href);
+  });
+}
 
 // A preview build (`npm run dist:preview`) carries a prerelease version such
 // as 1.3.0-preview.3 and installs over the released app, so once it is running
@@ -1283,6 +1311,8 @@ function listDir(dirPath) {
         isMarkdown: !isDir && /\.(md|markdown)$/i.test(e.name),
         isPuml: !isDir && /\.puml$/i.test(e.name),
         isJson: !isDir && /\.json$/i.test(e.name),
+        isHtml: !isDir && /\.(html?|xhtml)$/i.test(e.name),
+        isPdf: !isDir && /\.pdf$/i.test(e.name),
         isPlainText: !isDir && plainTextPattern.test(e.name),
       };
     });
@@ -1928,6 +1958,7 @@ function createWindow({ bounds: requestedBounds = null } = {}) {
       // The tabs are iframes of the page (src/doc.html), each with the
       // same bridge (see preload.js).
       nodeIntegrationInSubFrames: true,
+      additionalArguments: [APP_PAGES_ARG],
     },
   });
 
@@ -2191,6 +2222,8 @@ function sendToAllTabs(channel, ...args) {
 }
 
 function fileKindOf(filePath) {
+  if (/\.(html?|xhtml)$/i.test(filePath)) return 'html';
+  if (/\.pdf$/i.test(filePath)) return 'pdf';
   if (/\.puml$/i.test(filePath)) return 'puml';
   if (/\.json$/i.test(filePath)) return 'json';
   if (plainTextExtensionPattern().test(filePath)) return 'text';
@@ -2505,6 +2538,7 @@ function tabWindowOptions(bounds) {
       nodeIntegration: false,
       sandbox: true,
       nodeIntegrationInSubFrames: true,
+      additionalArguments: [APP_PAGES_ARG],
     },
   };
 }
@@ -2590,6 +2624,14 @@ async function returnTabsToOwner(host) {
 // What a program window and a tab window both do for the document on
 // screen in them.
 function wireDocWindowEvents(win, host) {
+  // A web link followed inside an .html file the viewer shows (see
+  // showEmbeddedFile in doc.js) opens in the browser, as links in a
+  // rendered document do, instead of loading the site into the tab.
+  win.webContents.on('will-frame-navigate', (event) => {
+    if (event.isMainFrame || !/^https?:\/\//i.test(event.url)) return;
+    event.preventDefault();
+    shell.openExternal(event.url);
+  });
   // Mouse "back"/"forward" buttons (Windows: XButton1/XButton2) — the app
   // has no real browser-style navigation for webContents.goBack() to
   // operate on (every document switch is a same-page innerHTML swap, not a
@@ -2994,6 +3036,7 @@ if (!gotSingleInstanceLock) {
   });
 
   app.whenReady().then(() => {
+    registerEmbedFileProtocol();
     const win = createWindow();
     const target = extractOpenTargetFromArgv(process.argv);
     if (target) openTargetInWindow(win, target);
@@ -3027,10 +3070,12 @@ ipcMain.handle('dialog:open-file', async (event) => {
       {
         name: 'Supported Files',
         extensions: [
-          'md', 'markdown', 'puml', 'json', 'txt', 'log', ...Object.keys(CODE_LANGUAGE_BY_EXT), ...customExtensions,
+          'md', 'markdown', 'puml', 'json', 'pdf', 'txt', 'log', ...Object.keys(CODE_LANGUAGE_BY_EXT), ...customExtensions,
         ],
       },
       { name: 'Markdown', extensions: ['md', 'markdown'] },
+      { name: 'HTML', extensions: ['html', 'htm', 'xhtml'] },
+      { name: 'PDF', extensions: ['pdf'] },
       { name: 'PlantUML', extensions: ['puml'] },
       { name: 'JSON', extensions: ['json'] },
       { name: 'Text', extensions: ['txt', 'log', ...customExtensions] },

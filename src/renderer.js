@@ -712,6 +712,10 @@
           ? ' puml'
           : item.isJson
           ? ' json'
+          : item.isHtml
+          ? ' html'
+          : item.isPdf
+          ? ' pdf'
           : item.isPlainText
           ? ' plaintext'
           : ' non-md');
@@ -747,6 +751,10 @@
         ? 'puml'
         : item.isJson
         ? 'json'
+        : item.isHtml
+        ? 'html'
+        : item.isPdf
+        ? 'pdf'
         : item.isPlainText
         ? 'text'
         : null;
@@ -785,7 +793,7 @@
             await renderTreeLevel(childrenContainer, item.path, depth + 1, indentUnit);
           }
         });
-      } else if (item.isMarkdown || item.isPuml || item.isJson || item.isPlainText) {
+      } else if (item.isMarkdown || item.isPuml || item.isJson || item.isHtml || item.isPdf || item.isPlainText) {
         // A click shows the document in the preview tab, which the next
         // click replaces; a double-click keeps it open in a tab of its own.
         row.addEventListener('click', () => {
@@ -2279,7 +2287,7 @@
   }
 
   function isViewablePath(filePath) {
-    return /\.(md|markdown|puml|json)$/i.test(filePath) || isPlainTextPath(filePath);
+    return /\.(md|markdown|puml|json|pdf)$/i.test(filePath) || isPlainTextPath(filePath);
   }
 
   // The window's one-line status slot, at the end of the tab strip, shared
@@ -3354,7 +3362,7 @@
 
       const icon = doc.createElement('span');
       icon.className = 'doc-tab-icon';
-      const kind = tab.draft ? 'md' : { markdown: 'md', puml: 'puml', json: 'json', text: 'text' }[tab.kind];
+      const kind = tab.draft ? 'md' : { markdown: 'md', puml: 'puml', json: 'json', html: 'html', pdf: 'pdf', text: 'text' }[tab.kind];
       icon.innerHTML = fileBadgeSvg(kind || 'md', tab.path || '');
       node.appendChild(icon);
 

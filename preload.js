@@ -4,7 +4,14 @@ const { contextBridge, ipcRenderer, webUtils } = require('electron');
 // the tab host in main.js), but only the app's own two pages get the
 // bridge: the window page and the tab page. The rendered documents inside
 // a tab, and the tab windows the window page fills itself, get nothing.
-const PAGE = location.protocol === 'file:' ? location.pathname.split('/').pop() : '';
+// A page counts only from the app's own folder (main.js passes it in as
+// --mdv-app-pages): an .html file of a project, shown in a frame of the
+// tab page, may well be called index.html too.
+const APP_PAGES_ARG = process.argv.find((arg) => arg.startsWith('--mdv-app-pages='));
+const APP_PAGES_URL = APP_PAGES_ARG ? APP_PAGES_ARG.slice('--mdv-app-pages='.length).toLowerCase() + '/' : null;
+const HERE = location.protocol === 'file:' ? location.href.split(/[?#]/)[0] : '';
+const PAGE =
+  APP_PAGES_URL && HERE.toLowerCase().startsWith(APP_PAGES_URL) ? HERE.slice(APP_PAGES_URL.length) : '';
 const TAB_ID = PAGE === 'doc.html' ? Number(new URLSearchParams(location.search).get('tab')) || 0 : 0;
 
 if (PAGE === 'index.html' || TAB_ID) contextBridge.exposeInMainWorld('mdviewer', {

@@ -762,6 +762,9 @@ html, body {
 #btn-fullscreen.hidden { display: none; }
 #btn-full-width.hidden { display: none; }
 #btn-editor-layout.hidden { display: none; }
+#btn-toggle-edit.hidden { display: none; }
+#btn-save-source.hidden { display: none; }
+#btn-refresh-puml.hidden { display: none; }
 .preview-toolbar button#btn-full-width.active { color: var(--accent); }
 
 .toolbar-right {
@@ -1208,7 +1211,8 @@ html, body {
   grid-column: 1;
   grid-row: 2;
 }
-.preview-body.editor-stacked #preview-frame {
+.preview-body.editor-stacked #preview-frame,
+.preview-body.editor-stacked #embed-frame {
   grid-column: 1;
   grid-row: 3;
   min-width: 0;
@@ -1220,14 +1224,19 @@ html, body {
   grid-row: 1 / -1;
 }
 
-#preview-frame {
+#preview-frame,
+#embed-frame {
   flex: 1;
   min-width: 160px;
   border: none;
   width: 100%;
   background: var(--bg-app);
 }
-#preview-frame.hidden { display: none; }
+#preview-frame.hidden,
+#embed-frame.hidden { display: none; }
+/* A page brings its own background; one that sets none is white, as in a
+   browser. */
+#embed-frame { background: #fff; }
 
 /* ---- Welcome screen (shown when no project is open) ---- */
 
