@@ -3590,6 +3590,19 @@
     el.findInput.placeholder = t(target === 'editor' ? 'find.placeholderEditor' : 'find.placeholder');
   }
 
+  // Only while the viewer has the focus: its selection outlives the focus
+  // moving to the find input, and must not overwrite what is typed there.
+  function viewerSelectedText() {
+    if (document.activeElement !== el.frame) return '';
+    let selection = null;
+    try {
+      selection = el.frame.contentWindow && el.frame.contentWindow.getSelection();
+    } catch (err) {
+      return '';
+    }
+    return selection && !selection.isCollapsed ? selection.toString().trim() : '';
+  }
+
   function openFindBar() {
     // Ctrl+F searches wherever the caret is: the source when it's in the
     // editor, the rendered document otherwise. Pressing it again while the
@@ -3605,8 +3618,13 @@
       // An editor's find seeds itself from what's selected, if that is a
       // plain one-line stretch of text.
       if (selected && !selected.includes('\n')) el.findInput.value = selected;
-    } else if (!wasOpen) {
-      setFindTarget('viewer');
+    } else {
+      // The viewer's find seeds itself the same way, from text selected in
+      // the rendered document. Selecting there while the editor's find is
+      // open means the user now wants to search the viewer.
+      const selected = viewerSelectedText();
+      if (!wasOpen || selected) setFindTarget('viewer');
+      if (selected && !selected.includes('\n')) el.findInput.value = selected;
     }
 
     el.findBar.classList.remove('hidden');
