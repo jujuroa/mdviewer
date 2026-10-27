@@ -103,4 +103,4 @@ const result = spawnSync(
 
 if (result.status !== 0) process.exit(result.status ?? 1);
 
-console.log(`\n[dist-preview] built: dist/preview/${PRODUCT_NAME} Setup ${version}.exe`);
+console.log(`\n[dist-preview] built: dist/preview/"${PRODUCT_NAME} Setup ${version}.exe"`);
