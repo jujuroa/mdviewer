@@ -84,17 +84,35 @@ test('settings, secrets and context areas', async () => {
     const settings = new AddonSettings(path.join(dir, 'addon-settings.json'));
     const secrets = new AddonSecrets(path.join(dir, 'addon-secrets.json'), crypto);
     const context = [];
+    const changed = [];
+    const opened = [];
     const r = new ApiRouter();
-    registerSettingsApi(r, { settings, secrets, setContext: (...a) => context.push(a) });
+    registerSettingsApi(r, {
+      settings,
+      secrets,
+      setContext: (...a) => context.push(a),
+      changed: (e, key) => changed.push(`${e.id}.${key}`),
+      openForm: (c) => opened.push(c.addonId),
+    });
     const me = { addonId: 'a', entry };
     assert.deepEqual((await r.call(me, 'settings/get', {})).result, { greeting: 'hi', count: 1, on: null, mode: 'x' });
     assert.equal((await r.call(me, 'settings/update', { key: 'count', value: 5 })).ok, true);
     assert.equal((await r.call(me, 'settings/get', { key: 'count' })).result, 5);
+    assert.equal((await r.call(me, 'settings/update', { key: 'count', value: 5 })).ok, true);
+    assert.deepEqual(changed, ['a.count'], 'only a new value is announced');
     assert.equal((await r.call(me, 'settings/update', { key: 'count', value: 'five' })).error.name, 'InvalidParams');
     assert.equal((await r.call(me, 'settings/update', { key: 'mode', value: 'z' })).error.name, 'InvalidParams');
     assert.equal((await r.call(me, 'settings/update', { key: 'nope', value: 1 })).error.name, 'NotFound');
     assert.equal((await r.call(me, 'settings/get', { key: 'nope' })).error.name, 'NotFound');
     assert.equal(new AddonSettings(path.join(dir, 'addon-settings.json')).get(entry, 'count'), 5);
+    assert.deepEqual(changed, ['a.count'], 'refused values are not announced');
+
+    // settings/open: experimental, and only with something to show.
+    assert.equal((await r.call(me, 'settings/open', {})).error.name, 'NotSupported');
+    assert.deepEqual(await r.call({ ...me, experimentalApi: ['settings.open'] }, 'settings/open', {}), { ok: true, result: null });
+    assert.deepEqual(opened, ['a']);
+    const bare = { addonId: 'c', entry: { id: 'c', manifest: {} }, experimentalApi: ['settings.open'] };
+    assert.equal((await r.call(bare, 'settings/open', {})).error.name, 'NotFound');
 
     assert.equal((await r.call(me, 'secrets/get', { key: 'token' })).result, null);
     assert.equal((await r.call(me, 'secrets/set', { key: 'token', value: 's3cret' })).ok, true);

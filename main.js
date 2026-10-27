@@ -3790,21 +3790,25 @@ function readyBackgroundFrame(addonId) {
   return rec && rec.ready && rec.win && !rec.win.isDestroyed() ? { rec, frame: rec.win.webContents.mainFrame } : null;
 }
 
+// An add-on's frames that are up: { frame, kind: 'background' | 'tab' |
+// 'pane', tab? }.
+function readyAddonFrames(addonId) {
+  const out = [];
+  const bg = readyBackgroundFrame(addonId);
+  if (bg) out.push({ frame: bg.frame, kind: 'background' });
+  for (const tab of tabsById.values()) {
+    if (tab.kind === 'addon' && tab.addon.id === addonId && tab.frame && tab.addon.ready) out.push({ frame: tab.frame, kind: 'tab', tab });
+    if (tab.pane && tab.pane.frame && tab.pane.ready && addonIdOf(tab.pane.url) === addonId) out.push({ frame: tab.pane.frame, kind: 'pane', tab });
+  }
+  return out;
+}
+
 registerMessagingApi(addonApi, {
-  frames: (caller, to) => {
-    const out = [];
-    if (to !== 'tabs') {
-      const bg = readyBackgroundFrame(caller.addonId);
-      if (bg && caller.kind !== 'background') out.push(bg.frame);
-    }
-    if (to !== 'background') {
-      for (const tab of tabsById.values()) {
-        if (tab.kind === 'addon' && tab.addon.id === caller.addonId && tab.frame && tab.addon.ready && !(caller.kind === 'tab' && caller.tab === tab)) out.push(tab.frame);
-        if (tab.pane && tab.pane.frame && tab.pane.ready && addonIdOf(tab.pane.url) === caller.addonId && !(caller.kind === 'pane' && caller.tab === tab)) out.push(tab.pane.frame);
-      }
-    }
-    return out;
-  },
+  frames: (caller, to) =>
+    readyAddonFrames(caller.addonId)
+      .filter((f) => (to === 'tabs' ? f.kind !== 'background' : to === 'background' ? f.kind === 'background' : true))
+      .filter((f) => !(f.kind === caller.kind && (f.kind === 'background' || f.tab === caller.tab)))
+      .map((f) => f.frame),
   background: async (caller) => {
     const entry = addonRegistry.running(caller.addonId);
     const rec = entry && backgroundFrames.start(entry, 'messaging');
@@ -4457,7 +4461,13 @@ function startAddonRegistry() {
     encrypt: (text) => safeStorage.encryptString(text),
     decrypt: (buffer) => safeStorage.decryptString(buffer),
   });
-  registerSettingsApi(addonApi, { settings: addonSettings, secrets: addonSecrets, setContext: setAddonContext });
+  registerSettingsApi(addonApi, {
+    settings: addonSettings,
+    secrets: addonSecrets,
+    setContext: setAddonContext,
+    changed: notifyAddonSettingChanged,
+    openForm: (caller) => showAddonSettingsForm(callerHost(caller), caller.addonId),
+  });
   registerDocumentsApi(addonApi, {
     roots: () => openProjectRoots(),
     projectsOf: (caller) => {
@@ -4710,6 +4720,24 @@ function addonWithSettings(id) {
   return entry && entry.status === 'ok' ? entry : null;
 }
 
+// settings.changed (protocol 14, experimental settings.changed) to every
+// frame of the add-on that is up, the one that changed it too.
+function notifyAddonSettingChanged(entry, key) {
+  const running = addonRegistry && addonRegistry.running(entry.id);
+  if (!running || !openExperimentalApi(running).includes('settings.changed')) return;
+  const data = { key, value: addonSettings.get(running, key) };
+  for (const { frame } of readyAddonFrames(entry.id)) sendToFrame(frame, 'addon:event', { name: 'settings.changed', data });
+}
+
+// settings/open: the form in the window page that owns host (a tab
+// window's settings show in its program window, where the modal lives).
+function showAddonSettingsForm(host, id) {
+  if (!host || host.owner.isDestroyed()) return;
+  host.owner.webContents.send('addons:open-settings', id);
+  if (host.owner.isMinimized()) host.owner.restore();
+  host.owner.focus();
+}
+
 appIpc.handle('addons:settings-form', (event, id) => {
   const entry = addonWithSettings(id);
   if (!entry) return null;
@@ -4728,7 +4756,9 @@ appIpc.handle('addons:settings-update', (event, id, key, value) => {
   const entry = addonWithSettings(id);
   if (!entry) return { ok: false };
   try {
+    const before = addonSettings.get(entry, key);
     addonSettings.update(entry, key, value);
+    if (before !== value) notifyAddonSettingChanged(entry, key);
     return { ok: true };
   } catch (err) {
     return { ok: false, message: err.message };

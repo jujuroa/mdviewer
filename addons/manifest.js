@@ -242,7 +242,7 @@ const HOST = {
   capabilities: { app: 1, settings: 1, secrets: 1, context: 1, workspace: 1, documents: 1, editor: 1, edit: 1, ui: 1, tabs: 1, storage: 1, messaging: 1 },
   // The experimental APIs this app has (protocol 5.4); they may change or
   // go in any 2.x release.
-  experimentalApi: ['host.info', 'documents.sync'],
+  experimentalApi: ['host.info', 'documents.sync', 'settings.changed', 'settings.open'],
 };
 
 // Why the app cannot run a manifest that passed checkManifest, as problems

@@ -513,6 +513,9 @@
     settingsEl.close.focus();
   }
 
+  // An add-on asked for its own (settings/open).
+  window.mdviewer.onOpenAddonSettings((id) => openAddonSettings(id));
+
   settingsEl.close.addEventListener('click', () => settingsEl.overlay.classList.add('hidden'));
   settingsEl.overlay.addEventListener('click', (e) => {
     if (e.target === settingsEl.overlay) settingsEl.overlay.classList.add('hidden');

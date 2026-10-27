@@ -132,5 +132,5 @@ const result = await api.edit.apply({
 
 - 네트워크는 manifest `network.hosts`에 적은 주소로만 나갈 수 있다(CSP). 그 밖의 `fetch`, 다른 주소로의 이동, `window.open`, 폼 전송은 막힌다.
 - 파일은 `storage/*`의 데이터 폴더(`%LOCALAPPDATA%\mdviewer\addon-data\<id>\`)와, 권한이 있으면 열린 프로젝트 안의 문서만 다룬다.
-- 실험 API(`experimentalApi`, 예: `documents.sync`)는 `--addon-dev`로 불러왔거나 설정 `addons.allowExperimentalApi`에 있는 add-on에만 열리고, 2.x 어느 버전에서든 바뀔 수 있다. 앱에 없는 이름은 관리 화면에 경고로 나온다.
+- 실험 API(`experimentalApi`, 예: `documents.sync`, `settings.changed`, `settings.open`)는 `--addon-dev`로 불러왔거나 설정 `addons.allowExperimentalApi`에 있는 add-on에만 열리고, 2.x 어느 버전에서든 바뀔 수 있다. 앱에 없는 이름은 관리 화면에 경고로 나온다.
 - 새 영역 버전이 필요한 메서드는 쓰기 전에 `mdviewerAddon.app.capabilities`로 확인한다.

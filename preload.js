@@ -82,6 +82,19 @@ if (location.protocol === 'mdviewer-addon:') {
         ipcRenderer.send('addon:message-result', id, { ok: false, error: { name: 'InternalError', message: 'The answer is not cloneable' } });
       }
     });
+    // Events from the host (protocol 8.6, 14). Only those of an opened
+    // experimental API come yet: settings.changed.
+    const EVENT_NAMES = (hello.app.experimentalApi || []).includes('settings.changed') ? ['settings.changed'] : [];
+    const eventHandlers = new Map(); // name -> Set of handlers
+    ipcRenderer.on('addon:event', (event, { name, data } = {}) => {
+      for (const handler of eventHandlers.get(name) || []) {
+        try {
+          Promise.resolve(handler(data)).catch(() => {});
+        } catch (err) {
+          /* the handler's own problem */
+        }
+      }
+    });
     // A handler gets so long, then the host goes on without it.
     const within = (handler, ms) =>
       Promise.race([Promise.resolve().then(handler), new Promise((resolve) => setTimeout(resolve, ms))]);
@@ -152,6 +165,17 @@ if (location.protocol === 'mdviewer-addon:') {
           if (typeof handler !== 'function') return { dispose: () => {} };
           messageHandlers.add(handler);
           return { dispose: () => messageHandlers.delete(handler) };
+        },
+      },
+      events: {
+        on: (name, handler) => {
+          // A thrown value reaches the page as an Error with its message
+          // only, so the protocol's error name leads the message.
+          if (!EVENT_NAMES.includes(name)) throw new Error(`NotSupported: No such event: ${name}`);
+          if (typeof handler !== 'function') return { dispose: () => {} };
+          if (!eventHandlers.has(name)) eventHandlers.set(name, new Set());
+          eventHandlers.get(name).add(handler);
+          return { dispose: () => eventHandlers.get(name).delete(handler) };
         },
       },
       tabs: {
@@ -366,6 +390,7 @@ if (PAGE === 'index.html' || TAB_ID) contextBridge.exposeInMainWorld('mdviewer',
   rescanAddons: () => ipcRenderer.invoke('addons:rescan'),
   addonSettingsForm: (id) => ipcRenderer.invoke('addons:settings-form', id),
   updateAddonSetting: (id, key, value) => ipcRenderer.invoke('addons:settings-update', id, key, value),
+  onOpenAddonSettings: (callback) => ipcRenderer.on('addons:open-settings', (event, id) => callback(id)),
   setAddonSecret: (id, key, value) => ipcRenderer.invoke('addons:secret-set', id, key, value),
   onAddonsChanged: (callback) => ipcRenderer.on('addons:changed', (event, list) => callback(list)),
   onMenuAddonLog: (callback) => ipcRenderer.on('menu:addons-log', callback),

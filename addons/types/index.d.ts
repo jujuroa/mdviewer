@@ -171,6 +171,18 @@ declare namespace MdviewerAddon {
     get(params: { key: string }): Promise<Json>;
     get(params?: {}): Promise<Record<string, Json>>;
     update(params: { key: string; value: Json }): Promise<null>;
+    /** Experimental: settings.open. Shows the Extensions screen's settings for this add-on. */
+    open(params?: {}): Promise<null>;
+  }
+
+  /** Events from the host (14). Experimental: settings.changed. */
+  interface EventMap {
+    'settings.changed': { key: string; value: Json };
+  }
+
+  interface EventsArea {
+    /** Throws an Error whose message starts with "NotSupported:" for an event not open to this add-on. */
+    on<K extends keyof EventMap>(name: K, handler: (data: EventMap[K]) => unknown): Disposable;
   }
 
   interface ContextArea {
@@ -226,6 +238,7 @@ declare namespace MdviewerAddon {
     context: ContextArea;
     storage: StorageArea;
     messaging: MessagingArea;
+    events: EventsArea;
     /** Any method by its protocol name, e.g. call('documents/read', { path }). */
     call(method: string, params?: object): Promise<unknown>;
     /** The page has set up what it handles (within 10 s of loading). */

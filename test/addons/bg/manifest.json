@@ -113,6 +113,8 @@
     ]
   },
   "experimentalApi": [
-    "host.info"
+    "host.info",
+    "settings.changed",
+    "settings.open"
   ]
 }
