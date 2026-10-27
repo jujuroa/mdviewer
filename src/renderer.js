@@ -257,6 +257,8 @@
     list: document.getElementById('addons-list'),
     close: document.getElementById('btn-close-addons'),
     rescan: document.getElementById('btn-addons-rescan'),
+    register: document.getElementById('btn-addons-register'),
+    error: document.getElementById('addons-error'),
   };
 
   function addonProblemItem(problem, warning) {
@@ -313,6 +315,13 @@
         devButton.textContent = t('addons.devToolsButton');
         devButton.addEventListener('click', () => window.mdviewer.openBackgroundDevTools(addon.id));
         head.appendChild(devButton);
+      }
+      if (addon.source === 'registered') {
+        const unregister = document.createElement('button');
+        unregister.className = 'addon-log-button addon-unregister-button';
+        unregister.textContent = t('addons.unregister');
+        unregister.addEventListener('click', async () => renderAddons(await window.mdviewer.unregisterAddon(addon.dir)));
+        head.appendChild(unregister);
       }
       const logButton = document.createElement('button');
       logButton.className = 'addon-log-button';
@@ -374,6 +383,7 @@
 
   async function openAddons() {
     renderAddons(await window.mdviewer.listAddons());
+    addonsEl.error.classList.add('hidden');
     addonsEl.overlay.classList.remove('hidden');
     addonsEl.close.focus();
   }
@@ -390,6 +400,14 @@
     if (e.key === 'Escape') closeAddons();
   });
   addonsEl.rescan.addEventListener('click', async () => renderAddons(await window.mdviewer.rescanAddons()));
+  // The user picks an add-on's manifest.json; its folder is kept and looked
+  // at from then on.
+  addonsEl.register.addEventListener('click', async () => {
+    const result = await window.mdviewer.registerAddon();
+    renderAddons(result.list);
+    addonsEl.error.textContent = result.error ? t(`addons.registerError.${result.error}`) : '';
+    addonsEl.error.classList.toggle('hidden', !result.error);
+  });
   window.mdviewer.onMenuManageAddons(openAddons);
 
   // One add-on's settings and secrets (from the Extensions screen). Values

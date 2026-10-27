@@ -16,6 +16,8 @@ MD Viewer 2.0부터 add-on으로 앱에 명령·메뉴·탭·설정을 더할 �
 npm start -- --addon-dev=examples/addons/hello
 ```
 
+설치본에서도 쓰려면 "확장 > 확장 관리..."의 [add-on 등록...]에서 add-on 폴더의 `manifest.json`을 고른다. 등록한 폴더는 앱을 다시 켜도 기억되고, 실험 API와 자동 다시 불러오기는 `--addon-dev`와 같다. 처음 켤 때 권한 동의를 묻는 것만 다르다. [등록 해제]로 뺀다.
+
 여러 개는 인자를 반복한다. `--addon-dev`로 불러온 add-on은 다음과 같이 다뤄진다.
 
 - 처음 실행할 때의 동의를 묻지 않는다.

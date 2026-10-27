@@ -275,3 +275,41 @@ test('experimentalWarnings: names this app does not have', () => {
   assert.deepEqual(experimentalWarnings({ experimentalApi: ['documents.sync', 'tree.viewz'] }), [{ path: 'experimentalApi[1]', code: 'unknownExperimental', detail: 'tree.viewz' }]);
   assert.deepEqual(experimentalWarnings({}), []);
 });
+
+test('registered add-on folders: kept by the store, looked at after --addon-dev, experimental APIs open', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mdv-regd-'));
+  const write = (rel, value) => {
+    fs.mkdirSync(path.dirname(path.join(root, rel)), { recursive: true });
+    fs.writeFileSync(path.join(root, rel), JSON.stringify(value));
+  };
+  try {
+    const store = new AddonStore(path.join(root, 'state.json'));
+    const mine = path.join(root, 'work', 'sample');
+    assert.equal(store.addRegistered(mine), true);
+    assert.equal(store.addRegistered(process.platform === 'win32' ? mine.toUpperCase() : mine), false, 'same folder again');
+    assert.deepEqual(new AddonStore(path.join(root, 'state.json')).registered(), [mine]);
+
+    write('work/sample/manifest.json', good({ experimentalApi: ['settings.open'] }));
+    write('installed/sample/manifest.json', good());
+    write('work/other/manifest.json', good({ id: 'other', experimentalApi: ['settings.open'], contributes: { tabs: [{ id: 'other.main', title: 'Main', entry: 'main.html' }] } }));
+    const found = discover({ registeredDirs: store.registered(), installDir: path.join(root, 'installed'), extraDirs: [], devDirs: [] });
+    const sample = found.filter((e) => e.id === 'sample');
+    assert.deepEqual(sample.map((e) => `${e.source}:${e.status}`), ['registered:ok', 'installed:shadowed']);
+
+    // Only the registered one may use experimental APIs without policy.
+    store.addRegistered(path.join(root, 'work', 'other'));
+    const again = discover({ registeredDirs: store.registered(), installDir: null });
+    assert.equal(again.find((e) => e.id === 'other').status, 'ok');
+    write('installed2/other/manifest.json', good({ id: 'other', experimentalApi: ['settings.open'], contributes: { tabs: [{ id: 'other.main', title: 'Main', entry: 'main.html' }] } }));
+    assert.equal(discover({ installDir: path.join(root, 'installed2') })[0].status, 'incompatible');
+
+    // A registered folder that went away shows as broken until unregistered.
+    store.addRegistered(path.join(root, 'gone'));
+    assert.equal(discover({ registeredDirs: store.registered() }).find((e) => e.id === 'gone').problems[0].code, 'noManifest');
+    assert.equal(store.removeRegistered(path.join(root, 'gone')), true);
+    assert.equal(store.removeRegistered(path.join(root, 'gone')), false);
+    assert.equal(store.registered().length, 2);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});

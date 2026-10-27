@@ -9,6 +9,12 @@ const path = require('path');
 const { HOST, checkManifest, compatibilityProblems, experimentalWarnings, activationEvents, localize } = require('./manifest.js');
 const { DEFAULT_POLICY, policyProblems } = require('./policy.js');
 
+// Loaded with --addon-dev or registered by the user: experimental APIs
+// open, reloaded when its files change (registered ones still ask consent).
+function isDevSource(source) {
+  return source === 'dev' || source === 'registered';
+}
+
 function readJson(file) {
   let text;
   try {
@@ -23,12 +29,16 @@ function readJson(file) {
   }
 }
 
-// The folders to look at, first to last: each --addon-dev folder is an
-// add-on itself; the extra folders and the install folder hold one add-on
-// per subfolder (folders starting with a dot, such as the installer's
-// .staging, are skipped).
-function candidateFolders({ devDirs = [], extraDirs = [], installDir = null }) {
-  const list = devDirs.map((dir) => ({ dir: path.resolve(dir), source: 'dev' }));
+// The folders to look at, first to last: each --addon-dev folder and each
+// folder the user registered (by its manifest.json) is an add-on itself;
+// the extra folders and the install folder hold one add-on per subfolder
+// (folders starting with a dot, such as the installer's .staging, are
+// skipped).
+function candidateFolders({ devDirs = [], registeredDirs = [], extraDirs = [], installDir = null }) {
+  const list = [
+    ...devDirs.map((dir) => ({ dir: path.resolve(dir), source: 'dev' })),
+    ...registeredDirs.map((dir) => ({ dir: path.resolve(dir), source: 'registered' })),
+  ];
   const roots = [...extraDirs.map((root) => ({ root, source: 'extra' }))];
   if (installDir) roots.push({ root: installDir, source: 'installed' });
   for (const { root, source } of roots) {
@@ -67,7 +77,7 @@ function loadAddon({ dir, source }, { language, host, policy }) {
   const strings = [language, 'en'].map((lang) => readJson(path.join(dir, 'locales', `${lang}.json`)).value || null);
   entry.manifest = localize(raw, strings);
   entry.activation = activationEvents(raw);
-  const experimentalAllowed = source === 'dev' || policy.allowExperimentalApi.includes(raw.id);
+  const experimentalAllowed = isDevSource(source) || policy.allowExperimentalApi.includes(raw.id);
   entry.warnings = [...entry.warnings, ...experimentalWarnings(raw, { host })];
   entry.problems = compatibilityProblems(raw, { host, experimentalAllowed });
   if (entry.problems.length) {
@@ -129,4 +139,4 @@ class Registry {
   }
 }
 
-module.exports = { Registry, discover, candidateFolders };
+module.exports = { Registry, discover, candidateFolders, isDevSource };

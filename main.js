@@ -20,7 +20,7 @@ const { contentVersion, writeIfUnchanged } = require('./lib/doc-version.js');
 const { isAppPageUrl, docTabIdOf, originIn, subframeNavigationAllowed } = require('./lib/app-frames.js');
 const { registerAddonScheme, serveAddonPages, limitPermissionsToAppPages, refuseAddonDownloads } = require('./addons/protocol.js');
 const { SCHEME: ADDON_SCHEME } = require('./addons/pages.js');
-const { Registry: AddonRegistry } = require('./addons/registry.js');
+const { Registry: AddonRegistry, isDevSource } = require('./addons/registry.js');
 const { AddonStore } = require('./addons/store.js');
 const { mergePolicy } = require('./addons/policy.js');
 const { createBackgroundFrames } = require('./addons/background.js');
@@ -1963,7 +1963,7 @@ function buildAppMenu() {
             click: () => saveSettings({ ...loadSettings(), 'addons.trace': level }),
           })),
         },
-        ...(addonDevDirs().length ? [{ label: t('menu.reloadDevAddons'), click: () => reloadDevAddons('menu') }] : []),
+        ...(addonDevDirs().length || (addonStore && addonStore.registered().length) ? [{ label: t('menu.reloadDevAddons'), click: () => reloadDevAddons('menu') }] : []),
         ...addonTabMenuItems((choice, win) => openAddonTabAsked(docHostFor(win), choice.addonId, choice.tabId)),
       ],
     },
@@ -3284,7 +3284,7 @@ appIpc.handle('addons:palette-items', () => {
     for (const command of c.commands || []) items.push({ kind: 'command', id: command.id, label: `${entry.manifest.name}: ${command.title}` });
     for (const tab of c.tabs || []) items.push({ kind: 'tab', addonId: entry.id, tabId: tab.id, label: t('palette.openTab', { name: `${entry.manifest.name}: ${tab.title}` }) });
   }
-  if (addonDevDirs().length) items.push({ kind: 'dev-reload', label: t('menu.reloadDevAddons') });
+  if (addonDevDirs().length || (addonStore && addonStore.registered().length)) items.push({ kind: 'dev-reload', label: t('menu.reloadDevAddons') });
   return items;
 });
 
@@ -3886,10 +3886,11 @@ function listProjectFiles(root, extensions) {
 }
 
 // The experimental APIs open to an add-on: those its manifest names, if it
-// was loaded with --addon-dev or policy allows it (protocol 5.4).
+// was loaded with --addon-dev or registered by the user, or policy allows
+// it (protocol 5.4).
 function openExperimentalApi(entry) {
   const named = ((entry.manifest && entry.manifest.experimentalApi) || []).filter((name) => ADDON_HOST.experimentalApi.includes(name));
-  if (entry.source === 'dev') return named;
+  if (isDevSource(entry.source)) return named;
   const allowed = addonRegistryOptions().policy.allowExperimentalApi;
   return allowed.includes(entry.id) ? named : [];
 }
@@ -4437,6 +4438,7 @@ function addonRegistryOptions() {
   return {
     language: currentLanguage,
     devDirs: addonDevDirs(),
+    registeredDirs: addonStore.registered(),
     extraDirs: Array.isArray(extraDirs) ? extraDirs.filter((d) => typeof d === 'string') : [],
     installDir: addonInstallDir(),
     policy: mergePolicy(settings, addonPolicyFile()),
@@ -4607,29 +4609,39 @@ async function reloadAddon(id) {
 
 async function reloadDevAddons(why) {
   for (const entry of addonRegistry.list()) {
-    if (entry.source !== 'dev') continue;
+    if (!isDevSource(entry.source)) continue;
     logAddon(entry.id, 'info', `reloading (${why})`);
     await reloadAddon(entry.id);
   }
 }
 
-// --addon-dev folders: a change in one reloads its add-on (changes that
-// come together, as an editor's save does, once).
+// --addon-dev and registered folders: a change in one reloads its add-on
+// (changes that come together, as an editor's save does, once). Called
+// again when the registered folders change.
 const DEV_RELOAD_DELAY_MS = 300;
+const devAddonWatchers = new Map(); // folder -> fs.FSWatcher
 function watchDevAddons() {
-  for (const dir of addonDevDirs()) {
+  const dirs = [...addonDevDirs(), ...addonStore.registered()];
+  for (const [dir, watcher] of [...devAddonWatchers]) {
+    if (dirs.some((d) => samePath(d, dir))) continue;
+    watcher.close();
+    devAddonWatchers.delete(dir);
+  }
+  for (const dir of dirs) {
+    if ([...devAddonWatchers.keys()].some((d) => samePath(d, dir))) continue;
     let timer = null;
     try {
-      fs.watch(dir, { recursive: true }, () => {
+      const watcher = fs.watch(dir, { recursive: true }, () => {
         clearTimeout(timer);
         timer = setTimeout(async () => {
-          const entry = addonRegistry.list().find((e) => e.source === 'dev' && samePath(e.dir, dir));
+          const entry = addonRegistry.list().find((e) => isDevSource(e.source) && e.status !== 'shadowed' && samePath(e.dir, dir));
           const id = entry ? entry.id : null;
           if (!id) return;
           logAddon(id, 'info', 'reloading (files changed)');
           await reloadAddon(id);
         }, DEV_RELOAD_DELAY_MS);
       });
+      devAddonWatchers.set(dir, watcher);
     } catch (err) {
       console.warn(`[addons] cannot watch ${dir}: ${err.message}`);
     }
@@ -4779,6 +4791,38 @@ appIpc.handle('addons:secret-set', (event, id, key, value) => {
   }
 });
 appIpc.handle('addons:rescan', () => rescanAddons());
+
+// The Extensions screen's "Register Add-on...": the user picks an add-on's
+// manifest.json and its folder is kept (addons-state.json) and looked at
+// from then on (addons/registry.js). file: given only by the app checks.
+appIpc.handle('addons:register', async (event, file) => {
+  if (typeof file !== 'string') {
+    const result = await dialog.showOpenDialog(windowFor(event.sender), {
+      title: t('addons.registerTitle'),
+      properties: ['openFile'],
+      filters: [{ name: 'manifest.json', extensions: ['json'] }],
+    });
+    if (result.canceled || !result.filePaths.length) return { list: addonListForPage() };
+    file = result.filePaths[0];
+  }
+  if (path.basename(file).toLowerCase() !== 'manifest.json' || !fs.existsSync(file)) {
+    return { list: addonListForPage(), error: 'notManifest' };
+  }
+  const dir = path.dirname(path.resolve(file));
+  if (!addonStore.addRegistered(dir)) return { list: addonListForPage(), error: 'alreadyRegistered' };
+  const list = rescanAddons();
+  watchDevAddons();
+  const entry = addonRegistry.list().find((e) => e.source === 'registered' && samePath(e.dir, dir));
+  if (entry) logAddon(entry.id, 'info', `registered: ${dir}`);
+  return { list, id: entry ? entry.id : null };
+});
+
+appIpc.handle('addons:unregister', (event, dir) => {
+  if (typeof dir !== 'string' || !addonStore.removeRegistered(dir)) return addonListForPage();
+  const list = rescanAddons();
+  watchDevAddons();
+  return list;
+});
 appIpc.handle('addons:set-enabled', (event, id, enabled) => {
   if (typeof id !== 'string' || !addonRegistry.get(id)) return addonListForPage();
   addonStore.setEnabled(id, !!enabled);
