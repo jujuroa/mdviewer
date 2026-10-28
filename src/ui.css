@@ -1298,10 +1298,14 @@ html, body {
   width: 100%;
   height: 100%;
   border: none;
-  display: none;
+  display: block;
+  /* Hidden, not display: none: a frame taken out of layout loses its size,
+     so its scroll offsets (the preview, the source editor) fall to 0 and a
+     tab came back at the top. */
+  visibility: hidden;
   background: var(--bg-app);
 }
-.doc-frame.active { display: block; }
+.doc-frame.active { visibility: visible; }
 /* An add-on tab whose page stopped (see onTabFrameGone in renderer.js). */
 .frame-trouble {
   position: absolute;

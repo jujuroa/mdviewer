@@ -11,6 +11,7 @@ const app = await launch({
     'proj/b.puml': '@startuml\nA -> B\n@enduml\n',
     'proj/x/same.md': '# X\n',
     'proj/y/same.md': '# Y\n',
+    'proj/long.md': Array.from({ length: 200 }, (_, i) => `## ${i}\n\nline ${i}\n`).join('\n'),
   },
 });
 try {
@@ -71,6 +72,18 @@ try {
   await w.evaluate(`await window.mdviewer.moveTabHere(${a}, 0, 'main'); return 1`);
   await sleep(2500);
   check('moved back to the front', (await strip())[0].id === a);
+
+  // Each tab stays where it was scrolled to (an inactive frame is hidden,
+  // not taken out of layout).
+  await click('proj/long.md');
+  await sleep(1500);
+  await d(`doc.getElementById('preview-frame').contentWindow.scrollTo(0, 2000); return 1`);
+  await click('x/same.md');
+  await sleep(800);
+  await click('proj/long.md');
+  await sleep(800);
+  const backAt = await d(`return doc.getElementById('preview-frame').contentWindow.scrollY`);
+  check('back on a tab: the preview where it was scrolled to', backAt === 2000, String(backAt));
 
   // Closing: the neighbour takes over; an edited tab saves first.
   await w.evaluate(`await window.mdviewer.activateTab(${b}); return 1`);
