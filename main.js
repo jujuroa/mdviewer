@@ -917,11 +917,19 @@ function safeDecodeUri(text) {
   }
 }
 
+// A dot in the name (`v1.2-notes`, `release.2026`) doesn't mean the
+// extension is already there, so "<link>.md" is tried first whenever the
+// link doesn't already end in .md, and the link as written only after that.
 function resolveInternalLinkPath(baseDir, relPath) {
   const absPath = path.resolve(baseDir, relPath);
-  if (relPath.endsWith('/') || path.extname(relPath)) return absPath;
+  if (/[\\/]$/.test(relPath) || /\.md$/i.test(relPath)) return absPath;
   const withMdExt = absPath + '.md';
-  return fs.existsSync(withMdExt) ? withMdExt : absPath;
+  try {
+    if (fs.statSync(withMdExt).isFile()) return withMdExt;
+  } catch (e) {
+    // no "<link>.md" — fall through to the link as written
+  }
+  return absPath;
 }
 
 // CommonMark only lets `**` close right after punctuation when whitespace or
