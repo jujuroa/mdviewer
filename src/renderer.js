@@ -607,7 +607,8 @@
 
   // findProject: the file came from outside the app (double-click, command
   // line, a drop with no project open), so open the nearest ancestor folder
-  // that is an mdviewer project (has a .mdviewer folder) rather than just
+  // that looks like a project (a .mdviewer or .git folder, a home.md or
+  // README.md; see findProjectRootForFile in main.js) rather than just
   // the file's own folder. Already inside an open project → stay in it.
   // The file opens in a tab of its own, at `line` when given.
   async function openSingleFile(filePath, { findProject = false, line = null } = {}) {

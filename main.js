@@ -1577,20 +1577,37 @@ function loadProjectState(rootPath) {
   }
 }
 
+// Entries that mark a folder as the top of a project. Strong markers (our
+// own config folder, a git repository — .git is a file in worktrees and
+// submodules — or a wiki's home.md) name the project outright. A README.md
+// is weaker: repositories often keep one in subfolders too, so it counts
+// only when no strong marker is found anywhere above the file.
+const PROJECT_ROOT_MARKERS = [CONFIG_DIR_NAME, '.git', 'home.md'];
+const WEAK_PROJECT_ROOT_MARKERS = ['README.md', 'readme.md'];
+
+function hasAnyEntry(dir, names) {
+  return names.some((name) => {
+    try {
+      fs.statSync(path.join(dir, name));
+      return true;
+    } catch (err) {
+      return false;
+    }
+  });
+}
+
 // A file opened from outside the app (file association, command line)
 // usually belongs to a project somewhere above it. The nearest ancestor
-// folder holding a .mdviewer config folder is that project; null when
-// there is none, so the caller falls back to the file's own folder.
+// folder holding a project marker is that project; null when there is
+// none, so the caller falls back to the file's own folder.
 function findProjectRootForFile(filePath) {
   let dir = path.dirname(path.resolve(filePath));
+  let weakRoot = null;
   for (;;) {
-    try {
-      if (fs.statSync(path.join(dir, CONFIG_DIR_NAME)).isDirectory()) return dir;
-    } catch (err) {
-      /* no config folder here; keep walking up */
-    }
+    if (hasAnyEntry(dir, PROJECT_ROOT_MARKERS)) return dir;
+    if (!weakRoot && hasAnyEntry(dir, WEAK_PROJECT_ROOT_MARKERS)) weakRoot = dir;
     const parent = path.dirname(dir);
-    if (parent === dir) return null;
+    if (parent === dir) return weakRoot;
     dir = parent;
   }
 }
@@ -3815,7 +3832,7 @@ ipcMain.handle('tree:show-empty-context-menu', (event, { hasProjects }) => {
 
 // New Project: the user names a folder that doesn't exist yet, and it is
 // created with its .mdviewer folder already in place — which is what makes
-// it an mdviewer project (see findProjectRootForFile) even while empty —
+// it a project (see findProjectRootForFile) even while empty —
 // then opened in the explorer like any other folder.
 async function createNewProject(win) {
   const result = await dialog.showSaveDialog(win, {
