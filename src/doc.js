@@ -32,6 +32,7 @@
     setupResizer,
   } = window.MdvCommon;
   const { codeLanguageOf } = window.MdvCodeLanguages;
+  const SVG_NS = 'http://www.w3.org/2000/svg';
 
   const state = {
     // The window's open projects and its active one (see doc:context).
@@ -293,6 +294,9 @@
     doc.addEventListener('click', onPumlZoomControlClick);
     doc.addEventListener('wheel', onPumlWheel, { passive: false });
     doc.addEventListener('load', onPumlImageLoad, true);
+    // Every render replaces the body's content, and a fitted inline-SVG
+    // diagram's percentage can be measured as soon as it is in.
+    new el.frame.contentWindow.MutationObserver(refreshPumlFitLabels).observe(doc.body, { childList: true });
     // Dragging the sidebar, opening the edit pane and resizing the window all
     // change the iframe's own viewport, so its resize event covers every way
     // a fitted diagram's percentage can go stale.
@@ -392,15 +396,23 @@
   const PUML_ZOOM_STEP = 25;
   let pumlPanState = null;
 
-  function pumlNaturalWidth(img) {
-    return img.naturalWidth || parseInt(img.getAttribute('width'), 10) || 0;
+  // The diagram itself: inline <svg> (see inlineDiagramSvg in main.js), or
+  // an <img> in a document rendered before that.
+  function pumlGraphic(diagramEl) {
+    return diagramEl.querySelector('.plantuml-scroll > svg, .plantuml-scroll > img');
+  }
+
+  // An inline <svg> has no naturalWidth; its width attribute is its natural
+  // size (see normalizeDiagramSvgRoot in main.js).
+  function pumlNaturalWidth(graphic) {
+    return graphic.naturalWidth || parseFloat(graphic.getAttribute('width')) || 0;
   }
 
   // The percentage a diagram is actually being shown at. Under fit-to-width
   // the width is the browser's to decide, so it is measured rather than
   // stored - which is also what keeps the label honest after a resize.
   function pumlEffectiveZoom(diagramEl) {
-    const img = diagramEl.querySelector('.plantuml-scroll img');
+    const img = pumlGraphic(diagramEl);
     if (diagramEl.dataset.fit === '1' && img) {
       const naturalWidth = pumlNaturalWidth(img);
       if (naturalWidth) return Math.round((img.clientWidth / naturalWidth) * 100);
@@ -417,7 +429,7 @@
     const clamped = Math.max(PUML_ZOOM_MIN, Math.min(PUML_ZOOM_MAX, Math.round(percent)));
     delete diagramEl.dataset.fit;
     diagramEl.dataset.zoom = String(clamped);
-    const img = diagramEl.querySelector('.plantuml-scroll img');
+    const img = pumlGraphic(diagramEl);
     if (img) {
       const naturalWidth = pumlNaturalWidth(img);
       img.style.width = clamped === 100 || !naturalWidth ? '' : `${Math.round(naturalWidth * clamped / 100)}px`;
@@ -434,7 +446,7 @@
   // PUML_ZOOM_MIN. Diagrams open in this mode; the markup carries data-fit
   // from the start (see plantumlDiagramHtml in main.js).
   function setPumlFit(diagramEl) {
-    const img = diagramEl.querySelector('.plantuml-scroll img');
+    const img = pumlGraphic(diagramEl);
     if (!img) return;
     diagramEl.dataset.fit = '1';
     img.style.width = '';
@@ -442,11 +454,11 @@
   }
 
   // A diagram opens fitted, so the percentage its control bar should show is
-  // not known until the image has decoded and the browser has laid it out -
-  // the markup can only ship a placeholder. An <img>'s load event doesn't
-  // bubble, so this is registered in the capture phase instead, which covers
-  // every diagram in every document rendered from here on with one listener
-  // rather than re-wiring after each render.
+  // not known until the browser has laid it out - the markup can only ship a
+  // placeholder. An inline <svg> is laid out as soon as the document is in,
+  // which the body's mutation observer catches (see initPreviewFrame); an
+  // <img> only once it has decoded, and its load event doesn't bubble, so
+  // that is listened for in the capture phase instead.
   function onPumlImageLoad(e) {
     const img = e.target;
     if (!img.matches || !img.matches('.plantuml-scroll img')) return;
@@ -495,6 +507,8 @@
   function onPumlPanStart(e) {
     const scrollEl = e.target.closest('.plantuml-scroll');
     if (!scrollEl || e.button !== 0) return;
+    // A drag that starts on the diagram's text selects it instead.
+    if (e.target.closest('text, foreignObject')) return;
     if (scrollEl.scrollWidth <= scrollEl.clientWidth && scrollEl.scrollHeight <= scrollEl.clientHeight) return;
     pumlPanState = {
       scrollEl,
@@ -3179,10 +3193,10 @@
     const target = e.target.closest ? e.target : null;
     const diagram = target ? target.closest('.plantuml-diagram, .mermaid-diagram') : null;
     const image =
-      (target && target.closest('img')) || (diagram ? diagram.querySelector('img') : null);
+      (target && target.closest('img')) || (diagram ? diagram.querySelector('svg, img') : null);
 
     contextMenuSelection = selectedText.trim() ? selectedText : '';
-    contextMenuImageSrc = image ? image.src : '';
+    contextMenuImageSrc = !image ? '' : image.tagName === 'IMG' ? image.src : svgElementDataUrl(image);
 
     // Taken now, while the selection is certainly still there, for "send
     // to terminal" (see sendSelectionToTerminal).
@@ -3235,6 +3249,16 @@
   window.mdviewer.onViewerContextAction(({ action }) => {
     if (VIEWER_CONTEXT_ACTIONS[action]) VIEWER_CONTEXT_ACTIONS[action]();
   });
+
+  // An inline diagram <svg> as an SVG image of itself, at its natural size
+  // (the width/height attributes) rather than whatever zoom it is shown at.
+  function svgElementDataUrl(svg) {
+    const clone = svg.cloneNode(true);
+    clone.removeAttribute('style');
+    clone.setAttribute('xmlns', SVG_NS);
+    const xml = new XMLSerializer().serializeToString(clone);
+    return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(xml)}`;
+  }
 
   // Draws an SVG into a canvas and puts the resulting PNG on the clipboard:
   // an SVG on the clipboard is useless to most applications, and
@@ -3410,7 +3434,7 @@
   function clearDocFindHighlights() {
     const doc = el.frame.contentDocument;
     if (!doc) return;
-    doc.querySelectorAll('mark.mdviewer-find-hit').forEach((mark) => {
+    doc.querySelectorAll('mark.mdviewer-find-hit, tspan.mdviewer-find-hit').forEach((mark) => {
       const parent = mark.parentNode;
       if (!parent) return;
       parent.replaceChild(doc.createTextNode(mark.textContent), mark);
@@ -3452,12 +3476,18 @@
       }
       if (!spans.length) return;
 
+      const inSvgText = textNode.parentNode.namespaceURI === SVG_NS;
       const frag = doc.createDocumentFragment();
       let cursor = 0;
       spans.forEach(([start, end]) => {
         if (start > cursor) frag.appendChild(doc.createTextNode(text.slice(cursor, start)));
-        const mark = doc.createElement('mark');
-        mark.className = 'mdviewer-find-hit';
+        // Inside a diagram's SVG text an HTML <mark> wouldn't render at
+        // all (and take the text with it); an SVG <tspan> is the one thing
+        // that can wrap part of it.
+        const mark = inSvgText
+          ? doc.createElementNS(SVG_NS, 'tspan')
+          : doc.createElement('mark');
+        mark.setAttribute('class', 'mdviewer-find-hit');
         mark.textContent = text.slice(start, end);
         frag.appendChild(mark);
         marks.push(mark);
@@ -4131,7 +4161,7 @@
     const walker = doc.createTreeWalker(doc.body, NodeFilter.SHOW_TEXT, {
       acceptNode(node) {
         if (!SECTION_REF_TEST_RE.test(node.nodeValue)) return NodeFilter.FILTER_REJECT;
-        return node.parentElement.closest('a, code, pre, script, style')
+        return node.parentElement.closest('a, code, pre, script, style, svg')
           ? NodeFilter.FILTER_REJECT
           : NodeFilter.FILTER_ACCEPT;
       },

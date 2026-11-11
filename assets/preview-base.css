@@ -176,8 +176,16 @@ body.markdown-body.full-width {
 /* Zoomed past the document width, a PlantUML diagram keeps its size and
    scrolls inside its own zoom/pan area (.plantuml-scroll), where scrolling is
    the point. */
-.markdown-body .plantuml-diagram img {
+.markdown-body .plantuml-diagram img,
+.markdown-body .plantuml-diagram .plantuml-scroll > svg {
   max-width: none;
+}
+
+/* An inline <svg> doesn't scale its height with a zoomed width the way an
+   <img> does: its height attribute holds, and PlantUML's
+   preserveAspectRatio="none" would stretch the drawing sideways. */
+.markdown-body .plantuml-diagram .plantuml-scroll > svg {
+  height: auto;
 }
 
 /* Fit-to-width, which is how a diagram opens (see plantumlDiagramHtml) and
@@ -190,7 +198,8 @@ body.markdown-body.full-width {
    max-width rather than width, so fitting only ever shrinks: a diagram
    narrower than the column stays at its natural size instead of being blown
    up to fill the line. Growing one is what the + button is for. */
-.markdown-body .plantuml-diagram[data-fit="1"] .plantuml-scroll img {
+.markdown-body .plantuml-diagram[data-fit="1"] .plantuml-scroll img,
+.markdown-body .plantuml-diagram[data-fit="1"] .plantuml-scroll > svg {
   max-width: 100%;
   height: auto;
 }
@@ -199,9 +208,29 @@ body.markdown-body.full-width {
    scrollbar under the document. Scale it down to the available width
    instead — never up, so small diagrams keep their size — and use Ctrl+wheel
    to read the details of a large one. */
-.markdown-body .mermaid-diagram img {
+.markdown-body .mermaid-diagram img,
+.markdown-body .mermaid-diagram > svg {
   max-width: 100%;
   height: auto;
+}
+
+/* Diagrams are inline SVG (see inlineDiagramSvg in main.js), so the
+   document's own text styles would reach into them. mermaid lays its labels
+   out as HTML inside <foreignObject>, measured in its own render page: the
+   document's line height, paragraph margins and justification would make
+   them overflow the boxes drawn for them. */
+.markdown-body .plantuml-diagram svg,
+.markdown-body .mermaid-diagram svg {
+  line-height: normal;
+  text-align: left;
+}
+.markdown-body .mermaid-diagram foreignObject p {
+  margin: 0;
+  text-align: inherit;
+}
+.markdown-body .plantuml-diagram svg a,
+.markdown-body .mermaid-diagram svg a {
+  text-decoration: none;
 }
 
 @media (prefers-color-scheme: light) {
@@ -217,6 +246,17 @@ body.markdown-body.full-width {
 .markdown-body mark.mdviewer-find-hit.current {
   background: #ff9800;
   outline: 2px solid #ff9800;
+}
+
+/* A hit inside a diagram's SVG text is a <tspan>, which has no background
+   to paint; it is shown by its own colour instead. */
+.markdown-body tspan.mdviewer-find-hit {
+  fill: #e65100;
+  font-weight: bold;
+}
+.markdown-body tspan.mdviewer-find-hit.current {
+  fill: #d50000;
+  text-decoration: underline;
 }
 
 .markdown-body .plantuml-diagram.plantuml-error,

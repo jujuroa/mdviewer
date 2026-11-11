@@ -35,20 +35,22 @@
   }
 
   // Two things have to be fixed up before the diagram can be handed to the
-  // preview as <img src="data:image/svg+xml;...">:
+  // preview, where it goes in as inline <svg> (see inlineDiagramSvg in
+  // main.js) and, copied as a picture, as an SVG image:
   //
   //  * Well-formedness. mermaid draws its labels as HTML inside
   //    <foreignObject>, so a label written with <br/> comes back as an
-  //    unclosed <br> — valid HTML, invalid XML. An SVG data URI is parsed
-  //    by the *XML* parser, where a single unclosed tag fails the whole
-  //    document and the image silently doesn't load. Parsing the string as
-  //    HTML (which accepts it) and serializing it back as XML (which always
-  //    closes tags) makes the markup safe to embed, labels intact.
+  //    unclosed <br> — valid HTML, invalid XML. main.js sanitizes the
+  //    diagram with a parser that relies on SVG's self-closed tags, and an
+  //    SVG image is parsed by the *XML* parser, where a single unclosed tag
+  //    fails the whole document. Parsing the string as HTML (which accepts
+  //    it) and serializing it back as XML (which always closes tags) makes
+  //    the markup safe for both, labels intact.
   //
   //  * Intrinsic size. mermaid sizes the <svg> with width:100% and a
-  //    max-width style, which an <img> has nothing to resolve against — it
-  //    would draw the default 300x150 box. Pinning width/height from the
-  //    viewBox keeps the size mermaid laid the diagram out at.
+  //    max-width style, which says nothing about the size it laid the
+  //    diagram out at — an image of it would draw the default 300x150 box.
+  //    Pinning width/height from the viewBox keeps that size.
   function normalizeSvg(svgText) {
     const parsed = new DOMParser().parseFromString(svgText, 'text/html');
     const svg = parsed.body.querySelector('svg');

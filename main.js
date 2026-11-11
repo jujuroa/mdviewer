@@ -5,6 +5,7 @@ const path = require('path');
 const fs = require('fs');
 const { pathToFileURL } = require('url');
 const { spawn } = require('child_process');
+const crypto = require('crypto');
 const pty = require('node-pty');
 const MarkdownIt = require('markdown-it');
 const taskLists = require('markdown-it-task-lists');
@@ -337,9 +338,109 @@ async function renderPlantUmlSvg(source, signal) {
   return svg;
 }
 
-async function plantumlImageSrc(source, signal) {
-  const svg = await renderPlantUmlSvg(source, signal);
-  return `data:image/svg+xml;base64,${Buffer.from(svg, 'utf-8').toString('base64')}`;
+// ---------------------------------------------------------------------
+// Inline diagram SVG
+//
+// Diagrams go into the preview as inline <svg> rather than as an
+// <img src="data:image/svg+xml...">: an image is one opaque picture, while
+// inline SVG text can be selected, copied and found with the find bar.
+//
+// That puts the diagram's markup into the document itself, so it is
+// sanitized here with rules of its own (the document's HTML rules would
+// strip every SVG tag), and its ids are made unique per diagram.
+// ---------------------------------------------------------------------
+
+const DIAGRAM_SVG_DROPPED_TAGS = new Set(['script', 'iframe', 'object', 'embed']);
+
+function keepSafeDiagramAttribs(tagName, attribs) {
+  const kept = {};
+  for (const [name, value] of Object.entries(attribs)) {
+    // Event handlers never run in the script-free preview, but have no
+    // business in a diagram either. PlantUML's own data-source-line marks
+    // lines of the diagram source; in the document they would be taken for
+    // the markdown's (see inject_source_line).
+    if (/^on/i.test(name) || /^data-source-(end)?line$/i.test(name)) continue;
+    kept[name] = value;
+  }
+  return { tagName, attribs: kept };
+}
+
+function sanitizeDiagramSvg(svgText) {
+  return sanitizeHtml(svgText, {
+    // Any SVG tag and attribute, minus the dangerous ones below. sanitize-html
+    // still drops javascript:/data: link targets on its own.
+    allowedTags: false,
+    allowedAttributes: false,
+    allowVulnerableTags: true,
+    // SVG is case-sensitive (viewBox, foreignObject) and self-closes its
+    // empty elements (<path/>), which the HTML-mode parser would otherwise
+    // lower-case away and nest everything after into.
+    parser: { lowerCaseTags: false, lowerCaseAttributeNames: false, recognizeSelfClosing: true },
+    exclusiveFilter: (frame) => DIAGRAM_SVG_DROPPED_TAGS.has(frame.tag.toLowerCase()),
+    transformTags: { '*': keepSafeDiagramAttribs },
+  });
+}
+
+function escapeRegExp(text) {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+// Every diagram of one document now shares that document's id space, and
+// PlantUML numbers its ids the same way in every diagram (ent0001, ...).
+// Prefixing them, and the url(#..)/href="#.." and <style> references to
+// them, keeps one diagram's markers and gradients from resolving to
+// another's.
+function prefixDiagramSvgIds(svg, prefix) {
+  const ids = new Set();
+  for (const m of svg.matchAll(/\sid="([^"]+)"/g)) ids.add(m[1]);
+  if (!ids.size) return svg;
+  const alternatives = [...ids].sort((a, b) => b.length - a.length).map(escapeRegExp).join('|');
+  const refRe = new RegExp(`(url\\(\\s*['"]?#|="#)(${alternatives})(?![\\w-])`, 'g');
+  const cssRe = new RegExp(`#(${alternatives})(?![\\w-])`, 'g');
+  return svg
+    .replace(/(\sid=")([^"]+)"/g, (all, before, id) => `${before}${prefix}${id}"`)
+    .replace(refRe, (all, before, id) => before + prefix + id)
+    .replace(/(<style\b[^>]*>)([\s\S]*?)(<\/style>)/g, (all, open, css, close) =>
+      open + css.replace(cssRe, (m, id) => `#${prefix}${id}`) + close
+    );
+}
+
+// The root <svg> gets plain width/height attributes, its natural size,
+// which the preview CSS scales down from (fit-to-width, max-width: 100%)
+// and the zoom controls scale from. PlantUML repeats the size as an inline
+// width/height style and mermaid adds a max-width one; either would pin the
+// size against that CSS.
+function normalizeDiagramSvgRoot(svg) {
+  return svg.replace(/^<svg\b([^>]*)>/, (all, attrs) => {
+    const sizeOf = (name) => {
+      const m = new RegExp(`\\s${name}="([\\d.]+)(?:px)?"`).exec(attrs);
+      return m ? m[1] : '';
+    };
+    let width = sizeOf('width');
+    let height = sizeOf('height');
+    const viewBox = /\sviewBox="([^"]+)"/.exec(attrs);
+    if ((!width || !height) && viewBox) {
+      const box = viewBox[1].split(/[\s,]+/).map(Number);
+      if (box.length === 4 && box[2] > 0 && box[3] > 0) {
+        width = width || String(Math.ceil(box[2]));
+        height = height || String(Math.ceil(box[3]));
+      }
+    }
+    let rest = attrs.replace(/\s(width|height)="[^"]*"/g, '');
+    rest = rest.replace(/\sstyle="([^"]*)"/, (m, style) => {
+      const kept = style
+        .split(';')
+        .filter((decl) => decl.trim() && !/^\s*(width|height|max-width|max-height)\s*:/i.test(decl))
+        .join(';');
+      return kept ? ` style="${kept}"` : '';
+    });
+    const size = (width ? ` width="${width}"` : '') + (height ? ` height="${height}"` : '');
+    return `<svg${rest}${size}>`;
+  });
+}
+
+function inlineDiagramSvg(svgText, idPrefix) {
+  return normalizeDiagramSvgRoot(prefixDiagramSvgIds(sanitizeDiagramSvg(svgText).trim(), idPrefix));
 }
 
 // Wraps the rendered diagram with a zoom control bar and a separate scroll
@@ -353,10 +454,15 @@ async function plantumlImageSrc(source, signal) {
 // to see the whole thing is what a reader wants first. Fitting only ever
 // shrinks, so anything already narrower than the column opens untouched. The
 // percentage in the control bar is a measurement the renderer fills in once
-// the image has decoded, so the markup ships a placeholder.
-function plantumlDiagramHtml(imgSrc) {
+// the diagram is laid out, so the markup ships a placeholder.
+//
+// `graphic` is the diagram itself (inline <svg>, see inlineDiagramSvg) or a
+// placeholder standing in for it (see renderMarkdownText); `lineAttrs`, the
+// fence's source lines, so find and selection map a hit inside the diagram
+// back to its fence.
+function plantumlDiagramHtml(graphic, lineAttrs = '') {
   return (
-    '<div class="plantuml-diagram" data-zoom="100" data-fit="1">' +
+    `<div class="plantuml-diagram" data-zoom="100" data-fit="1"${lineAttrs}>` +
       '<div class="plantuml-zoom-controls">' +
         '<button type="button" class="puml-zoom-out" title="Zoom out">−</button>' +
         '<span class="puml-zoom-level">100%</span>' +
@@ -364,7 +470,7 @@ function plantumlDiagramHtml(imgSrc) {
         '<button type="button" class="puml-zoom-fit" title="Fit to width">↔</button>' +
         '<button type="button" class="puml-zoom-reset" title="Reset zoom">⟳</button>' +
       '</div>' +
-      `<div class="plantuml-scroll"><img src="${imgSrc}" alt="PlantUML diagram"></div>` +
+      `<div class="plantuml-scroll">${graphic}</div>` +
     '</div>'
   );
 }
@@ -468,9 +574,8 @@ async function renderMermaidSvg(source) {
   }
 }
 
-function mermaidDiagramHtml(svg) {
-  const src = `data:image/svg+xml;base64,${Buffer.from(svg, 'utf-8').toString('base64')}`;
-  return `<div class="mermaid-diagram"><img src="${src}" alt="Mermaid diagram"></div>`;
+function mermaidDiagramHtml(graphic, lineAttrs = '') {
+  return `<div class="mermaid-diagram"${lineAttrs}>${graphic}</div>`;
 }
 
 // Every program window open now (File > New Window adds more). The hidden
@@ -1127,24 +1232,52 @@ async function renderMarkdownText(text, baseDir, requestId) {
   const tokens = md.parse(text, env);
 
   const fenceLang = (token) => token.info.trim().split(/\s+/)[0].toLowerCase();
+  const fenceLineAttrs = (token) =>
+    token.map ? ` data-source-line="${token.map[0]}" data-source-endline="${token.map[1]}"` : '';
+
+  // The diagrams' inline SVG can't go through sanitizeMarkdownHtml with the
+  // rest of the document — its rules would strip every SVG tag — and has
+  // already been through sanitizeDiagramSvg. So the fence renders a
+  // placeholder, and the SVG takes its place once the document's HTML has
+  // been sanitized. The token is random per render, so no text in the
+  // document can pass itself off as one.
+  const slotToken = `mdvdiagram${crypto.randomBytes(8).toString('hex')}`;
+  const slotRe = new RegExp(`${slotToken}_(\\d+)_`, 'g');
+  const diagramSvgs = [];
+  const diagramSlot = (svgText) => {
+    diagramSvgs.push(inlineDiagramSvg(svgText, `d${diagramSvgs.length}-`));
+    return `${slotToken}_${diagramSvgs.length - 1}_`;
+  };
+
   const pumlTokens = tokens.filter(
     (token) => token.type === 'fence' && PLANTUML_FENCE_LANGS.has(fenceLang(token))
   );
-  const pumlResults = new Map();
+  const pumlSvgs = new Map();
   await Promise.all(
     pumlTokens.map(async (token) => {
       const controller = new AbortController();
       registerAbort(requestId, controller);
       try {
-        const src = await plantumlImageSrc(token.content, controller.signal);
-        pumlResults.set(token, plantumlDiagramHtml(src) + '\n');
+        pumlSvgs.set(token, { svg: await renderPlantUmlSvg(token.content, controller.signal) });
       } catch (err) {
-        pumlResults.set(token, `<div class="plantuml-diagram plantuml-error">${md.utils.escapeHtml(err.message)}</div>\n`);
+        pumlSvgs.set(token, { err });
       } finally {
         unregisterAbort(requestId, controller);
       }
     })
   );
+  // Slots are handed out in document order, not in the order the parallel
+  // renders above happened to finish, so ids stay stable across re-renders.
+  const pumlResults = new Map();
+  for (const token of pumlTokens) {
+    const { svg, err } = pumlSvgs.get(token);
+    pumlResults.set(
+      token,
+      err
+        ? `<div class="plantuml-diagram plantuml-error"${fenceLineAttrs(token)}>${md.utils.escapeHtml(err.message)}</div>\n`
+        : plantumlDiagramHtml(diagramSlot(svg), fenceLineAttrs(token)) + '\n'
+    );
+  }
   env.pumlResults = pumlResults;
 
   // Mermaid diagrams render one at a time rather than in parallel like the
@@ -1154,18 +1287,19 @@ async function renderMarkdownText(text, baseDir, requestId) {
   for (const token of tokens) {
     if (token.type !== 'fence' || !MERMAID_FENCE_LANGS.has(fenceLang(token))) continue;
     try {
-      mermaidResults.set(token, mermaidDiagramHtml(await renderMermaidSvg(token.content)) + '\n');
+      const svg = await renderMermaidSvg(token.content);
+      mermaidResults.set(token, mermaidDiagramHtml(diagramSlot(svg), fenceLineAttrs(token)) + '\n');
     } catch (err) {
       mermaidResults.set(
         token,
-        `<div class="mermaid-diagram mermaid-error">${md.utils.escapeHtml(err.message)}</div>\n`
+        `<div class="mermaid-diagram mermaid-error"${fenceLineAttrs(token)}>${md.utils.escapeHtml(err.message)}</div>\n`
       );
     }
   }
   env.mermaidResults = mermaidResults;
 
   const html = md.renderer.render(tokens, md.options, env);
-  return sanitizeMarkdownHtml(html, baseDir);
+  return sanitizeMarkdownHtml(html, baseDir).replace(slotRe, (all, i) => diagramSvgs[Number(i)] || '');
 }
 
 async function renderMarkdownFile(filePath, requestId) {
@@ -1177,8 +1311,8 @@ async function renderPlantUmlText(text, requestId) {
   const controller = new AbortController();
   registerAbort(requestId, controller);
   try {
-    const src = await plantumlImageSrc(text, controller.signal);
-    return plantumlDiagramHtml(src);
+    const svg = await renderPlantUmlSvg(text, controller.signal);
+    return plantumlDiagramHtml(inlineDiagramSvg(svg, 'd0-'));
   } catch (err) {
     return `<div class="plantuml-diagram plantuml-error">${escapeHtmlText(err.message)}</div>`;
   } finally {
@@ -4030,6 +4164,22 @@ async function htmlForClipboardInPage() {
     'border-radius',
   ];
   const SIDES = ['top', 'right', 'bottom', 'left'];
+
+  // Diagrams are inline <svg>, which paste targets show even less often
+  // than an SVG image. Each becomes an <img> of itself at its rendered size,
+  // so the loop below rasterises it like any other SVG image.
+  for (const svg of [...document.querySelectorAll('svg')]) {
+    if (!svg.isConnected || (svg.parentElement && svg.parentElement.closest('svg'))) continue;
+    const rect = svg.getBoundingClientRect();
+    const clone = svg.cloneNode(true);
+    clone.removeAttribute('style');
+    clone.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
+    const img = document.createElement('img');
+    img.src = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(new XMLSerializer().serializeToString(clone))}`;
+    img.setAttribute('width', String(Math.round(rect.width || parseFloat(svg.getAttribute('width')) || 0)));
+    img.setAttribute('height', String(Math.round(rect.height || parseFloat(svg.getAttribute('height')) || 0)));
+    svg.replaceWith(img);
+  }
 
   const images = [...document.images];
   await Promise.all(images.map((img) => img.decode().catch(() => {})));
