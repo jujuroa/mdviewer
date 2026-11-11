@@ -972,6 +972,18 @@ function useCjkFriendlyEmphasis(md) {
   md.inline.State = CjkFriendlyState;
 }
 
+// A relative image/media src points at a file next to the document, but the
+// preview page lives elsewhere (src/doc.html), so it has to become an
+// absolute file:// URL. markdown-it has already percent-encoded the src of
+// `![](...)` (and a raw <img> may be written that way too), so it's decoded
+// first — toFileUrl encodes again, and a Korean or spaced file name would
+// otherwise end up double-encoded and never found.
+function resolveMediaSrc(baseDir, src) {
+  if (!src || !baseDir) return src;
+  if (/^[a-z][a-z0-9+.-]*:/i.test(src) || src.startsWith('//') || src.startsWith('#')) return src;
+  return toFileUrl(path.resolve(baseDir, safeDecodeUri(src)));
+}
+
 function createMarkdownRenderer(baseDir) {
   const md = new MarkdownIt({
     html: true,
@@ -1043,10 +1055,7 @@ function createMarkdownRenderer(baseDir) {
     const token = tokens[idx];
     const srcIndex = token.attrIndex('src');
     if (srcIndex >= 0) {
-      const src = token.attrs[srcIndex][1];
-      if (!/^([a-z]+:)?\/\//i.test(src) && !src.startsWith('data:')) {
-        token.attrs[srcIndex][1] = toFileUrl(path.resolve(baseDir, src));
-      }
+      token.attrs[srcIndex][1] = resolveMediaSrc(baseDir, token.attrs[srcIndex][1]);
     }
     return defaultImageRule(tokens, idx, options, env, self);
   };
@@ -1080,8 +1089,15 @@ function createMarkdownRenderer(baseDir) {
   return md;
 }
 
-function sanitizeMarkdownHtml(rawHtml) {
+function sanitizeMarkdownHtml(rawHtml, baseDir) {
+  // Raw HTML in the markdown (`<img src="fig.png" width="260">`) bypasses
+  // markdown-it's image rule, so its relative src is resolved here instead.
+  const resolveSrc = (tagName, attribs) => {
+    if (attribs.src) attribs = { ...attribs, src: resolveMediaSrc(baseDir, attribs.src) };
+    return { tagName, attribs };
+  };
   return sanitizeHtml(rawHtml, {
+    transformTags: { img: resolveSrc, video: resolveSrc, audio: resolveSrc, source: resolveSrc },
     allowedTags: sanitizeHtml.defaults.allowedTags.concat([
       'img', 'h1', 'h2', 'input', 'details', 'summary', 'video', 'audio', 'source', 'button',
     ]),
@@ -1149,7 +1165,7 @@ async function renderMarkdownText(text, baseDir, requestId) {
   env.mermaidResults = mermaidResults;
 
   const html = md.renderer.render(tokens, md.options, env);
-  return sanitizeMarkdownHtml(html);
+  return sanitizeMarkdownHtml(html, baseDir);
 }
 
 async function renderMarkdownFile(filePath, requestId) {
