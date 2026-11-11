@@ -92,6 +92,9 @@
     // Whether the editor and the viewer scroll together in edit mode (the
     // toggle on the splitter between them). A global setting.
     scrollSync: true,
+    // Whether the editor shows line numbers. A global setting (Settings >
+    // Show Line Numbers in Editor).
+    editorLineNumbers: true,
     // Fullscreen document view (see enterDocFullscreen) — deliberately not
     // part of the saved project state: it's a way to read right now, not a
     // layout the project should reopen in.
@@ -125,6 +128,7 @@
     editorPane: document.getElementById('editor-pane'),
     editorHighlight: document.getElementById('editor-highlight'),
     editorSyntax: document.getElementById('editor-syntax'),
+    editorGutter: document.getElementById('editor-gutter'),
     editorResizer: document.getElementById('editor-resizer'),
     btnEditorLayout: document.getElementById('btn-editor-layout'),
     btnScrollSync: document.getElementById('btn-scroll-sync'),
@@ -2309,6 +2313,7 @@
       set(v) {
         valueProp.set.call(this, v);
         scheduleEditorSyntax();
+        scheduleEditorGutter();
       },
     });
   }
@@ -2495,6 +2500,98 @@
   }
   // A textarea's selection changes are reported on the document.
   document.addEventListener('selectionchange', updateEditorOccurrences);
+
+  // ---------------------------------------------------------------------
+  // Line numbers in the source editor (Settings > Show Line Numbers in
+  // Editor)
+  //
+  // The textarea wraps long lines, so a number can't simply be one line
+  // box per source line: each is placed at the measured top of its source
+  // line (getEditorLineTops), and a wrapped line keeps a single number.
+  // Only the numbers in view are drawn, so a long file costs no more than
+  // a short one once the line tops are measured.
+  // ---------------------------------------------------------------------
+  function editorCaretLine() {
+    const ta = el.mdSourceEditor;
+    const value = ta.value;
+    const end = ta.selectionStart;
+    let line = 0;
+    for (let i = value.indexOf('\n'); i !== -1 && i < end; i = value.indexOf('\n', i + 1)) line++;
+    return line;
+  }
+
+  function renderEditorGutter() {
+    const pane = el.editorPane;
+    const gutter = el.editorGutter;
+    if (!state.editorLineNumbers) {
+      if (gutter.firstChild) gutter.textContent = '';
+      return;
+    }
+    // Hidden (not in edit mode), there is nothing to measure against.
+    if (pane.classList.contains('hidden') || !pane.offsetWidth) return;
+
+    const ta = el.mdSourceEditor;
+    const value = ta.value;
+    let lineCount = 1;
+    for (let i = value.indexOf('\n'); i !== -1; i = value.indexOf('\n', i + 1)) lineCount++;
+    // Room for the widest number plus the gap on either side of it.
+    const width = `calc(${Math.max(2, String(lineCount).length)}ch + 20px)`;
+    if (pane.style.getPropertyValue('--editor-gutter-width') !== width) {
+      pane.style.setProperty('--editor-gutter-width', width);
+    }
+
+    const tops = getEditorLineTops();
+    const paddingTop = parseFloat(getComputedStyle(ta).paddingTop) || 0;
+    const scrollTop = ta.scrollTop;
+    const viewBottom = scrollTop + ta.clientHeight;
+    const current = editorCaretLine();
+    const first = editorLineAtScrollTop(Math.max(0, scrollTop - paddingTop));
+    const frag = document.createDocumentFragment();
+    for (let i = first; i < tops.length; i++) {
+      const top = paddingTop + tops[i];
+      if (top > viewBottom) break;
+      const div = document.createElement('div');
+      div.className = i === current ? 'line-number current' : 'line-number';
+      div.style.top = `${top - scrollTop}px`;
+      div.textContent = String(i + 1);
+      frag.appendChild(div);
+    }
+    gutter.textContent = '';
+    gutter.appendChild(frag);
+  }
+
+  let editorGutterQueued = false;
+  function scheduleEditorGutter() {
+    if (editorGutterQueued || !state.editorLineNumbers) return;
+    editorGutterQueued = true;
+    requestAnimationFrame(() => {
+      editorGutterQueued = false;
+      renderEditorGutter();
+    });
+  }
+
+  function applyEditorLineNumbers() {
+    el.editorPane.classList.toggle('line-numbers', state.editorLineNumbers);
+    if (!state.editorLineNumbers) {
+      el.editorPane.style.removeProperty('--editor-gutter-width');
+      renderEditorGutter();
+    } else {
+      scheduleEditorGutter();
+    }
+  }
+
+  window.mdviewer.onEditorLineNumbersChanged((enabled) => {
+    state.editorLineNumbers = enabled !== false;
+    applyEditorLineNumbers();
+  });
+
+  el.mdSourceEditor.addEventListener('scroll', scheduleEditorGutter);
+  el.mdSourceEditor.addEventListener('input', scheduleEditorGutter);
+  document.addEventListener('selectionchange', () => {
+    if (document.activeElement === el.mdSourceEditor) scheduleEditorGutter();
+  });
+  // Covers the pane being shown or resized, which rewraps the text.
+  new ResizeObserver(scheduleEditorGutter).observe(el.mdSourceEditor);
 
   // ---------------------------------------------------------------------
   // Body (source) editing
@@ -4863,6 +4960,8 @@
     applyEditorLayout();
     state.scrollSync = (await window.mdviewer.getScrollSync()) !== false;
     applyScrollSync();
+    state.editorLineNumbers = (await window.mdviewer.getEditorLineNumbers()) !== false;
+    applyEditorLineNumbers();
     await initPreviewFrame();
     updateCssAppliedBadge();
   })();

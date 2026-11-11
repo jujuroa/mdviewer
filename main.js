@@ -836,6 +836,18 @@ function setScrollSync(enabled) {
   sendToAllTabs('settings:scroll-sync-changed', !!enabled);
 }
 
+// Whether the source editor shows line numbers in a gutter on its left
+// (Settings > Show Line Numbers in Editor): on unless turned off, for every
+// tab at once.
+function getEditorLineNumbers() {
+  return loadSettings().editorLineNumbers !== false;
+}
+
+function setEditorLineNumbers(enabled) {
+  saveSettings({ ...loadSettings(), editorLineNumbers: !!enabled });
+  sendToAllTabs('settings:editor-line-numbers-changed', !!enabled);
+}
+
 function plainTextExtensionPattern() {
   const all = ['txt', 'log', ...Object.keys(CODE_LANGUAGE_BY_EXT), ...getCustomTextExtensions()];
   return new RegExp('\\.(' + all.join('|') + ')$', 'i');
@@ -2006,6 +2018,12 @@ function buildAppMenu() {
               click: () => setEditorLayout('vertical'),
             },
           ],
+        },
+        {
+          label: t('menu.editorLineNumbers'),
+          type: 'checkbox',
+          checked: getEditorLineNumbers(),
+          click: (item) => setEditorLineNumbers(item.checked),
         },
         { type: 'separator' },
         {
@@ -4466,6 +4484,7 @@ ipcMain.handle('settings:get-preview-width-limit', () => getPreviewWidthLimit())
 ipcMain.handle('settings:get-editor-layout', () => getEditorLayout());
 ipcMain.handle('settings:set-editor-layout', (event, layout) => setEditorLayout(layout));
 ipcMain.handle('settings:get-scroll-sync', () => getScrollSync());
+ipcMain.handle('settings:get-editor-line-numbers', () => getEditorLineNumbers());
 ipcMain.handle('settings:set-scroll-sync', (event, enabled) => setScrollSync(enabled));
 
 // Synchronous on purpose: the renderer saves from 'beforeunload', where an

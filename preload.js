@@ -129,6 +129,9 @@ if (PAGE === 'index.html' || TAB_ID) contextBridge.exposeInMainWorld('mdviewer',
   setScrollSync: (enabled) => ipcRenderer.invoke('settings:set-scroll-sync', enabled),
   onScrollSyncChanged: (callback) =>
     ipcRenderer.on('settings:scroll-sync-changed', (event, enabled) => callback(enabled)),
+  getEditorLineNumbers: () => ipcRenderer.invoke('settings:get-editor-line-numbers'),
+  onEditorLineNumbersChanged: (callback) =>
+    ipcRenderer.on('settings:editor-line-numbers-changed', (event, enabled) => callback(enabled)),
   writeFileSync: (filePath, content) => ipcRenderer.sendSync('fs:write-file-sync', filePath, content),
   setCustomExtensions: (list) => ipcRenderer.invoke('settings:set-custom-extensions', list),
   getHiddenNames: () => ipcRenderer.invoke('settings:get-hidden-names'),

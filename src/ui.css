@@ -1001,14 +1001,48 @@ html, body {
 }
 #editor-pane.hidden { display: none; }
 
+/* Line numbers (Settings > Show Line Numbers in Editor). The gutter takes
+   --editor-gutter-width off the left of the pane and the textarea and its
+   layers start after it; doc.js sets the width from the line count (in ch,
+   resolved in each element's own font, which is the same on all of them)
+   and draws only the numbers in view, at the measured top of each source
+   line, so a wrapped line keeps one number. */
+#editor-pane { --editor-gutter-width: 0px; }
+#editor-gutter {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: var(--editor-gutter-width);
+  overflow: hidden;
+  border-right: 1px solid #333;
+  background: #1e1e1e;
+  color: #6e7681;
+  pointer-events: none;
+  user-select: none;
+}
+#editor-pane:not(.line-numbers) #editor-gutter { display: none; }
+#editor-gutter .line-number {
+  position: absolute;
+  right: 10px;
+  white-space: nowrap;
+}
+#editor-gutter .line-number.current { color: #c6c6c6; }
+
 #md-source-editor,
 #editor-highlight,
-#editor-syntax {
-  padding: 16px 20px;
+#editor-syntax,
+#editor-gutter {
   font-family: "D2Coding", "D2Coding ligature", Consolas, "Cascadia Mono", "Cascadia Code",
     "SFMono-Regular", Menlo, monospace;
   font-size: 13px;
   line-height: 1.6;
+}
+
+#md-source-editor,
+#editor-highlight,
+#editor-syntax {
+  padding: 16px 20px;
   tab-size: 2;
   white-space: pre-wrap;
   overflow-wrap: break-word;
@@ -1018,8 +1052,10 @@ html, body {
 #md-source-editor {
   position: relative;
   z-index: 1;
-  width: 100%;
+  width: calc(100% - var(--editor-gutter-width));
   height: 100%;
+  margin: 0 0 0 var(--editor-gutter-width);
+  vertical-align: top;
   resize: none;
   border: none;
   outline: none;
@@ -1038,7 +1074,7 @@ html, body {
 
 #editor-highlight {
   position: absolute;
-  inset: 0;
+  inset: 0 0 0 var(--editor-gutter-width);
   z-index: 0;
   overflow: hidden;
   color: transparent;
@@ -1052,7 +1088,7 @@ html, body {
    and pull the text out from under the caret. */
 #editor-syntax {
   position: absolute;
-  inset: 0;
+  inset: 0 0 0 var(--editor-gutter-width);
   z-index: 0;
   overflow: hidden;
   color: #d4d4d4;
