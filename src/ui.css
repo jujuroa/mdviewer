@@ -347,6 +347,7 @@ html, body {
   color: var(--text);
 }
 .search-opt-word { text-decoration: underline; }
+.search-opt-name { font-family: inherit; }
 
 .search-status {
   padding: 0 10px 6px;
@@ -451,6 +452,20 @@ html, body {
   padding: 0 1px;
 }
 
+/* A file-name hit: one row per file, name first and its folder after. */
+.search-name-match {
+  align-items: center;
+  gap: 6px;
+  padding-left: 12px;
+}
+.search-name-match .search-file-name mark {
+  background: rgba(255, 197, 61, 0.45);
+  color: inherit;
+  border-radius: 2px;
+}
+/* No in-app viewer for these; they open in the OS's program instead. */
+.search-name-match.not-openable .search-file-name { opacity: 0.7; font-weight: normal; }
+
 .search-file-truncated {
   padding: 2px 8px 4px 24px;
   font-size: 10px;
@@ -519,6 +534,7 @@ html, body {
 .project-search .search-file-row { padding-left: 22px; }
 .project-search .search-match,
 .project-search .search-file-truncated { padding-left: 38px; }
+.project-search .search-name-match { padding-left: 22px; }
 
 /* ---- Resizers ---- */
 

@@ -32,6 +32,7 @@ const STRINGS = {
     'menu.view': 'View',
     'menu.find': 'Find in Document',
     'menu.searchProject': 'Search in Project',
+    'menu.findFileByName': 'Find File by Name',
     'menu.toggleCssEditor': 'Toggle CSS Editor',
     'menu.toggleEditMode': 'Toggle Edit Mode',
     'menu.toggleTerminal': 'Toggle Terminal',
@@ -181,6 +182,11 @@ const STRINGS = {
     'search.fileTruncated': 'first {count} shown',
     'search.invalidPattern': 'Invalid regular expression',
     'search.failed': 'Search failed: {error}',
+    'search.nameTitle': 'Find files by name (Ctrl+P)',
+    'search.namePlaceholder': 'Find file by name',
+    'search.projectNamePlaceholder': 'Find file by name in this project',
+    'search.nameSummary': '{files} files',
+    'search.nameSummaryTruncated': 'First {files} files (too many matches)',
 
     'editor.placeholder': 'Enter markdown source',
 
@@ -341,6 +347,7 @@ const STRINGS = {
     'menu.view': '보기',
     'menu.find': '문서 내 찾기',
     'menu.searchProject': '프로젝트 내 검색',
+    'menu.findFileByName': '파일 이름으로 찾기',
     'menu.toggleCssEditor': 'CSS 편집기 전환',
     'menu.toggleEditMode': '편집 모드 전환',
     'menu.toggleTerminal': '터미널 전환',
@@ -490,6 +497,11 @@ const STRINGS = {
     'search.fileTruncated': '처음 {count}개만 표시',
     'search.invalidPattern': '정규식이 올바르지 않습니다',
     'search.failed': '검색 실패: {error}',
+    'search.nameTitle': '파일 이름으로 찾기 (Ctrl+P)',
+    'search.namePlaceholder': '파일 이름으로 찾기',
+    'search.projectNamePlaceholder': '이 프로젝트에서 파일 이름 찾기',
+    'search.nameSummary': '{files}개 파일',
+    'search.nameSummaryTruncated': '처음 {files}개 파일 (결과가 너무 많음)',
 
     'editor.placeholder': '마크다운 소스를 입력하세요',
 

@@ -180,6 +180,7 @@ if (PAGE === 'index.html' || TAB_ID) contextBridge.exposeInMainWorld('mdviewer',
   },
   onMenuToggleFind: (callback) => ipcRenderer.on('menu:toggle-find', callback),
   onMenuSearchProject: (callback) => ipcRenderer.on('menu:search-project', callback),
+  onMenuFindFileByName: (callback) => ipcRenderer.on('menu:find-file-by-name', callback),
   onMenuExportPdf: (callback) => ipcRenderer.on('menu:export-pdf', callback),
   onTreeCreateNew: (callback) => {
     const listener = (event, payload) => callback(payload);

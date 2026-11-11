@@ -1704,6 +1704,83 @@ async function searchProjectDocuments(rootPath, query, options = {}) {
   return { ok: true, canceled: false, files, totalMatches, truncated };
 }
 
+// Matching on file names only needs the directory listing, so far more
+// results can come back cheaply than in a content search.
+const NAME_SEARCH_MAX_RESULTS = 1000;
+
+// Finds files whose *name* matches the query, with the same options (case,
+// whole word, regex) and the same skip rules as searchProjectDocuments. Any
+// file is a candidate, not only documents — `openable` tells the renderer
+// whether to show it in a tab or hand it to the OS, as the tree does.
+async function searchProjectFileNames(rootPath, query, options = {}) {
+  const searchId = options.searchId || null;
+  let regex;
+  try {
+    regex = buildSearchRegex(query, options);
+  } catch (err) {
+    return { ok: false, invalidPattern: true, error: err.message };
+  }
+
+  const plainTextPattern = plainTextExtensionPattern();
+  const isOpenable = (name) =>
+    /\.(md|markdown|puml|json|html?|xhtml|pdf)$/i.test(name) || plainTextPattern.test(name);
+  const isCanceled = () => !!searchId && canceledSearches.has(searchId);
+  const isUserHidden = hiddenNameMatcher();
+
+  const files = [];
+  let truncated = false;
+
+  async function walk(dir) {
+    if (truncated || isCanceled()) return;
+    let entries;
+    try {
+      entries = await fs.promises.readdir(dir, { withFileTypes: true });
+    } catch (err) {
+      return;
+    }
+    entries.sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
+
+    const subDirs = [];
+    for (const entry of entries) {
+      if (isHidden(entry.name) || isUserHidden(entry.name)) continue;
+      if (entry.isDirectory()) {
+        if (!SEARCH_SKIP_DIRS.has(entry.name.toLowerCase())) subDirs.push(path.join(dir, entry.name));
+        continue;
+      }
+      if (!entry.isFile()) continue;
+      const ranges = matchRangesInLine(regex, entry.name, 20);
+      if (!ranges.length) continue;
+      files.push({
+        path: path.join(dir, entry.name),
+        name: entry.name,
+        relDir: path.relative(rootPath, dir),
+        ranges,
+        openable: isOpenable(entry.name),
+      });
+      if (files.length >= NAME_SEARCH_MAX_RESULTS) {
+        truncated = true;
+        return;
+      }
+    }
+
+    for (const subDir of subDirs) {
+      if (truncated || isCanceled()) return;
+      await walk(subDir);
+    }
+  }
+
+  let canceledMidway;
+  try {
+    await walk(rootPath);
+    canceledMidway = isCanceled();
+  } finally {
+    if (searchId) canceledSearches.delete(searchId);
+  }
+
+  if (canceledMidway) return { ok: true, canceled: true, files: [], totalMatches: 0, truncated: false };
+  return { ok: true, canceled: false, fileNames: true, files, totalMatches: files.length, truncated };
+}
+
 function projectCssPath(rootPath) {
   return path.join(rootPath, CONFIG_DIR_NAME, CSS_FILE_NAME);
 }
@@ -1898,6 +1975,11 @@ function buildAppMenu() {
           label: t('menu.searchProject'),
           accelerator: 'CmdOrCtrl+Shift+F',
           click: (item, win) => sendToWindow(win, 'menu:search-project'),
+        },
+        {
+          label: t('menu.findFileByName'),
+          accelerator: 'CmdOrCtrl+P',
+          click: (item, win) => sendToWindow(win, 'menu:find-file-by-name'),
         },
         { type: 'separator' },
         {
@@ -3304,7 +3386,9 @@ ipcMain.handle('fs:list-dir', (event, dirPath) => {
 
 ipcMain.handle('search:project', async (event, rootPath, query, options) => {
   try {
-    return await searchProjectDocuments(rootPath, query, options || {});
+    const opts = options || {};
+    if (opts.fileNames) return await searchProjectFileNames(rootPath, query, opts);
+    return await searchProjectDocuments(rootPath, query, opts);
   } catch (err) {
     return { ok: false, error: err.message };
   }

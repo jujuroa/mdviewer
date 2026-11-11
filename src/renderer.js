@@ -92,6 +92,7 @@
     searchOptCase: document.getElementById('search-opt-case'),
     searchOptWord: document.getElementById('search-opt-word'),
     searchOptRegex: document.getElementById('search-opt-regex'),
+    searchOptName: document.getElementById('search-opt-name'),
     searchStatus: document.getElementById('search-status'),
     searchResults: document.getElementById('search-results'),
     appShell: document.getElementById('app-shell'),
@@ -1230,7 +1231,10 @@
   // also has its own inline one, scoped to that project. Each view keeps its
   // own options, debounce, in-flight search and selected row, so typing in
   // one never disturbs another.
-  function createSearchView({ input, status, results, optCase, optWord, optRegex, rootPath, isShown, onQueryChange }) {
+  //
+  // `optName` switches the view between searching document contents and
+  // matching file names; `placeholders` holds the box's hint for each mode.
+  function createSearchView({ input, status, results, optCase, optWord, optRegex, optName, placeholders, rootPath, isShown, onQueryChange }) {
     return {
       input,
       status,
@@ -1238,6 +1242,8 @@
       optCase,
       optWord,
       optRegex,
+      optName,
+      placeholders, // { content, name } i18n keys
       rootPath, // () => the folder this view searches, or null
       isShown, // () => whether the box is on screen (to hand the caret back)
       onQueryChange: onQueryChange || null,
@@ -1252,7 +1258,21 @@
       caseSensitive: view.optCase.classList.contains('active'),
       wholeWord: view.optWord.classList.contains('active'),
       useRegex: view.optRegex.classList.contains('active'),
+      fileNames: isNameSearch(view),
     };
+  }
+
+  function isNameSearch(view) {
+    return view.optName.classList.contains('active');
+  }
+
+  function syncSearchPlaceholder(view) {
+    view.input.placeholder = t(isNameSearch(view) ? view.placeholders.name : view.placeholders.content);
+  }
+
+  function setNameSearch(view, on) {
+    view.optName.classList.toggle('active', on);
+    syncSearchPlaceholder(view);
   }
 
   function setSearchStatus(view, text, isError = false) {
@@ -1284,7 +1304,10 @@
   function scheduleProjectSearch(view, { immediate = false } = {}) {
     clearTimeout(view.debounceTimer);
     const query = view.input.value;
-    if (!query || (!immediate && query.length < SEARCH_MIN_AUTO_CHARS)) {
+    // Names are short and matching them is cheap, so a single character
+    // already narrows the list usefully.
+    const minChars = isNameSearch(view) ? 1 : SEARCH_MIN_AUTO_CHARS;
+    if (!query || (!immediate && query.length < minChars)) {
       cancelActiveSearch(view);
       clearSearchResults(view);
       setSearchStatus(view, '');
@@ -1407,11 +1430,41 @@
     return group;
   }
 
+  // One row per file whose name matched: the name with the hit marked and
+  // the folder it is in. It uses the match-row class so the arrow keys and
+  // Enter walk these rows exactly like content hits.
+  function buildNameResultRow(view, file) {
+    const row = document.createElement('div');
+    row.className = 'search-match search-name-match' + (file.openable ? '' : ' not-openable');
+    row.title = file.path;
+
+    const name = document.createElement('span');
+    name.className = 'search-file-name';
+    appendHighlightedText(name, file.name, file.ranges);
+    const dir = document.createElement('span');
+    dir.className = 'search-file-dir';
+    dir.textContent = file.relDir ? file.relDir.replace(/\\/g, '/') : '';
+    row.append(name, dir);
+
+    row.addEventListener('click', () => openNameResult(view, file, row));
+    return row;
+  }
+
   function renderSearchResults(view, result) {
     clearSearchResults(view);
 
     if (!result.files.length) {
       setSearchStatus(view, t('search.noResults'));
+      return;
+    }
+    if (result.fileNames) {
+      setSearchStatus(
+        view,
+        t(result.truncated ? 'search.nameSummaryTruncated' : 'search.nameSummary', { files: result.files.length })
+      );
+      const frag = document.createDocumentFragment();
+      for (const file of result.files) frag.appendChild(buildNameResultRow(view, file));
+      view.results.appendChild(frag);
       return;
     }
     setSearchStatus(
@@ -1471,6 +1524,19 @@
     selectSearchRow(view, rowEl);
   }
 
+  // A name hit is opened the way the tree opens that file: documents the
+  // app can show go to a tab, anything else to the OS's default program.
+  async function openNameResult(view, file, rowEl) {
+    if (file.openable) {
+      await openDocument(file.path, { focus: false });
+    } else {
+      window.mdviewer.openPath(file.path);
+    }
+    if (view === panelSearch) await revealPathInTree(file.path, { select: true });
+    if (view.isShown()) view.input.focus({ preventScroll: true });
+    selectSearchRow(view, rowEl);
+  }
+
   function toggleSearchOption(view, button) {
     button.classList.toggle('active');
     scheduleProjectSearch(view, { immediate: true });
@@ -1482,6 +1548,12 @@
     view.optCase.addEventListener('click', () => toggleSearchOption(view, view.optCase));
     view.optWord.addEventListener('click', () => toggleSearchOption(view, view.optWord));
     view.optRegex.addEventListener('click', () => toggleSearchOption(view, view.optRegex));
+    view.optName.addEventListener('click', () => {
+      setNameSearch(view, !isNameSearch(view));
+      scheduleProjectSearch(view, { immediate: true });
+      view.input.focus({ preventScroll: true });
+    });
+    syncSearchPlaceholder(view);
 
     view.input.addEventListener('input', () => {
       selectSearchRow(view, null);
@@ -1515,6 +1587,8 @@
     optCase: el.searchOptCase,
     optWord: el.searchOptWord,
     optRegex: el.searchOptRegex,
+    optName: el.searchOptName,
+    placeholders: { content: 'search.placeholder', name: 'search.namePlaceholder' },
     rootPath: () => state.rootPath,
     isShown: () => searchPanelOpen(),
   });
@@ -1527,8 +1601,14 @@
     resetSearchView(panelSearch);
   }
 
-  function openSearchPanel() {
+  // `nameSearch` (true/false) switches the panel's mode as it opens; left
+  // out, the panel keeps whichever mode it was last in.
+  function openSearchPanel({ nameSearch } = {}) {
     exitDocFullscreen();
+    if (typeof nameSearch === 'boolean' && nameSearch !== isNameSearch(panelSearch)) {
+      setNameSearch(panelSearch, nameSearch);
+      scheduleProjectSearch(panelSearch, { immediate: true });
+    }
     el.searchPanel.classList.remove('hidden');
     el.tree.classList.add('hidden');
     el.btnToggleSearch.classList.add('active');
@@ -1551,11 +1631,12 @@
     else openSearchPanel();
   }
 
-  el.btnToggleSearch.addEventListener('click', toggleSearchPanel);
+  el.btnToggleSearch.addEventListener('click', () => toggleSearchPanel());
   el.searchClose.addEventListener('click', closeSearchPanel);
   bindSearchView(panelSearch, { onEscape: closeSearchPanel });
 
-  window.mdviewer.onMenuSearchProject(openSearchPanel);
+  window.mdviewer.onMenuSearchProject(() => openSearchPanel({ nameSearch: false }));
+  window.mdviewer.onMenuFindFileByName(() => openSearchPanel({ nameSearch: true }));
 
   // --- A project's inline search box, right under its row in the tree ---
   //
@@ -1587,6 +1668,7 @@
     const optCase = makeOpt('Aa', 'search.caseTitle');
     const optWord = makeOpt('ab', 'search.wordTitle', 'search-opt-word');
     const optRegex = makeOpt('.*', 'search.regexTitle');
+    const optName = makeOpt('📄', 'search.nameTitle', 'search-opt-name');
 
     const clear = document.createElement('button');
     clear.type = 'button';
@@ -1594,7 +1676,7 @@
     clear.textContent = '✕';
     clear.title = t('search.clearTitle');
 
-    box.append(input, optCase, optWord, optRegex, clear);
+    box.append(input, optCase, optWord, optRegex, optName, clear);
 
     const status = document.createElement('div');
     status.className = 'search-status';
@@ -1616,6 +1698,8 @@
       optCase,
       optWord,
       optRegex,
+      optName,
+      placeholders: { content: 'search.projectPlaceholder', name: 'search.projectNamePlaceholder' },
       rootPath: () => rootPath,
       isShown: () => input.isConnected && input.offsetParent !== null,
       onQueryChange: syncSearching,
