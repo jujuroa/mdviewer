@@ -2929,12 +2929,60 @@
       e.preventDefault();
       const ta = el.mdSourceEditor;
       const multiLine = ta.value.slice(ta.selectionStart, ta.selectionEnd).includes('\n');
+      // On a list item, Tab / Shift+Tab moves the item a level in or out
+      // (renumbering a numbered one) instead of inserting a tab.
+      const nest =
+        !multiLine &&
+        state.currentFileKind === 'markdown' &&
+        window.MdvEditorAutocomplete.tabCompletion(ta.value, ta.selectionStart, e.shiftKey);
+      if (nest) {
+        replaceEditorText(ta, nest.text, nest.from, nest.to);
+        ta.setSelectionRange(nest.caret, nest.caret);
+        return;
+      }
       if (multiLine || e.shiftKey) {
         shiftEditorLines(ta, e.shiftKey);
         return;
       }
       replaceEditorText(ta, '\t', ta.selectionStart, ta.selectionEnd);
+      return;
     }
+    // Alt+arrows in a markdown table: to the cell that way.
+    const arrow = /^Arrow(Left|Right|Up|Down)$/.exec(e.key);
+    if (arrow && e.altKey && !e.ctrlKey && !e.shiftKey && !e.metaKey && state.currentFileKind === 'markdown') {
+      const ta = el.mdSourceEditor;
+      const caret = window.MdvEditorAutocomplete.tableCellMove(ta.value, ta.selectionEnd, arrow[1].toLowerCase());
+      if (caret === null) return;
+      e.preventDefault();
+      ta.setSelectionRange(caret, caret);
+      // Setting the selection doesn't scroll to it as typing would.
+      const top = editorScrollTopForLine(editorCaretLine());
+      const lineHeight = getEditorLineHeight();
+      if (top < ta.scrollTop) ta.scrollTop = top;
+      else if (top + 2 * lineHeight > ta.scrollTop + ta.clientHeight) ta.scrollTop = top + 2 * lineHeight - ta.clientHeight;
+      return;
+    }
+    if (e.key === 'Enter') plainLineBreak =e.shiftKey || e.ctrlKey || e.altKey || e.metaKey;
+  });
+
+  // Enter in a markdown document continues the list, quote or table the
+  // caret is in (see editor-autocomplete.js); Shift+Enter is a plain line
+  // break. Taken from 'beforeinput' rather than the keydown: the Enter that
+  // ends an IME composition (Korean) reports no usable key, but its line
+  // break still arrives here, after the composed text is in the textarea.
+  let plainLineBreak = false;
+  el.mdSourceEditor.addEventListener('beforeinput', (e) => {
+    if (e.inputType !== 'insertLineBreak' || e.isComposing) return;
+    const plain = plainLineBreak;
+    plainLineBreak = false;
+    if (plain || state.currentFileKind !== 'markdown') return;
+    const ta = el.mdSourceEditor;
+    if (ta.selectionStart !== ta.selectionEnd) return;
+    const edit = window.MdvEditorAutocomplete.enterCompletion(ta.value, ta.selectionStart);
+    if (!edit) return;
+    e.preventDefault();
+    replaceEditorText(ta, edit.text, edit.from, edit.to);
+    ta.setSelectionRange(edit.caret, edit.caret);
   });
 
   // Replace [from, to) in the editor through execCommand so the change lands
