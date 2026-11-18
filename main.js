@@ -644,9 +644,20 @@ const terminals = new Map();
 // executable, and an unpackaged run (`electron .`) also has the app path as
 // its first plain argument — which is not always argv[1]: the argv a second
 // instance hands over has its switches moved ahead of it.
+//
+// Whether that app path is there depends on the process that built the argv,
+// not on this one: a dev run (`npm start`) and the installed app share the
+// same userData, so `mdviewer .` from a shell can land in a running dev
+// instance (and `npm start -- <path>` in a running installed one). So look at
+// argv[0] — the stock electron binary means an unpackaged run.
+function argvHasAppPath(argv) {
+  const exe = path.basename(argv[0] || '').toLowerCase();
+  return exe === 'electron' || exe === 'electron.exe';
+}
+
 function extractOpenTargetFromArgv(argv, cwd) {
   const plain = argv.slice(1).filter((a) => !a.startsWith('-'));
-  const candidate = app.isPackaged ? plain[0] : plain[1];
+  const candidate = argvHasAppPath(argv) ? plain[1] : plain[0];
   if (!candidate) return null;
   const resolved = path.resolve(cwd || process.cwd(), candidate);
   try {
